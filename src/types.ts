@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { CompactionExecutionPath } from "./compatibility.js";
 
 export type CompactionMode = "standard" | "hard" | "checkpoint";
 
@@ -82,6 +83,10 @@ export interface CompactionTelemetry {
   };
   usagePercentAtTrigger?: number;
   usageTokensAtTrigger?: number;
+  executionPath: CompactionExecutionPath;
+  fromExtension: boolean;
+  thinkingLevel?: string | null;
+  compatibilityReason?: string | null;
 }
 
 export function parseEnvInt(

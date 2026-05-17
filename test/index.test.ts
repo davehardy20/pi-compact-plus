@@ -7,8 +7,14 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   compact: vi.fn(),
 }));
 
+vi.mock("../src/persist.js", () => ({
+  loadTelemetry: vi.fn(async () => null),
+  saveTelemetry: vi.fn(async () => {}),
+}));
+
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
 
+const piCore = await import("@earendil-works/pi-coding-agent");
 const { default: compactPlusExtension, __test__ } = await import(
   "../src/index.js"
 );
@@ -22,6 +28,10 @@ interface MockCtx {
     provider: string;
     id: string;
   } | null;
+  modelRegistry: {
+    getApiKeyAndHeaders: ReturnType<typeof vi.fn>;
+  };
+  compact: ReturnType<typeof vi.fn>;
   getContextUsage: ReturnType<typeof vi.fn>;
   sessionManager: {
     getBranch: ReturnType<typeof vi.fn>;
@@ -37,9 +47,7 @@ interface CommandDefinition {
   handler: (args: string, ctx: MockCtx) => Promise<void>;
 }
 
-interface EventHandler {
-  (...args: unknown[]): unknown;
-}
+type EventHandler = (...args: unknown[]) => unknown;
 
 interface MockPi {
   registerCommand: ReturnType<typeof vi.fn>;
@@ -87,6 +95,14 @@ function createMockCtx(options?: {
           id: "test-model",
         }
       : null,
+    modelRegistry: {
+      getApiKeyAndHeaders: vi.fn(async () => ({
+        ok: true,
+        apiKey: "test-key",
+        headers: {},
+      })),
+    },
+    compact: vi.fn(),
     getContextUsage: vi.fn(() => ({
       tokens: 50000,
       percent: 50,
@@ -147,6 +163,7 @@ describe("@davehardy20/pi-compact-plus", () => {
       "message_end",
       "turn_end",
       "session_before_compact",
+      "session_compact",
       "session_before_tree",
       "context",
       "model_select",
@@ -155,6 +172,73 @@ describe("@davehardy20/pi-compact-plus", () => {
     for (const eventName of expectedEvents) {
       expect(pi.events.has(eventName)).toBe(true);
     }
+  });
+
+  it("falls back to native Pi compaction when stream-aware parity is unavailable", async () => {
+    const pi = createMockPi();
+    compactPlusExtension(pi as never);
+
+    __test__.resetState();
+
+    const compactPlusCommand = pi.commands.get("compact-plus");
+    const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
+    const sessionCompactHandler = pi.events.get("session_compact")?.[0];
+
+    expect(compactPlusCommand).toBeDefined();
+    expect(beforeCompactHandler).toBeDefined();
+    expect(sessionCompactHandler).toBeDefined();
+    if (
+      !compactPlusCommand ||
+      !beforeCompactHandler ||
+      !sessionCompactHandler
+    ) {
+      throw new Error("required handlers not registered");
+    }
+
+    const compactMock = vi.mocked(piCore.compact);
+    Object.defineProperty(compactMock, "length", {
+      configurable: true,
+      value: 8,
+    });
+
+    const ctx = createMockCtx({ contextWindow: 100000 });
+    await compactPlusCommand.handler("", ctx);
+
+    const result = await beforeCompactHandler(
+      {
+        preparation: {
+          isSplitTurn: false,
+          messagesToSummarize: [],
+          turnPrefixMessages: [],
+        },
+        branchEntries: [],
+        signal: ctx.signal,
+      },
+      ctx,
+    );
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("deferring to native Pi compaction"),
+      "warning",
+    );
+
+    await sessionCompactHandler(
+      {
+        compactionEntry: {
+          timestamp: new Date().toISOString(),
+          details: null,
+        },
+        fromExtension: false,
+      },
+      ctx,
+    );
+
+    expect(__test__.getLastCompaction()).toMatchObject({
+      executionPath: "native-fallback",
+      fromExtension: false,
+    });
+    expect(__test__.getLastFallbackReason()).toContain("stream-aware");
   });
 
   it("reports package identity from /compact-plus-status", async () => {
@@ -270,7 +354,9 @@ describe("Compact+ constants", () => {
   });
 
   it("exports continuation prompt and checkpoint type", () => {
-    expect(__test__.CONTINUATION_PROMPT).toBe("Continue with the current task.");
+    expect(__test__.CONTINUATION_PROMPT).toBe(
+      "Continue with the current task.",
+    );
     expect(__test__.CHECKPOINT_CUSTOM_TYPE).toBe("compact-plus-checkpoint");
   });
 });
@@ -303,10 +389,7 @@ describe("Compact+ prompt builders", () => {
       dependencyChain: [],
     };
 
-    const instructions = __test__.buildSummaryInstructions(
-      "standard",
-      focus,
-    );
+    const instructions = __test__.buildSummaryInstructions("standard", focus);
     expect(instructions).toContain("## Current Objective");
     expect(instructions).toContain("## Next Best Step");
     expect(instructions).toContain("## Decisions Made");

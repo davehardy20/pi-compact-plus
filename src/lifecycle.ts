@@ -32,7 +32,7 @@ export function executeCompaction(
       state.isCompacting = false;
       state.selectedMode = null;
       state.lastTriggerAuto = false;
-      state.lastCompactTime = Date.now();
+      state.lastCompactTime = state.lastCompaction?.timestamp ?? Date.now();
       state.echoInjected = false;
       const postUsage = ctx.getContextUsage();
       if (postUsage && typeof postUsage.tokens === "number") {
@@ -50,6 +50,7 @@ export function executeCompaction(
       state.lastTriggerAuto = false;
       state.lastCompactTokens = 0;
       state.echoInjected = false;
+      state.clearPendingCompaction();
       if (ctx.hasUI) {
         ctx.ui.notify(`Compact+ compaction failed: ${error.message}`, "error");
       }

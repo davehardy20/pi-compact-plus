@@ -13,6 +13,7 @@ export class CompactionState {
   lastModelKey: string | null = null;
   lastCompactTurnIndex = -1;
   lastCompaction: CompactionTelemetry | null = null;
+  pendingCompaction: CompactionTelemetry | null = null;
   lastFallbackReason: string | null = null;
   lastInjectedEcho: string | null = null;
   echoInjected = false;
@@ -27,6 +28,7 @@ export class CompactionState {
     this.lastModelKey = null;
     this.lastCompactTurnIndex = -1;
     this.lastCompaction = null;
+    this.pendingCompaction = null;
     this.lastFallbackReason = null;
     this.lastInjectedEcho = null;
     this.echoInjected = false;
@@ -45,13 +47,17 @@ export class CompactionState {
       this.lastCompactTokens = 0;
       this.lastCompactTurnIndex = -1;
       this.lastCompaction = null;
-      this.lastFallbackReason = null;
+      this.pendingCompaction = null;
       this.lastFallbackReason = null;
       this.lastInjectedEcho = null;
       this.echoInjected = false;
       return true;
     }
     return false;
+  }
+
+  clearPendingCompaction(): void {
+    this.pendingCompaction = null;
   }
 
   // ── Guard helpers ────────────────────────────────────────────────

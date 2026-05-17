@@ -19,7 +19,7 @@ export interface PersistedTelemetry {
   version: number;
 }
 
-const PERSIST_VERSION = 2;
+const PERSIST_VERSION = 3;
 
 async function ensureDir(path: string): Promise<void> {
   if (!existsSync(path)) {
@@ -34,7 +34,13 @@ export async function loadTelemetry(): Promise<PersistedTelemetry | null> {
     const data = JSON.parse(raw) as Partial<PersistedTelemetry> & {
       version?: number;
     };
-    if (data.version !== 1 && data.version !== PERSIST_VERSION) return null;
+    if (
+      data.version !== 1 &&
+      data.version !== 2 &&
+      data.version !== PERSIST_VERSION
+    ) {
+      return null;
+    }
     return {
       lastCompaction: data.lastCompaction ?? null,
       lastFallbackReason: data.lastFallbackReason ?? null,

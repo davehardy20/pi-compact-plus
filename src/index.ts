@@ -27,6 +27,10 @@ import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 import { runCustomCompaction } from "./compact.js";
 import {
+  type CompactionExecutionPath,
+  resolveCompactionRuntimeCompatibility,
+} from "./compatibility.js";
+import {
   classifyMessages,
   extractCurrentFocus,
   extractDependencyChain,
@@ -119,6 +123,37 @@ function getPackageMetadata(): PackageMetadata {
 // ── State ────────────────────────────────────────────────────────────
 
 const state = new CompactionState();
+
+async function persistTelemetrySnapshot(): Promise<void> {
+  await saveTelemetry({
+    lastCompaction: state.lastCompaction,
+    lastFallbackReason: state.lastFallbackReason,
+    lastInjectedEcho: state.lastInjectedEcho,
+    lastCompactTime: state.lastCompactTime,
+    lastCompactTokens: state.lastCompactTokens,
+  });
+}
+
+function parseTelemetryTimestamp(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return Date.now();
+}
+
+function coerceStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter(
+    (item): item is string => typeof item === "string",
+  );
+  return strings.length > 0 ? strings : undefined;
+}
 
 // ── Extension ────────────────────────────────────────────────────────
 
@@ -349,6 +384,11 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
         ]
       : event.preparation.messagesToSummarize;
     const focus = extractCurrentFocus(focusMessages);
+    const usage = getEffectiveUsage(ctx);
+    const compatibility = resolveCompactionRuntimeCompatibility({
+      event,
+      branchEntries: event.branchEntries,
+    });
 
     const triggerSource: TriggerSource = state.lastTriggerAuto
       ? event.preparation.isSplitTurn
@@ -364,13 +404,6 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
         extractTextContent(m).includes("Compaction Summary"),
     );
 
-    const attempt = await runCustomCompaction(
-      event.preparation,
-      mode,
-      ctx,
-      event.signal,
-    );
-
     const telemetryBase: CompactionTelemetry = {
       mode: mode === "standard" || mode === "hard" ? mode : "standard",
       triggerSource,
@@ -379,23 +412,52 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
       focusTags: focus.activeFiles.map((f) => f.split("/").pop() ?? f),
       previousSummaryPresent,
       splitTurn: event.preparation.isSplitTurn,
-      usageSource: getEffectiveUsage(ctx)?.source ?? "unknown",
+      usageSource: usage?.source ?? "unknown",
       messagesSummarizedCount: event.preparation.messagesToSummarize.length,
+      usagePercentAtTrigger: usage?.percent,
+      usageTokensAtTrigger: usage?.tokens,
+      executionPath: compatibility.executionPath,
+      fromExtension: compatibility.executionPath === "custom",
+      thinkingLevel: compatibility.thinkingLevel ?? null,
+      compatibilityReason: compatibility.reason,
     };
 
+    if (compatibility.executionPath === "native-fallback") {
+      state.pendingCompaction = {
+        ...telemetryBase,
+        executionPath: "native-fallback",
+        fromExtension: false,
+        fallbackReason: compatibility.reason ?? undefined,
+      };
+      state.lastFallbackReason = compatibility.reason;
+      await persistTelemetrySnapshot();
+
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          "Compact+ is deferring to native Pi compaction to preserve stream-aware routing.",
+          "warning",
+        );
+      }
+
+      return undefined;
+    }
+
+    const attempt = await runCustomCompaction(
+      event.preparation,
+      mode,
+      ctx,
+      compatibility,
+      event.signal,
+    );
+
     if (attempt.result) {
-      state.lastCompaction = {
+      state.pendingCompaction = {
         ...telemetryBase,
         classifiedCounts: attempt.classifiedCounts,
+        fallbackReason: attempt.fallbackReason ?? undefined,
       };
       state.lastFallbackReason = attempt.fallbackReason;
-      await saveTelemetry({
-        lastCompaction: state.lastCompaction,
-        lastFallbackReason: state.lastFallbackReason,
-        lastInjectedEcho: state.lastInjectedEcho,
-        lastCompactTime: state.lastCompactTime,
-        lastCompactTokens: state.lastCompactTokens,
-      });
+      await persistTelemetrySnapshot();
 
       return {
         compaction: {
@@ -410,6 +472,9 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
             auto: state.lastTriggerAuto,
             timestamp: telemetryBase.timestamp,
             focusTags: telemetryBase.focusTags,
+            executionPath: telemetryBase.executionPath,
+            thinkingLevel: telemetryBase.thinkingLevel,
+            compatibilityReason: telemetryBase.compatibilityReason,
           },
         },
       };
@@ -417,17 +482,15 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 
     state.lastFallbackReason =
       attempt.fallbackReason ?? "custom summarization unavailable";
-    state.lastCompaction = {
+    state.pendingCompaction = {
       ...telemetryBase,
+      executionPath: "native-fallback",
+      fromExtension: false,
       fallbackReason: state.lastFallbackReason,
+      compatibilityReason:
+        telemetryBase.compatibilityReason ?? state.lastFallbackReason,
     };
-    await saveTelemetry({
-      lastCompaction: state.lastCompaction,
-      lastFallbackReason: state.lastFallbackReason,
-      lastInjectedEcho: state.lastInjectedEcho,
-      lastCompactTime: state.lastCompactTime,
-      lastCompactTokens: state.lastCompactTokens,
-    });
+    await persistTelemetrySnapshot();
 
     if (ctx.hasUI) {
       ctx.ui.notify(
@@ -437,6 +500,54 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
     }
 
     return undefined;
+  });
+
+  pi.on("session_compact", async (event, _ctx) => {
+    const pending = state.pendingCompaction;
+    if (!pending) {
+      return;
+    }
+
+    const details =
+      typeof event.compactionEntry.details === "object" &&
+      event.compactionEntry.details !== null
+        ? (event.compactionEntry.details as Record<string, unknown>)
+        : {};
+    const executionPath: CompactionExecutionPath = event.fromExtension
+      ? pending.executionPath
+      : "native-fallback";
+    const fallbackReason =
+      typeof details.fallbackReason === "string"
+        ? details.fallbackReason
+        : pending.fallbackReason;
+
+    state.lastCompaction = {
+      ...pending,
+      mode: details.mode === "hard" ? "hard" : pending.mode,
+      triggerReason:
+        typeof details.triggerReason === "string"
+          ? details.triggerReason
+          : pending.triggerReason,
+      timestamp: parseTelemetryTimestamp(
+        details.timestamp ?? event.compactionEntry.timestamp,
+      ),
+      focusTags: coerceStringArray(details.focusTags) ?? pending.focusTags,
+      executionPath,
+      fromExtension: event.fromExtension,
+      fallbackReason,
+      thinkingLevel:
+        typeof details.thinkingLevel === "string"
+          ? details.thinkingLevel
+          : (pending.thinkingLevel ?? null),
+      compatibilityReason:
+        typeof details.compatibilityReason === "string"
+          ? details.compatibilityReason
+          : (pending.compatibilityReason ?? null),
+    };
+    state.lastFallbackReason = fallbackReason ?? null;
+    state.lastCompactTime = state.lastCompaction.timestamp;
+    state.clearPendingCompaction();
+    await persistTelemetrySnapshot();
   });
 
   // ── session_before_tree ────────────────────────────────────────────
@@ -462,13 +573,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
     if (result) {
       state.lastInjectedEcho = result.echoText;
       state.echoInjected = true;
-      await saveTelemetry({
-        lastCompaction: state.lastCompaction,
-        lastFallbackReason: state.lastFallbackReason,
-        lastInjectedEcho: state.lastInjectedEcho,
-        lastCompactTime: state.lastCompactTime,
-        lastCompactTokens: state.lastCompactTokens,
-      });
+      await persistTelemetrySnapshot();
       return { messages: result.messages };
     }
     return undefined;

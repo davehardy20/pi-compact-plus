@@ -131,6 +131,12 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
     if (lc.triggerReason) {
       lines.push(`    Reason: ${lc.triggerReason}`);
     }
+    lines.push(
+      `    Path: ${lc.executionPath}${lc.fromExtension ? " (Compact+)" : " (native Pi)"}`,
+    );
+    if (lc.thinkingLevel) {
+      lines.push(`    Thinking level: ${lc.thinkingLevel}`);
+    }
     if (lc.focusTags.length > 0) {
       lines.push(`    Focus files: ${lc.focusTags.join(", ")}`);
     }
@@ -139,6 +145,12 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
     }
     if (lc.splitTurn) {
       lines.push("    Split-turn: yes");
+    }
+    if (
+      lc.compatibilityReason &&
+      lc.compatibilityReason !== lc.fallbackReason
+    ) {
+      lines.push(`    Compatibility: ${lc.compatibilityReason}`);
     }
     if (lc.fallbackReason) {
       lines.push(`    Fallback: ${lc.fallbackReason}`);

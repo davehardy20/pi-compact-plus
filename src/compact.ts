@@ -5,6 +5,7 @@ import type {
   ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
+import type { CompactionRuntimeCompatibility } from "./compatibility.js";
 import { classifyMessages, extractCurrentFocus } from "./focus.js";
 import { buildSummaryInstructions } from "./prompts.js";
 import type { CompactionMode } from "./types.js";
@@ -271,6 +272,7 @@ export async function runCustomCompaction(
   preparation: Parameters<typeof compact>[0],
   mode: CompactionMode,
   ctx: ExtensionContext,
+  compatibility: CompactionRuntimeCompatibility,
   signal?: AbortSignal,
 ): Promise<CompactionAttemptResult> {
   try {
@@ -368,14 +370,27 @@ export async function runCustomCompaction(
       turnPrefixCount: preparation.turnPrefixMessages?.length ?? 0,
     });
 
-    const result = await compact(
+    const compactRunner = compact as unknown as (
+      ...args: unknown[]
+    ) => Promise<CompactionResult>;
+    const compactArgs: unknown[] = [
       preparation,
       model,
       auth.apiKey ?? "",
       auth.headers,
       customInstructions,
       signal ?? ctx.signal ?? undefined,
-    );
+    ];
+
+    if (compatibility.helperSupportsThinkingLevel) {
+      compactArgs.push(compatibility.thinkingLevel ?? undefined);
+    }
+
+    if (compatibility.helperSupportsStreamFn) {
+      compactArgs.push(compatibility.streamFn);
+    }
+
+    const result = await compactRunner(...compactArgs);
 
     // Compute classified counts for telemetry
     const classified = classifyMessages(
