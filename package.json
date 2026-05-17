@@ -1,6 +1,6 @@
 {
   "name": "@davehardy20/pi-compact-plus",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi package for advanced context compaction with mode-aware triggers, structured summaries, current-focus extraction, content classification, and lightweight checkpoints.",
   "type": "module",
   "keywords": [
