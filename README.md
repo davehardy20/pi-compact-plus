@@ -1,6 +1,8 @@
 # @davehardy20/pi-compact-plus
 
-Advanced context compaction for [Pi](https://pi.dev) with mode-aware triggers, structured summaries, current-focus extraction, content classification, and lightweight checkpoints.
+Advanced context compaction for [Pi](https://pi.dev) with mode-aware triggers,
+structured summaries, current-focus extraction, content classification, and
+lightweight checkpoints.
 
 ## What it adds
 
@@ -47,7 +49,10 @@ Compact+ produces structured compaction summaries with these sections:
 
 ### Focus echo
 
-After compaction, a compact "focus echo" is injected at the recency position (before the last user message) to mitigate "lost in the middle" degradation. The echo contains the objective, active files, blockers, decisions, dependency chain, and next step.
+After compaction, a compact "focus echo" is injected at the recency position
+(before the last user message) to mitigate "lost in the middle" degradation.
+The echo contains the objective, active files, blockers, decisions,
+dependency chain, and next step.
 
 ### Features
 
@@ -95,7 +100,12 @@ Compact+ supports these environment variables for threshold tuning:
 
 ## Notes
 
-- Compact+ hooks into Pi's `session_before_compact` event to provide custom summarization. If custom summarization fails, it falls back to Pi's default compaction.
+- Compact+ hooks into Pi's `session_before_compact` event to provide custom summarization.
+- On Pi runtimes that support stream-aware compaction but do not expose the
+  live session `streamFn` to extensions, Compact+ uses the public
+  `@earendil-works/pi-ai` `streamSimple` adapter so custom summaries can still
+  run.
+- If custom summarization still fails after that, Compact+ falls back to Pi's default compaction.
 - The extension persists telemetry to `~/.pi/agent/state/compact-plus-telemetry.json`.
 - State resets when the model changes to avoid stale compaction context from a different model.
 
@@ -114,9 +124,12 @@ Run `/compact-plus status` for detailed runtime state:
 - usage source (native or estimated)
 - current band and thresholds
 - cooldown state
-- last compaction telemetry including mode, trigger source, and focus files
+- last compaction telemetry including mode, trigger source, path, thinking
+  level, compatibility notes, fallback reason, and focus files
 
-If commands appear twice, Pi may be loading both the package and the old local extension. Disable or remove the old local auto-discovered extension before reload verification.
+If commands appear twice, Pi may be loading both the package and the old local
+extension. Disable or remove the old local auto-discovered extension before
+reload verification.
 
 ## Update flow
 

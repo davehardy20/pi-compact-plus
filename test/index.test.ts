@@ -174,7 +174,7 @@ describe("@davehardy20/pi-compact-plus", () => {
     }
   });
 
-  it("falls back to native Pi compaction when stream-aware parity is unavailable", async () => {
+  it("uses the public streamSimple adapter when Pi does not expose streamFn", async () => {
     const pi = createMockPi();
     compactPlusExtension(pi as never);
 
@@ -196,6 +196,96 @@ describe("@davehardy20/pi-compact-plus", () => {
     }
 
     const compactMock = vi.mocked(piCore.compact);
+    compactMock.mockResolvedValue({
+      summary: "Compact+ adapter summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 123,
+      details: null,
+    });
+    Object.defineProperty(compactMock, "length", {
+      configurable: true,
+      value: 8,
+    });
+
+    const ctx = createMockCtx({ contextWindow: 100000 });
+    await compactPlusCommand.handler("", ctx);
+
+    const result = await beforeCompactHandler(
+      {
+        preparation: {
+          isSplitTurn: false,
+          messagesToSummarize: [],
+          turnPrefixMessages: [],
+        },
+        branchEntries: [
+          { type: "thinking_level_change", thinkingLevel: "high" },
+        ],
+        signal: ctx.signal,
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      compaction: expect.objectContaining({
+        summary: "Compact+ adapter summary",
+      }),
+    });
+    expect(compactMock).toHaveBeenCalledTimes(1);
+    expect(compactMock.mock.calls[0]).toHaveLength(8);
+    expect(compactMock.mock.calls[0]?.[7]).toEqual(expect.any(Function));
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(
+      expect.stringContaining("native Pi compaction"),
+      "warning",
+    );
+
+    await sessionCompactHandler(
+      {
+        compactionEntry: {
+          timestamp: new Date().toISOString(),
+          details:
+            typeof result === "object" && result && "compaction" in result
+              ? ((result as { compaction: { details?: unknown } }).compaction
+                  .details ?? null)
+              : null,
+        },
+        fromExtension: true,
+      },
+      ctx,
+    );
+
+    expect(__test__.getLastCompaction()).toMatchObject({
+      executionPath: "custom",
+      fromExtension: true,
+      thinkingLevel: "high",
+    });
+    expect(__test__.getLastCompaction()?.compatibilityReason).toContain(
+      "streamSimple adapter",
+    );
+  });
+
+  it("falls back to native Pi compaction when custom summarization still fails", async () => {
+    const pi = createMockPi();
+    compactPlusExtension(pi as never);
+
+    __test__.resetState();
+
+    const compactPlusCommand = pi.commands.get("compact-plus");
+    const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
+    const sessionCompactHandler = pi.events.get("session_compact")?.[0];
+
+    expect(compactPlusCommand).toBeDefined();
+    expect(beforeCompactHandler).toBeDefined();
+    expect(sessionCompactHandler).toBeDefined();
+    if (
+      !compactPlusCommand ||
+      !beforeCompactHandler ||
+      !sessionCompactHandler
+    ) {
+      throw new Error("required handlers not registered");
+    }
+
+    const compactMock = vi.mocked(piCore.compact);
+    compactMock.mockResolvedValue(undefined as never);
     Object.defineProperty(compactMock, "length", {
       configurable: true,
       value: 8,
@@ -219,7 +309,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 
     expect(result).toBeUndefined();
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("deferring to native Pi compaction"),
+      expect.stringContaining("custom summarization unavailable"),
       "warning",
     );
 
@@ -238,7 +328,9 @@ describe("@davehardy20/pi-compact-plus", () => {
       executionPath: "native-fallback",
       fromExtension: false,
     });
-    expect(__test__.getLastFallbackReason()).toContain("stream-aware");
+    expect(__test__.getLastFallbackReason()).toContain(
+      "compact returned undefined",
+    );
   });
 
   it("reports package identity from /compact-plus-status", async () => {
@@ -258,7 +350,7 @@ describe("@davehardy20/pi-compact-plus", () => {
         content: expect.stringContaining("@davehardy20/pi-compact-plus"),
         details: expect.objectContaining({
           packageName: "@davehardy20/pi-compact-plus",
-          version: "0.1.0",
+          version: "0.1.1",
         }),
       }),
     );
