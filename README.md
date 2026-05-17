@@ -123,6 +123,8 @@ Run `/compact-plus status` for detailed runtime state:
 - current usage percent, tokens, and context window
 - usage source (native or estimated)
 - current band and thresholds
+- when Pi has not produced a post-compaction assistant usage yet, status will
+  show usage as unknown instead of estimating from the pre-compaction branch
 - cooldown state
 - last compaction telemetry including mode, trigger source, path, thinking
   level, compatibility notes, fallback reason, and focus files

@@ -8,8 +8,8 @@ export type UsageSource = "native" | "estimated" | "unknown";
 export type TriggerSource = "message_end" | "turn_end" | "command";
 
 export interface EffectiveUsage {
-  percent: number;
-  tokens: number;
+  percent: number | null;
+  tokens: number | null;
   contextWindow: number;
   source: UsageSource;
 }

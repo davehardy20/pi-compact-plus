@@ -85,6 +85,7 @@ function createMockPi(): MockPi {
 function createMockCtx(options?: {
   contextWindow?: number;
   messages?: Array<{ role: string; content: unknown }>;
+  contextUsage?: { tokens: number | null; percent: number | null } | undefined;
 }): MockCtx {
   return {
     hasUI: true,
@@ -103,10 +104,14 @@ function createMockCtx(options?: {
       })),
     },
     compact: vi.fn(),
-    getContextUsage: vi.fn(() => ({
-      tokens: 50000,
-      percent: 50,
-    })),
+    getContextUsage: vi.fn(() =>
+      options && "contextUsage" in options
+        ? options.contextUsage
+        : {
+            tokens: 50000,
+            percent: 50,
+          },
+    ),
     sessionManager: {
       getBranch: vi.fn(
         () =>
@@ -369,6 +374,58 @@ describe("@davehardy20/pi-compact-plus", () => {
 
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("Compact+ status"),
+      "info",
+    );
+  });
+
+  it("does not estimate over-100% usage immediately after compaction", async () => {
+    const pi = createMockPi();
+    compactPlusExtension(pi as never);
+
+    __test__.resetState();
+
+    const compactPlusCommand = pi.commands.get("compact-plus");
+    const sessionCompactHandler = pi.events.get("session_compact")?.[0];
+    expect(compactPlusCommand).toBeDefined();
+    expect(sessionCompactHandler).toBeDefined();
+    if (!compactPlusCommand || !sessionCompactHandler) {
+      throw new Error("required handlers not registered");
+    }
+
+    const ctx = createMockCtx({
+      contextWindow: 272000,
+      contextUsage: { tokens: null, percent: null },
+      messages: Array.from({ length: 4000 }, () => ({
+        role: "user",
+        content: [{ type: "text", text: "x" }],
+      })),
+    });
+
+    await sessionCompactHandler(
+      {
+        compactionEntry: {
+          timestamp: new Date().toISOString(),
+          details: {
+            mode: "standard",
+            triggerReason: "manual /compact-plus standard",
+            executionPath: "custom",
+          },
+        },
+        fromExtension: true,
+      },
+      ctx,
+    );
+
+    await compactPlusCommand.handler("status", ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Usage detail: Pi reports usage as unknown until the next assistant response after compaction.",
+      ),
+      "info",
+    );
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(
+      expect.stringContaining("102.2%"),
       "info",
     );
   });

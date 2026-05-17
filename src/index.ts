@@ -262,7 +262,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
     if (contextWindow <= 0) return null;
 
     const native = ctx.getContextUsage();
-    if (native && native.tokens !== null && native.percent !== null) {
+    if (native) {
       return {
         percent: native.percent,
         tokens: native.tokens,
@@ -271,8 +271,9 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
       };
     }
 
-    // Fallback: estimate from branch entries when getContextUsage() is blind
-    // (e.g. after compaction before next valid assistant usage)
+    // Fallback: estimate from branch entries only when Pi does not expose
+    // context usage at all. Do not estimate after compaction when Pi
+    // intentionally reports unknown usage until the next assistant response.
     const entries = ctx.sessionManager.getBranch();
     const messages = entries
       .filter((e): e is SessionMessageEntry => e.type === "message")
@@ -298,6 +299,8 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
     const usage = getEffectiveUsage(ctx);
     const model = ctx.model;
     if (!usage || !model) return;
+
+    if (usage.percent === null || usage.tokens === null) return;
 
     const mode = getModeFromUsage(usage.percent);
     if (!mode || mode === "checkpoint") return;
@@ -414,8 +417,8 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
       splitTurn: event.preparation.isSplitTurn,
       usageSource: usage?.source ?? "unknown",
       messagesSummarizedCount: event.preparation.messagesToSummarize.length,
-      usagePercentAtTrigger: usage?.percent,
-      usageTokensAtTrigger: usage?.tokens,
+      usagePercentAtTrigger: usage?.percent ?? undefined,
+      usageTokensAtTrigger: usage?.tokens ?? undefined,
       executionPath: compatibility.executionPath,
       fromExtension: compatibility.executionPath === "custom",
       thinkingLevel: compatibility.thinkingLevel ?? null,

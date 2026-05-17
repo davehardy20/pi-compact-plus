@@ -111,10 +111,22 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
     status.lastFallbackReason !== compactionFallback
       ? status.lastFallbackReason
       : null;
+  const usagePercentText =
+    status.usagePercent === null
+      ? "unknown"
+      : `${status.usagePercent.toFixed(1)}%`;
+  const usageTokensText =
+    status.usageTokens === null
+      ? "unknown"
+      : status.usageTokens.toLocaleString();
+  const contextWindowText =
+    status.contextWindow === null
+      ? "unknown"
+      : status.contextWindow.toLocaleString();
 
   const lines = [
     "📦 Compact+ status",
-    `  Usage: ${status.usagePercent?.toFixed(1) ?? "unknown"}% (${status.usageTokens?.toLocaleString() ?? "unknown"} / ${status.contextWindow?.toLocaleString() ?? "unknown"} tokens)`,
+    `  Usage: ${usagePercentText} (${usageTokensText} / ${contextWindowText} tokens)`,
     `  Source: ${status.usageSource}`,
     `  Band: ${status.band}`,
     `  Thresholds: standard=${STANDARD_THRESHOLD_PERCENT}% hard=${HARD_THRESHOLD_PERCENT}% cooldown=${COOLDOWN_MS / 1000}s`,
@@ -122,6 +134,14 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
     `  Cooldown: ${status.cooldownActive ? `${Math.ceil(status.cooldownRemainingMs / 1000)}s remaining` : "ready"}`,
     `  Compacting: ${status.isCompacting ? "in progress" : "idle"}`,
   ];
+  if (
+    status.usageSource === "native" &&
+    (status.usagePercent === null || status.usageTokens === null)
+  ) {
+    lines.push(
+      "  Usage detail: Pi reports usage as unknown until the next assistant response after compaction.",
+    );
+  }
   if (status.lastCompaction) {
     const lc = status.lastCompaction;
     const ago = Math.round((Date.now() - lc.timestamp) / 1000);
