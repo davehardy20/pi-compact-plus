@@ -53,7 +53,7 @@ import {
   buildCurrentFocusBlock,
   buildSummaryInstructions,
 } from "./prompts.js";
-import { reorderForPositioning } from "./reorder.js";
+import { buildPersistedFocusEcho, reorderForPositioning } from "./reorder.js";
 import { CompactionState } from "./state.js";
 import {
   CHECKPOINT_CANDIDATE_PERCENT,
@@ -549,6 +549,12 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
     };
     state.lastFallbackReason = fallbackReason ?? null;
     state.lastCompactTime = state.lastCompaction.timestamp;
+    state.lastInjectedEcho =
+      executionPath === "custom" &&
+      typeof event.compactionEntry.summary === "string"
+        ? buildPersistedFocusEcho(event.compactionEntry.summary)
+        : null;
+    state.echoInjected = false;
     state.clearPendingCompaction();
     await persistTelemetrySnapshot();
   });
@@ -602,6 +608,7 @@ export const __test__ = {
   getLastModelKey: () => state.lastModelKey,
   getLastCompaction: () => state.lastCompaction,
   getLastFallbackReason: () => state.lastFallbackReason,
+  getLastInjectedEcho: () => state.lastInjectedEcho,
   CHECKPOINT_CANDIDATE_PERCENT,
   STANDARD_THRESHOLD_PERCENT,
   HARD_THRESHOLD_PERCENT,

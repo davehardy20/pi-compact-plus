@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock Pi core packages before importing the extension
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -18,6 +18,15 @@ const piCore = await import("@earendil-works/pi-coding-agent");
 const { default: compactPlusExtension, __test__ } = await import(
   "../src/index.js"
 );
+
+const packageJson = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as {
+  keywords?: string[];
+  version?: string;
+  pi?: { extensions?: string[] };
+  peerDependencies?: Record<string, string>;
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -131,15 +140,13 @@ function createMockCtx(options?: {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("@davehardy20/pi-compact-plus", () => {
-  it("declares the pi-package keyword and extension manifest", () => {
-    const packageJson = JSON.parse(
-      fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-    ) as {
-      keywords?: string[];
-      pi?: { extensions?: string[] };
-      peerDependencies?: Record<string, string>;
-    };
+  beforeEach(() => {
+    __test__.resetState();
+    vi.clearAllMocks();
+    vi.mocked(piCore.compact).mockReset();
+  });
 
+  it("declares the pi-package keyword and extension manifest", () => {
     expect(packageJson.keywords).toContain("pi-package");
     expect(packageJson.pi?.extensions).toEqual(["./src/index.ts"]);
     expect(packageJson.peerDependencies).toMatchObject({
@@ -355,7 +362,7 @@ describe("@davehardy20/pi-compact-plus", () => {
         content: expect.stringContaining("@davehardy20/pi-compact-plus"),
         details: expect.objectContaining({
           packageName: "@davehardy20/pi-compact-plus",
-          version: "0.1.1",
+          version: packageJson.version,
         }),
       }),
     );
@@ -426,6 +433,101 @@ describe("@davehardy20/pi-compact-plus", () => {
     );
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(
       expect.stringContaining("102.2%"),
+      "info",
+    );
+  });
+
+  it("persists a focus echo from the latest custom compaction summary", async () => {
+    const pi = createMockPi();
+    compactPlusExtension(pi as never);
+
+    __test__.resetState();
+
+    const compactPlusCommand = pi.commands.get("compact-plus");
+    const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
+    const sessionCompactHandler = pi.events.get("session_compact")?.[0];
+    expect(compactPlusCommand).toBeDefined();
+    expect(beforeCompactHandler).toBeDefined();
+    expect(sessionCompactHandler).toBeDefined();
+    if (
+      !compactPlusCommand ||
+      !beforeCompactHandler ||
+      !sessionCompactHandler
+    ) {
+      throw new Error("required handlers not registered");
+    }
+
+    const summary = `## Current Objective
+Keep Compact+ status accurate after compaction.
+
+## Active File Set
+- src/index.ts
+- src/persist.ts
+
+## Decisions Made
+- Persist a derived focus echo from the latest summary.
+
+## Next Best Step
+- Verify /compact-plus status shows the persisted focus echo.`;
+
+    const compactMock = vi.mocked(piCore.compact);
+    compactMock.mockResolvedValue({
+      summary,
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 123,
+      details: null,
+    });
+    Object.defineProperty(compactMock, "length", {
+      configurable: true,
+      value: 8,
+    });
+
+    const ctx = createMockCtx({ contextWindow: 100000 });
+    await compactPlusCommand.handler("", ctx);
+
+    const result = await beforeCompactHandler(
+      {
+        preparation: {
+          isSplitTurn: false,
+          messagesToSummarize: [],
+          turnPrefixMessages: [],
+        },
+        branchEntries: [],
+        signal: ctx.signal,
+      },
+      ctx,
+    );
+
+    await sessionCompactHandler(
+      {
+        compactionEntry: {
+          summary,
+          timestamp: new Date().toISOString(),
+          details:
+            typeof result === "object" && result && "compaction" in result
+              ? ((result as { compaction: { details?: unknown } }).compaction
+                  .details ?? null)
+              : null,
+        },
+        fromExtension: true,
+      },
+      ctx,
+    );
+
+    expect(__test__.getLastInjectedEcho()).toContain(
+      "Objective: Keep Compact+ status accurate after compaction.",
+    );
+
+    await compactPlusCommand.handler("status", ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Last focus echo:"),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Next step: Verify /compact-plus status shows the persisted focus echo.",
+      ),
       "info",
     );
   });

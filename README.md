@@ -128,6 +128,8 @@ Run `/compact-plus status` for detailed runtime state:
 - cooldown state
 - last compaction telemetry including mode, trigger source, path, thinking
   level, compatibility notes, fallback reason, and focus files
+- the latest persisted focus echo derived from the most recent custom
+  compaction summary
 
 If commands appear twice, Pi may be loading both the package and the old local
 extension. Disable or remove the old local auto-discovered extension before

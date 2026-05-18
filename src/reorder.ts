@@ -144,6 +144,21 @@ export function createEchoMessage(echo: FocusEcho): AgentMessage {
   } as AgentMessage;
 }
 
+export function buildPersistedFocusEcho(summaryText: string): string | null {
+  const echo = parseFocusEcho(summaryText);
+  if (
+    !echo.objective &&
+    echo.blockers.length === 0 &&
+    echo.activeFiles.length === 0 &&
+    echo.decisions.length === 0 &&
+    echo.dependencyChain.length === 0 &&
+    !echo.nextStep
+  ) {
+    return null;
+  }
+  return buildFocusEchoBlock(echo);
+}
+
 /**
  * Main reordering function. If a compaction summary is detected:
  * 1. Parse the focus echo
@@ -175,27 +190,19 @@ export function reorderForPositioning(
     if (alreadyHasEcho) return undefined;
   }
 
-  const echo = parseFocusEcho(detection.summaryText);
-
-  // Skip if echo has no useful content
-  if (
-    !echo.objective &&
-    echo.blockers.length === 0 &&
-    echo.activeFiles.length === 0 &&
-    echo.decisions.length === 0 &&
-    echo.dependencyChain.length === 0 &&
-    !echo.nextStep
-  ) {
+  const echoText = buildPersistedFocusEcho(detection.summaryText);
+  if (!echoText) {
     return undefined;
   }
 
-  const echoMessage = createEchoMessage(echo);
+  const echoMessage = {
+    role: "user",
+    content: [{ type: "text", text: echoText }],
+  } as AgentMessage;
 
   // Inject before the last user message for recency positioning
   const lastUserIndex = findLastUserMessageIndex(messages);
   if (lastUserIndex === -1) return undefined;
-
-  const echoText = extractSimpleText(echoMessage);
 
   const result = [...messages];
   result.splice(lastUserIndex, 0, echoMessage);
@@ -238,7 +245,7 @@ function extractSection(text: string, heading: string): string {
     .split(/\n/)
     .map((l) => l.trim())
     .find((l) => l.length > 0);
-  return firstLine ?? "";
+  return firstLine?.replace(/^[-*]\s+/, "") ?? "";
 }
 
 function extractListSection(text: string, heading: string): string[] {
