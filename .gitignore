@@ -1,3 +1,9 @@
 node_modules/
 dist/
 *.js.map
+
+# Local Pi/Mulch workspace state
+.gitattributes
+.mulch/
+.pi/
+agent/state/
