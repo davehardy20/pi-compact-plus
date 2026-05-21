@@ -11,6 +11,7 @@ import {
 	HARD_THRESHOLD_PERCENT,
 	type SessionSnapshot,
 	STANDARD_THRESHOLD_PERCENT,
+	type TelemetryPersistenceIssue,
 } from "./types.js";
 
 export function getModeFromUsage(
@@ -93,6 +94,7 @@ export function buildStatusSnapshot(args: {
 	lastCompaction: CompactionTelemetry | null;
 	lastFallbackReason: string | null;
 	lastInjectedEcho: string | null;
+	telemetryPersistenceIssues?: TelemetryPersistenceIssue[];
 }): CompactPlusStatus {
 	const now = Date.now();
 	const cooldownRemainingMs = getCooldownRemainingMs(now, args.lastCompactTime);
@@ -109,6 +111,7 @@ export function buildStatusSnapshot(args: {
 		lastCompaction: args.lastCompaction,
 		lastFallbackReason: args.lastFallbackReason,
 		lastInjectedEcho: args.lastInjectedEcho,
+		telemetryPersistenceIssues: args.telemetryPersistenceIssues ?? [],
 	};
 }
 
@@ -150,9 +153,21 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 			"  Usage detail: Pi reports usage as unknown until the next assistant response after compaction.",
 		);
 	}
+	if (status.telemetryPersistenceIssues.length > 0) {
+		lines.push("  Telemetry persistence warnings:");
+		for (const issue of status.telemetryPersistenceIssues) {
+			lines.push(
+				`    ${issue.operation}/${issue.code}: ${issue.message} (${issue.path})`,
+			);
+			if (issue.quarantinePath) {
+				lines.push(`      Quarantined: ${issue.quarantinePath}`);
+			}
+		}
+	}
 	if (status.lastCompaction) {
 		const lc = status.lastCompaction;
 		const ago = Math.round((Date.now() - lc.timestamp) / 1000);
+		const focusTags = Array.from(new Set(lc.focusTags.filter(Boolean)));
 		lines.push(
 			`  Last compaction: ${lc.mode} mode, ${lc.triggerSource} trigger, ${ago}s ago`,
 		);
@@ -165,8 +180,8 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 		if (lc.thinkingLevel) {
 			lines.push(`    Thinking level: ${lc.thinkingLevel}`);
 		}
-		if (lc.focusTags.length > 0) {
-			lines.push(`    Focus files: ${lc.focusTags.join(", ")}`);
+		if (focusTags.length > 0) {
+			lines.push(`    Focus files: ${focusTags.join(", ")}`);
 		}
 		if (lc.previousSummaryPresent) {
 			lines.push("    Prior summary: merged");

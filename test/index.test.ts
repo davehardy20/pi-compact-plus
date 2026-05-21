@@ -8,8 +8,14 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 }));
 
 vi.mock("../src/persist.js", () => ({
-	loadTelemetry: vi.fn(async () => null),
-	saveTelemetry: vi.fn(async () => {}),
+	loadTelemetryWithDiagnostics: vi.fn(async () => ({
+		telemetry: null,
+		issue: null,
+	})),
+	saveTelemetryWithDiagnostics: vi.fn(async () => ({
+		saved: true,
+		issue: null,
+	})),
 }));
 
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
@@ -19,6 +25,7 @@ const defaultSettingsPathForTests =
 fs.rmSync(defaultSettingsPathForTests, { force: true });
 process.env.COMPACT_PLUS_SETTINGS_PATH = defaultSettingsPathForTests;
 
+const persist = await import("../src/persist.js");
 const piCore = await import("@earendil-works/pi-coding-agent");
 const { formatStatusLines } = await import("../src/policy.js");
 const {
@@ -403,6 +410,105 @@ describe("@davehardy20/pi-compact-plus", () => {
 			expect.stringContaining(
 				"Thresholds: checkpoint=65% standard=70% hard=90%",
 			),
+			"info",
+		);
+	});
+
+	it("shows telemetry load persistence warnings in status", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			telemetry: null,
+			issue: {
+				operation: "load",
+				code: "corrupt-json",
+				path: "/tmp/compact-plus-telemetry.json",
+				quarantinePath:
+					"/tmp/compact-plus-telemetry.json.corrupt-2026-05-21T10-00-00-000Z",
+				message: "telemetry file contained invalid JSON and was quarantined",
+				timestamp: Date.now(),
+			},
+		});
+
+		const sessionStartHandler = pi.events.get("session_start")?.[0];
+		const compactPlusCommand = pi.commands.get("compact-plus");
+		expect(sessionStartHandler).toBeDefined();
+		expect(compactPlusCommand).toBeDefined();
+		if (!sessionStartHandler || !compactPlusCommand) {
+			throw new Error("required handlers not registered");
+		}
+
+		const ctx = createMockCtx();
+		await sessionStartHandler({}, ctx);
+		await compactPlusCommand.handler("status", ctx);
+
+		expect(__test__.getTelemetryPersistenceIssues()).toHaveLength(1);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Telemetry persistence warnings"),
+			"info",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("load/corrupt-json"),
+			"info",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Quarantined:"),
+			"info",
+		);
+	});
+
+	it("shows telemetry save persistence warnings in status", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		vi.mocked(persist.saveTelemetryWithDiagnostics).mockResolvedValueOnce({
+			saved: false,
+			issue: {
+				operation: "save",
+				code: "write-failed",
+				path: "/tmp/compact-plus-telemetry.json",
+				message: "Could not write telemetry file: EACCES",
+				timestamp: Date.now(),
+			},
+		});
+
+		const compactMock = vi.mocked(piCore.compact);
+		compactMock.mockResolvedValue(undefined as never);
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 8,
+		});
+
+		const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
+		const compactPlusCommand = pi.commands.get("compact-plus");
+		expect(beforeCompactHandler).toBeDefined();
+		expect(compactPlusCommand).toBeDefined();
+		if (!beforeCompactHandler || !compactPlusCommand) {
+			throw new Error("required handlers not registered");
+		}
+
+		const ctx = createMockCtx();
+		await compactPlusCommand.handler("", ctx);
+		await beforeCompactHandler(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+		await compactPlusCommand.handler("status", ctx);
+
+		expect(__test__.getTelemetryPersistenceIssues()).toHaveLength(1);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("save/write-failed"),
 			"info",
 		);
 	});
@@ -1864,6 +1970,7 @@ Continue pi-compact-plus-d843 in /Users/dave/tools/pi-compact-plus by tightening
 			},
 			lastFallbackReason: null,
 			lastInjectedEcho: null,
+			telemetryPersistenceIssues: [],
 		});
 		const output = lines.join("\n");
 

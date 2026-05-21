@@ -15,6 +15,22 @@ export interface EffectiveUsage {
 	source: UsageSource;
 }
 
+export type TelemetryPersistenceIssueCode =
+	| "corrupt-json"
+	| "permission-failed"
+	| "read-failed"
+	| "unsupported-version"
+	| "write-failed";
+
+export interface TelemetryPersistenceIssue {
+	operation: "load" | "save";
+	code: TelemetryPersistenceIssueCode;
+	path: string;
+	message: string;
+	timestamp: number;
+	quarantinePath?: string;
+}
+
 export interface CompactPlusStatus {
 	usagePercent: number | null;
 	usageTokens: number | null;
@@ -28,6 +44,7 @@ export interface CompactPlusStatus {
 	lastCompaction: CompactionTelemetry | null;
 	lastFallbackReason: string | null;
 	lastInjectedEcho: string | null;
+	telemetryPersistenceIssues: TelemetryPersistenceIssue[];
 }
 
 export interface CurrentFocus {
