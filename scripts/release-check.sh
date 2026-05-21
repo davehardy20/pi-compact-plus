@@ -4,6 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+ALLOW_DIRTY=0
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: release-check.sh [--allow-dirty] [--dry-run]" >&2
+      exit 1
+      ;;
+  esac
+done
+
 PACKAGE_NAME="$(node -p "require('./package.json').name")"
 PACKAGE_VERSION="$(node -p "require('./package.json').version")"
 BRANCH="$(git branch --show-current)"
@@ -18,9 +33,21 @@ echo "Branch:  $BRANCH"
 echo
 
 echo "==> git status --short"
-git status --short
-
+GIT_STATUS="$(git status --short)"
+echo "${GIT_STATUS:-(clean)}"
 echo
+
+if [[ -n "$GIT_STATUS" ]]; then
+  if [[ "$ALLOW_DIRTY" -eq 0 ]]; then
+    echo "❌ Working tree is not clean. Commit, stash, or ignore changes before release." >&2
+    echo "   Use --allow-dirty to bypass this check (release.sh will stage tracked files only)." >&2
+    exit 1
+  else
+    echo "⚠️ Working tree has uncommitted changes (allowed via --allow-dirty)"
+  fi
+fi
+
+echo "==> Running verification"
 "$ROOT_DIR/scripts/verify.sh"
 
 echo
@@ -35,4 +62,8 @@ npm pack --dry-run
 
 echo
 
-echo "✅ Release checks complete"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "✅ Dry run complete"
+else
+  echo "✅ Release checks complete"
+fi

@@ -6,29 +6,49 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release.sh <patch|minor|major> [commit message]
+Usage: scripts/release.sh [--allow-dirty] <patch|minor|major> [commit message]
+
+Options:
+  --allow-dirty  Allow releasing with uncommitted tracked changes.
+                 Untracked files are never auto-committed.
 
 Examples:
   scripts/release.sh patch
   scripts/release.sh patch "Fix persisted focus echo status output"
+  scripts/release.sh --allow-dirty patch "WIP checkpoint"
 EOF
 }
 
-if [[ $# -lt 1 ]]; then
+ALLOW_DIRTY=0
+BUMP_TYPE=""
+COMMIT_MESSAGE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    patch|minor|major)
+      if [[ -n "$BUMP_TYPE" ]]; then
+        echo "❌ Only one bump type allowed." >&2
+        usage >&2
+        exit 1
+      fi
+      BUMP_TYPE="$1"
+      shift
+      ;;
+    *)
+      COMMIT_MESSAGE="$COMMIT_MESSAGE $1"
+      shift
+      ;;
+  esac
+done
+
+COMMIT_MESSAGE="${COMMIT_MESSAGE# }"
+
+if [[ -z "$BUMP_TYPE" ]]; then
   usage >&2
   exit 1
 fi
-
-BUMP_TYPE="$1"
-shift
-
-case "$BUMP_TYPE" in
-  patch|minor|major) ;;
-  *)
-    usage >&2
-    exit 1
-    ;;
-esac
 
 BRANCH="$(git branch --show-current)"
 if [[ -z "$BRANCH" ]]; then
@@ -38,11 +58,32 @@ fi
 
 PACKAGE_NAME="$(node -p "require('./package.json').name")"
 CURRENT_VERSION="$(node -p "require('./package.json').version")"
-COMMIT_MESSAGE="$*"
 
-if [[ -n "$(git status --short)" ]]; then
+GIT_STATUS="$(git status --short)"
+HAS_MODIFIED_UNSTAGED="$(git diff --name-only | wc -l | tr -d ' ')"
+HAS_MODIFIED_STAGED="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+HAS_MODIFIED_TRACKED=$((HAS_MODIFIED_UNSTAGED + HAS_MODIFIED_STAGED))
+HAS_UNTRACKED="$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')"
+
+if [[ -n "$GIT_STATUS" ]]; then
+  if [[ "$ALLOW_DIRTY" -eq 0 ]]; then
+    echo "❌ Working tree is not clean. Commit or stash changes before release." >&2
+    echo "   Use --allow-dirty to stage tracked changes only (untracked files are ignored)." >&2
+    echo
+    echo "$GIT_STATUS"
+    exit 1
+  fi
+
+  if [[ "$HAS_MODIFIED_TRACKED" -eq 0 ]]; then
+    echo "❌ Working tree has untracked files but no modified tracked files." >&2
+    echo "   Untracked files are never auto-committed. Clean or ignore them." >&2
+    echo
+    echo "$GIT_STATUS"
+    exit 1
+  fi
+
   if [[ -z "$COMMIT_MESSAGE" ]]; then
-    read -r -p "Commit message for current changes: " COMMIT_MESSAGE
+    read -r -p "Commit message for tracked changes: " COMMIT_MESSAGE
   fi
 
   if [[ -z "$COMMIT_MESSAGE" ]]; then
@@ -52,12 +93,34 @@ if [[ -n "$(git status --short)" ]]; then
 fi
 
 echo "==> Running release checks"
-"$ROOT_DIR/scripts/release-check.sh"
+RC_ARGS=()
+[[ "$ALLOW_DIRTY" -eq 1 ]] && RC_ARGS+=("--allow-dirty")
+"$ROOT_DIR/scripts/release-check.sh" "${RC_ARGS[@]}"
 
-if [[ -n "$(git status --short)" ]]; then
+if [[ -n "$GIT_STATUS" ]]; then
   echo
-  echo "==> git add -A"
-  git add -A
+  echo "==> Staging tracked modified files only (not untracked):"
+  if [[ "$HAS_MODIFIED_STAGED" -gt 0 ]]; then
+    echo "--- staged ---"
+    git diff --cached --name-only
+  fi
+  if [[ "$HAS_MODIFIED_UNSTAGED" -gt 0 ]]; then
+    echo "--- unstaged ---"
+    git diff --name-only
+  fi
+  echo
+
+  read -r -p "Continue with commit? [y/N] " CONFIRM
+  case "$CONFIRM" in
+    y|Y|yes|YES) ;;
+    *)
+      echo "Release cancelled."
+      exit 1
+      ;;
+  esac
+
+  echo "==> git add -u"
+  git add -u
 
   echo "==> git commit -m \"$COMMIT_MESSAGE\""
   git commit -m "$COMMIT_MESSAGE"

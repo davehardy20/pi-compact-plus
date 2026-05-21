@@ -1,6 +1,10 @@
 node_modules/
 dist/
 *.js.map
+.DS_Store
+*.tgz
+.ruff_cache/
+coverage/
 
 # Local Pi/Mulch/Seeds workspace state
 .gitattributes

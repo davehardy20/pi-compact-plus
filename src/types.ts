@@ -20,6 +20,7 @@ export type TelemetryPersistenceIssueCode =
 	| "invalid-schema"
 	| "permission-failed"
 	| "read-failed"
+	| "symlink-detected"
 	| "unsupported-version"
 	| "write-failed";
 

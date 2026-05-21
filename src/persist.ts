@@ -46,6 +46,43 @@ function getPersistFile(options: TelemetryPersistenceOptions = {}): string {
 	return options.filePath ?? PERSIST_FILE;
 }
 
+async function detectSymlink(
+	targetPath: string,
+): Promise<{ path: string; linkTarget: string } | null> {
+	try {
+		const stat = await fs.lstat(targetPath);
+		if (stat.isSymbolicLink()) {
+			const linkTarget = await fs.readlink(targetPath);
+			return { path: targetPath, linkTarget };
+		}
+	} catch {
+		// ENOENT or other errors are fine — path doesn't exist or isn't a symlink
+	}
+	return null;
+}
+
+async function detectSymlinkInPath(
+	filePath: string,
+): Promise<{ path: string; linkTarget: string } | null> {
+	let current = filePath;
+	while (current !== dirname(current)) {
+		const found = await detectSymlink(current);
+		if (found) return found;
+		// Stop once we reach an existing real directory; symlinks above it
+		// are typically system-level (e.g., /var on macOS) and not attack vectors.
+		try {
+			const stat = await fs.stat(current);
+			if (stat.isDirectory()) {
+				break;
+			}
+		} catch {
+			// path does not exist yet — keep walking upward
+		}
+		current = dirname(current);
+	}
+	return null;
+}
+
 async function ensureDir(
 	path: string,
 ): Promise<TelemetryPersistenceIssue | null> {
@@ -88,6 +125,21 @@ export async function loadTelemetryWithDiagnostics(
 	options: TelemetryPersistenceOptions = {},
 ): Promise<LoadTelemetryResult> {
 	const persistFile = getPersistFile(options);
+	const symlink = await detectSymlinkInPath(persistFile);
+	if (symlink) {
+		return {
+			telemetry: null,
+			issue: buildIssue(
+				"load",
+				"symlink-detected",
+				persistFile,
+				new Error(
+					`symlink detected at ${symlink.path} -> ${symlink.linkTarget}`,
+				),
+				"refuse to read telemetry through symlink",
+			),
+		};
+	}
 	try {
 		const raw = await fs.readFile(persistFile, "utf8");
 		const parsed = JSON.parse(raw) as unknown;
@@ -170,6 +222,21 @@ export async function saveTelemetryWithDiagnostics(
 ): Promise<SaveTelemetryResult> {
 	const persistFile = getPersistFile(options);
 	const persistDir = dirname(persistFile);
+	const symlink = await detectSymlinkInPath(persistFile);
+	if (symlink) {
+		return {
+			saved: false,
+			issue: buildIssue(
+				"save",
+				"symlink-detected",
+				persistFile,
+				new Error(
+					`symlink detected at ${symlink.path} -> ${symlink.linkTarget}`,
+				),
+				"refuse to write telemetry through symlink",
+			),
+		};
+	}
 	const dirIssue = await ensureDir(persistDir);
 	if (dirIssue?.code === "write-failed") {
 		return { saved: false, issue: dirIssue };
@@ -179,8 +246,9 @@ export async function saveTelemetryWithDiagnostics(
 		...data,
 		version: PERSIST_VERSION,
 	};
+	const tempFile = `${persistFile}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 	try {
-		await fs.writeFile(persistFile, JSON.stringify(payload, null, 2), {
+		await fs.writeFile(tempFile, JSON.stringify(payload, null, 2), {
 			mode: PERSIST_FILE_MODE,
 		});
 	} catch (error) {
@@ -191,18 +259,39 @@ export async function saveTelemetryWithDiagnostics(
 				"write-failed",
 				persistFile,
 				error,
-				"write telemetry file",
+				"write telemetry temp file",
 			),
 		};
 	}
 
-	const fileIssue = await chmodBestEffort(
-		persistFile,
+	const chmodIssue = await chmodBestEffort(
+		tempFile,
 		PERSIST_FILE_MODE,
 		"save",
-		"telemetry file",
+		"telemetry temp file",
 	);
-	return { saved: true, issue: fileIssue ?? dirIssue };
+
+	try {
+		await fs.rename(tempFile, persistFile);
+	} catch (error) {
+		try {
+			await fs.unlink(tempFile);
+		} catch {
+			// ignore cleanup failure
+		}
+		return {
+			saved: false,
+			issue: buildIssue(
+				"save",
+				"write-failed",
+				persistFile,
+				error,
+				"atomically replace telemetry file",
+			),
+		};
+	}
+
+	return { saved: true, issue: chmodIssue ?? dirIssue };
 }
 
 export async function saveTelemetry(

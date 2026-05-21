@@ -177,6 +177,163 @@ describe("Compact+ telemetry persistence", () => {
 			expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
 		}
 	});
+
+	it("uses atomic write (temp file + rename) and leaves no temp debris", async () => {
+		const dir = makeTempDir();
+		const filePath = path.join(dir, "telemetry.json");
+
+		const result = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: "atomic",
+				lastInjectedEcho: "echo",
+				lastCompactTime: 1,
+				lastCompactTokens: 2,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+
+		expect(result.saved).toBe(true);
+		expect(fs.existsSync(filePath)).toBe(true);
+		const files = fs.readdirSync(dir);
+		const tempFiles = files.filter((f) => f.endsWith(".tmp"));
+		expect(tempFiles).toHaveLength(0);
+		expect(files).toContain("telemetry.json");
+	});
+
+	it("rejects loading through a symlinked telemetry file", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const realFile = path.join(dir, "real-telemetry.json");
+		const linkFile = path.join(dir, "telemetry.json");
+		fs.writeFileSync(
+			realFile,
+			JSON.stringify({ version: 3, lastCompactTime: 100 }),
+			"utf8",
+		);
+		fs.symlinkSync(realFile, linkFile);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath: linkFile });
+
+		expect(result.telemetry).toBeNull();
+		expect(result.issue).toMatchObject({
+			operation: "load",
+			code: "symlink-detected",
+			path: linkFile,
+		});
+		expect(result.issue?.message).toContain("symlink detected");
+	});
+
+	it("rejects loading through a symlinked parent directory", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const realDir = path.join(dir, "real-state");
+		const linkDir = path.join(dir, "state");
+		fs.mkdirSync(realDir);
+		fs.writeFileSync(
+			path.join(realDir, "telemetry.json"),
+			JSON.stringify({ version: 3, lastCompactTime: 100 }),
+			"utf8",
+		);
+		fs.symlinkSync(realDir, linkDir);
+		const filePath = path.join(linkDir, "telemetry.json");
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		expect(result.telemetry).toBeNull();
+		expect(result.issue).toMatchObject({
+			operation: "load",
+			code: "symlink-detected",
+			path: filePath,
+		});
+	});
+
+	it("rejects saving through a symlinked telemetry file", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const realFile = path.join(dir, "real-telemetry.json");
+		const linkFile = path.join(dir, "telemetry.json");
+		fs.writeFileSync(realFile, "{}", "utf8");
+		fs.symlinkSync(realFile, linkFile);
+
+		const result = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath: linkFile },
+		);
+
+		expect(result.saved).toBe(false);
+		expect(result.issue).toMatchObject({
+			operation: "save",
+			code: "symlink-detected",
+			path: linkFile,
+		});
+	});
+
+	it("rejects saving through a symlinked parent directory", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const realDir = path.join(dir, "real-state");
+		const linkDir = path.join(dir, "state");
+		fs.mkdirSync(realDir);
+		fs.symlinkSync(realDir, linkDir);
+		const filePath = path.join(linkDir, "telemetry.json");
+
+		const result = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+
+		expect(result.saved).toBe(false);
+		expect(result.issue).toMatchObject({
+			operation: "save",
+			code: "symlink-detected",
+			path: filePath,
+		});
+	});
+
+	it("reports write-failed when parent directory is read-only", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const filePath = path.join(dir, "state", "telemetry.json");
+		fs.chmodSync(dir, 0o500);
+		try {
+			const result = await saveTelemetryWithDiagnostics(
+				{
+					lastCompaction: null,
+					lastFallbackReason: null,
+					lastInjectedEcho: null,
+					lastCompactTime: 0,
+					lastCompactTokens: 0,
+					lastModelKey: null,
+				},
+				{ filePath },
+			);
+
+			expect(result.saved).toBe(false);
+			expect(result.issue).toMatchObject({
+				operation: "save",
+				code: "write-failed",
+				path: path.join(dir, "state"),
+			});
+		} finally {
+			fs.chmodSync(dir, 0o700);
+		}
+	});
 });
 
 describe("Persisted telemetry schema validation", () => {

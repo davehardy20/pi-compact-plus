@@ -50,6 +50,7 @@ const packageJson = JSON.parse(
 	version?: string;
 	pi?: { extensions?: string[] };
 	peerDependencies?: Record<string, string>;
+	dependencies?: Record<string, string>;
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -176,7 +177,17 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(packageJson.peerDependencies).toMatchObject({
 			"@earendil-works/pi-coding-agent": "*",
 			"@earendil-works/pi-agent-core": "*",
+			"@earendil-works/pi-ai": "*",
 		});
+		expect(packageJson.dependencies ?? {}).not.toHaveProperty(
+			"@earendil-works/pi-ai",
+		);
+		expect(packageJson.dependencies ?? {}).not.toHaveProperty(
+			"@earendil-works/pi-coding-agent",
+		);
+		expect(packageJson.dependencies ?? {}).not.toHaveProperty(
+			"@earendil-works/pi-agent-core",
+		);
 	});
 
 	it("registers compact-plus, checkpoint, and compact-plus-status commands", () => {
