@@ -5,8 +5,10 @@ import type { CompactionMode, CurrentFocus } from "./types.js";
 import { CONTINUATION_PROMPT } from "./types.js";
 
 export interface LifecycleOptions {
-  /** Whether to send the continuation prompt after successful auto-compaction. */
-  sendContinuation: boolean;
+	/** Whether to send the continuation prompt after successful auto-compaction. */
+	sendContinuation?: boolean;
+	/** Optional callback to persist state after onComplete/onError update lastCompactTokens. */
+	persist?: () => void | Promise<void>;
 }
 
 /**
@@ -16,44 +18,44 @@ export interface LifecycleOptions {
  * This replaces the 4 duplicated cleanup blocks that existed before.
  */
 export function executeCompaction(
-  mode: CompactionMode,
-  focus: CurrentFocus,
-  state: CompactionState,
-  ctx: Parameters<Parameters<ExtensionAPI["on"]>[1]>[1],
-  pi: ExtensionAPI,
-  options?: LifecycleOptions,
+	mode: CompactionMode,
+	focus: CurrentFocus,
+	state: CompactionState,
+	ctx: Parameters<Parameters<ExtensionAPI["on"]>[1]>[1],
+	pi: ExtensionAPI,
+	options?: LifecycleOptions,
 ): void {
-  state.selectedMode = mode;
-  state.isCompacting = true;
+	state.selectedMode = mode;
+	state.isCompacting = true;
 
-  ctx.compact({
-    customInstructions: buildSummaryInstructions(mode, focus),
-    onComplete: () => {
-      state.isCompacting = false;
-      state.selectedMode = null;
-      state.lastTriggerAuto = false;
-      state.lastCompactTime = state.lastCompaction?.timestamp ?? Date.now();
-      state.echoInjected = false;
-      const postUsage = ctx.getContextUsage();
-      if (postUsage && typeof postUsage.tokens === "number") {
-        state.lastCompactTokens = postUsage.tokens;
-      } else {
-        state.lastCompactTokens = 0;
-      }
-      if (options?.sendContinuation) {
-        pi.sendUserMessage(CONTINUATION_PROMPT, { deliverAs: "followUp" });
-      }
-    },
-    onError: (error) => {
-      state.isCompacting = false;
-      state.selectedMode = null;
-      state.lastTriggerAuto = false;
-      state.lastCompactTokens = 0;
-      state.echoInjected = false;
-      state.clearPendingCompaction();
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Compact+ compaction failed: ${error.message}`, "error");
-      }
-    },
-  });
+	ctx.compact({
+		customInstructions: buildSummaryInstructions(mode, focus),
+		onComplete: () => {
+			state.isCompacting = false;
+			state.selectedMode = null;
+			state.lastTriggerAuto = false;
+			state.lastCompactTime = state.lastCompaction?.timestamp ?? Date.now();
+			state.echoInjected = false;
+			const postUsage = ctx.getContextUsage();
+			if (postUsage && typeof postUsage.tokens === "number") {
+				state.lastCompactTokens = postUsage.tokens;
+			}
+			options?.persist?.();
+			if (options?.sendContinuation) {
+				pi.sendUserMessage(CONTINUATION_PROMPT, { deliverAs: "followUp" });
+			}
+		},
+		onError: (error) => {
+			state.isCompacting = false;
+			state.selectedMode = null;
+			state.lastTriggerAuto = false;
+			state.lastCompactTokens = 0;
+			state.echoInjected = false;
+			state.clearPendingCompaction();
+			options?.persist?.();
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Compact+ compaction failed: ${error.message}`, "error");
+			}
+		},
+	});
 }

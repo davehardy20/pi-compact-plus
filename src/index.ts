@@ -56,7 +56,11 @@ import {
 	buildCurrentFocusBlock,
 	buildSummaryInstructions,
 } from "./prompts.js";
-import { buildPersistedFocusEcho, reorderForPositioning } from "./reorder.js";
+import {
+	buildPersistedFocusEcho,
+	hasAdversarialPatterns,
+	reorderForPositioning,
+} from "./reorder.js";
 import { CompactionState } from "./state.js";
 import {
 	CHECKPOINT_CANDIDATE_PERCENT,
@@ -134,6 +138,7 @@ async function persistTelemetrySnapshot(): Promise<void> {
 		lastInjectedEcho: state.lastInjectedEcho,
 		lastCompactTime: state.lastCompactTime,
 		lastCompactTokens: state.lastCompactTokens,
+		lastModelKey: state.lastModelKey,
 	});
 	state.recordTelemetryPersistenceIssue(result.issue);
 }
@@ -206,7 +211,9 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 				"info",
 			);
 
-			executeCompaction(mode, cmdFocus, state, ctx, pi);
+			executeCompaction(mode, cmdFocus, state, ctx, pi, {
+				persist: persistTelemetrySnapshot,
+			});
 		},
 	});
 
@@ -339,6 +346,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 
 		executeCompaction(mode, autoFocus, state, ctx, pi, {
 			sendContinuation: true,
+			persist: persistTelemetrySnapshot,
 		});
 	}
 
@@ -354,6 +362,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 			state.lastCompaction = persisted.lastCompaction;
 			state.lastFallbackReason = persisted.lastFallbackReason;
 			state.lastInjectedEcho = persisted.lastInjectedEcho;
+			state.lastModelKey = persisted.lastModelKey;
 		}
 	});
 
@@ -563,6 +572,10 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 				: null;
 		state.echoInjected = false;
 		state.clearPendingCompaction();
+		const postUsage = _ctx.getContextUsage();
+		if (postUsage && typeof postUsage.tokens === "number") {
+			state.lastCompactTokens = postUsage.tokens;
+		}
 		await persistTelemetrySnapshot();
 	});
 
@@ -632,4 +645,5 @@ export const __test__ = {
 	buildSummaryInstructions,
 	buildBranchInstructions,
 	buildCheckpointData,
+	hasAdversarialPatterns,
 };

@@ -17,6 +17,7 @@ export interface EffectiveUsage {
 
 export type TelemetryPersistenceIssueCode =
 	| "corrupt-json"
+	| "invalid-schema"
 	| "permission-failed"
 	| "read-failed"
 	| "unsupported-version"

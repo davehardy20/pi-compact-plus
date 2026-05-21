@@ -42,11 +42,14 @@ export class CompactionState {
 
 	/**
 	 * Reset state when the model changes.
-	 * @returns true if the model key changed (state was reset).
+	 * @returns true if the model key changed (state was reset or initialized).
 	 */
 	resetOnModelChange(key: string): boolean {
-		if (key !== this.lastModelKey) {
-			this.lastModelKey = key;
+		if (key === this.lastModelKey) {
+			return false;
+		}
+		if (this.lastModelKey !== null) {
+			// True model change: reset model-scoped state
 			this.lastCompactTime = 0;
 			this.selectedMode = null;
 			this.lastTriggerAuto = false;
@@ -57,9 +60,9 @@ export class CompactionState {
 			this.lastFallbackReason = null;
 			this.lastInjectedEcho = null;
 			this.echoInjected = false;
-			return true;
 		}
-		return false;
+		this.lastModelKey = key;
+		return true;
 	}
 
 	recordTelemetryPersistenceIssue(
