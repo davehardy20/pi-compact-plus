@@ -22,9 +22,9 @@ Compact+ replaces Pi's single-threshold early-compaction trigger with a tiered p
 
 | Band | Usage | Behavior |
 | --- | --- | --- |
-| Normal | < 75% | No auto-compaction |
-| Checkpoint candidate | 75–79% | Eligible for checkpoint (no auto-compact) |
-| Standard | 80–89% | Auto standard compaction |
+| Normal | < 65% | No auto-compaction |
+| Checkpoint candidate | 65–69% | Eligible for checkpoint (no auto-compact) |
+| Standard | 70–89% | Auto standard compaction |
 | Hard | ≥ 90% | Auto hard compaction (aggressive pruning) |
 
 Auto-compaction is triggered at `message_end` and `turn_end` with cooldown and regrowth guards to avoid thrashing.
@@ -90,13 +90,38 @@ pi -e /Users/dave/tools/pi-compact-plus
 
 ## Settings
 
-Compact+ supports these environment variables for threshold tuning:
+Compact+ supports threshold tuning through either environment variables or your
+Pi agent `settings.json` file at `~/.pi/agent/settings.json`. Environment
+variables take precedence over `settings.json` values.
+
+Default profile: checkpoint candidate at `65%`, standard compaction at `70%`,
+hard compaction at `90%`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `COMPACT_PLUS_STANDARD_THRESHOLD` | 80 | Percentage threshold for standard compaction |
-| `COMPACT_PLUS_HARD_THRESHOLD` | 90 | Percentage threshold for hard compaction |
-| `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Cooldown between auto-compactions (ms) |
+| `COMPACT_PLUS_CHECKPOINT_THRESHOLD` | 65 | Checkpoint-candidate threshold |
+| `COMPACT_PLUS_STANDARD_THRESHOLD` | 70 | Standard compaction threshold |
+| `COMPACT_PLUS_HARD_THRESHOLD` | 90 | Hard compaction threshold |
+| `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Auto-compaction cooldown in ms |
+| `COMPACT_PLUS_SETTINGS_PATH` | `~/.pi/agent/settings.json` | Optional JSON config path |
+
+Example `settings.json`:
+
+```json
+{
+  "thresholds": {
+    "checkpoint": 65,
+    "standard": 70,
+    "hard": 90
+  },
+  "cooldownMs": 120000
+}
+```
+
+Top-level keys are also supported: `checkpointThresholdPercent`,
+`standardThresholdPercent`, `hardThresholdPercent`, and `cooldownMs`. Invalid,
+missing, or overlapping thresholds fall back safely to the default `65 / 70 / 90`
+threshold profile.
 
 ## Notes
 

@@ -14,6 +14,11 @@ vi.mock("../src/persist.js", () => ({
 
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
 
+const defaultSettingsPathForTests =
+	"/tmp/compact-plus-test-missing-settings.json";
+fs.rmSync(defaultSettingsPathForTests, { force: true });
+process.env.COMPACT_PLUS_SETTINGS_PATH = defaultSettingsPathForTests;
+
 const piCore = await import("@earendil-works/pi-coding-agent");
 const { formatStatusLines } = await import("../src/policy.js");
 const {
@@ -21,6 +26,11 @@ const {
 	detectCompactionSummary,
 	reorderForPositioning,
 } = await import("../src/reorder.js");
+const {
+	getDefaultSettingsPath,
+	loadCompactPlusSettingsFile,
+	resolveCompactPlusSettings,
+} = await import("../src/settings.js");
 const { default: compactPlusExtension, __test__ } = await import(
 	"../src/index.js"
 );
@@ -387,6 +397,12 @@ describe("@davehardy20/pi-compact-plus", () => {
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("Compact+ status"),
+			"info",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Thresholds: checkpoint=65% standard=70% hard=90%",
+			),
 			"info",
 		);
 	});
@@ -1884,26 +1900,26 @@ Continue pi-compact-plus-d843 in /Users/dave/tools/pi-compact-plus by tightening
 
 describe("Compact+ threshold logic", () => {
 	it("returns null mode below checkpoint candidate threshold", () => {
-		expect(__test__.getModeFromUsage(70)).toBeNull();
+		expect(__test__.getModeFromUsage(64)).toBeNull();
 	});
 
-	it("returns checkpoint mode at 75%", () => {
-		expect(__test__.getModeFromUsage(75)).toBe("checkpoint");
+	it("returns checkpoint mode at 65%", () => {
+		expect(__test__.getModeFromUsage(65)).toBe("checkpoint");
 	});
 
-	it("returns standard mode at 80%", () => {
-		expect(__test__.getModeFromUsage(85)).toBe("standard");
+	it("returns standard mode at 70%", () => {
+		expect(__test__.getModeFromUsage(70)).toBe("standard");
 	});
 
 	it("returns hard mode at 90%", () => {
-		expect(__test__.getModeFromUsage(92)).toBe("hard");
+		expect(__test__.getModeFromUsage(90)).toBe("hard");
 	});
 
-	it("usage band text matches thresholds", () => {
-		expect(__test__.getUsageBandText(50)).toContain("normal");
-		expect(__test__.getUsageBandText(76)).toContain("checkpoint candidate");
-		expect(__test__.getUsageBandText(85)).toContain("standard");
-		expect(__test__.getUsageBandText(95)).toContain("hard");
+	it("usage band text matches configured thresholds", () => {
+		expect(__test__.getUsageBandText(50)).toBe("normal (< 65%)");
+		expect(__test__.getUsageBandText(66)).toBe("checkpoint candidate (65-69%)");
+		expect(__test__.getUsageBandText(85)).toBe("standard (70-89%)");
+		expect(__test__.getUsageBandText(95)).toBe("hard (>= 90%)");
 	});
 });
 
@@ -1921,11 +1937,118 @@ describe("Compact+ model key", () => {
 
 describe("Compact+ constants", () => {
 	it("exports expected threshold constants", () => {
-		expect(__test__.CHECKPOINT_CANDIDATE_PERCENT).toBe(75);
-		expect(__test__.STANDARD_THRESHOLD_PERCENT).toBe(80);
+		expect(__test__.CHECKPOINT_CANDIDATE_PERCENT).toBe(65);
+		expect(__test__.STANDARD_THRESHOLD_PERCENT).toBe(70);
 		expect(__test__.HARD_THRESHOLD_PERCENT).toBe(90);
 		expect(__test__.COOLDOWN_MS).toBe(120_000);
 		expect(__test__.REGROWTH_TOKENS).toBe(1000);
+	});
+
+	it("resolves thresholds from settings.json-style config", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{
+				thresholds: {
+					checkpoint: 60,
+					standard: 68,
+					hard: 88,
+				},
+				cooldownMs: 90_000,
+			},
+		);
+
+		expect(settings).toMatchObject({
+			checkpointThresholdPercent: 60,
+			standardThresholdPercent: 68,
+			hardThresholdPercent: 88,
+			cooldownMs: 90_000,
+		});
+	});
+
+	it("defaults to the Pi agent settings.json path", () => {
+		expect(getDefaultSettingsPath()).toMatch(
+			/[\\/]\.pi[\\/]agent[\\/]settings\.json$/,
+		);
+	});
+
+	it("loads thresholds from a settings.json file path", () => {
+		const settingsDir = fs.mkdtempSync("/tmp/compact-plus-settings-");
+		const settingsPath = `${settingsDir}/settings.json`;
+		fs.writeFileSync(
+			settingsPath,
+			JSON.stringify({
+				thresholds: {
+					checkpoint: 61,
+					standard: 71,
+					hard: 91,
+				},
+				cooldownMs: 75_000,
+			}),
+			"utf8",
+		);
+
+		try {
+			const env = { COMPACT_PLUS_SETTINGS_PATH: settingsPath };
+			const fileSettings = loadCompactPlusSettingsFile(env);
+			const settings = resolveCompactPlusSettings(env, fileSettings);
+
+			expect(settings).toMatchObject({
+				checkpointThresholdPercent: 61,
+				standardThresholdPercent: 71,
+				hardThresholdPercent: 91,
+				cooldownMs: 75_000,
+				settingsPath,
+			});
+		} finally {
+			fs.rmSync(settingsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("lets environment thresholds override settings.json-style config", () => {
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_CHECKPOINT_THRESHOLD: "62",
+				COMPACT_PLUS_STANDARD_THRESHOLD: "72",
+				COMPACT_PLUS_HARD_THRESHOLD: "92",
+				COMPACT_PLUS_COOLDOWN_MS: "45000",
+			},
+			{
+				thresholds: {
+					checkpoint: 60,
+					standard: 68,
+					hard: 88,
+				},
+				cooldownMs: 90_000,
+			},
+		);
+
+		expect(settings).toMatchObject({
+			checkpointThresholdPercent: 62,
+			standardThresholdPercent: 72,
+			hardThresholdPercent: 92,
+			cooldownMs: 45_000,
+		});
+	});
+
+	it("falls back to default thresholds for overlapping threshold config", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{
+				thresholds: {
+					checkpoint: 75,
+					standard: 70,
+					hard: 90,
+				},
+				cooldownMs: 90_000,
+			},
+		);
+
+		expect(settings).toMatchObject({
+			checkpointThresholdPercent: 65,
+			standardThresholdPercent: 70,
+			hardThresholdPercent: 90,
+			cooldownMs: 90_000,
+		});
 	});
 
 	it("exports continuation prompt and checkpoint type", () => {
