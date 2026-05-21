@@ -194,6 +194,7 @@ Run `/compact-plus-status` to confirm:
 - loaded source path
 - package root
 - current compaction state
+- a one-line tool-output pruning status when the experimental feature is enabled
 
 Run `/compact-plus status` for detailed runtime state:
 

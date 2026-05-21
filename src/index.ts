@@ -313,6 +313,16 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		description: "Show Compact+ package status and debug info",
 		handler: async (_args, _ctx) => {
 			const metadata = getPackageMetadata();
+			const pruningSettings = resolveCompactPlusSettings();
+			const pruningLine = formatToolOutputPruningStatusLine({
+				enabled: isToolOutputPruningEnabled(pruningSettings),
+				mode: pruningSettings.toolOutputPruningMode,
+				strategy: pruningSettings.toolOutputPruneStrategy,
+				activeRecordCount: state.toolOutputPruning.activeRecordCount,
+				lastPrunedCount: state.toolOutputPruning.lastPrunedCount,
+				lastSummaryStatus: state.toolOutputPruning.lastSummaryStatus,
+				lastSummaryTime: state.toolOutputPruning.lastSummaryTime,
+			});
 			pi.sendMessage({
 				customType: "compact-plus-status",
 				content: [
@@ -324,6 +334,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 					`lastCompactTime: ${state.lastCompactTime ? new Date(state.lastCompactTime).toISOString() : "never"}`,
 					`echoInjected: ${state.echoInjected}`,
 					`lastModelKey: ${state.lastModelKey ?? "none"}`,
+					pruningLine,
 				].join("\n"),
 				details: {
 					packageName: metadata.name,
