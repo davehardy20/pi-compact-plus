@@ -58,21 +58,39 @@ dependency chain, and next step.
 
 ### Experimental tool-output pruning
 
-Compact+ includes an experimental, default-off tool-output pruning subsystem inspired by the MIT-licensed `pi-context-prune` prior art. When enabled, Compact+:
+Compact+ includes an experimental, default-off tool-output pruning subsystem.
+It is inspired by the MIT-licensed `pi-context-prune` project and reuses or
+adapts selected `pi-context-prune` ideas and implementation patterns where they
+fit Compact+'s architecture.
+
+When enabled, Compact+:
 
 1. Captures eligible tool results after each assistant turn.
 2. Summarizes them with an LLM call after the final assistant message.
-3. Replaces the original text content with compact recovery stubs in future model context.
-4. Preserves recovery through a built-in query tool (`compact_plus_query_tool_output`).
+3. Replaces the original text content with compact recovery stubs in future
+   model context.
+4. Preserves recovery through a built-in query tool
+   (`compact_plus_query_tool_output`).
 
 **Safety defaults:**
-- Off by default; requires explicit enablement.
-- Only the safe `agent-message` mode is implemented (summarization happens after the agent's final text response).
-- Only text-only tool results are eligible; images, binaries, and mixed content are skipped.
-- Conservative excluded tools by default: `read`, `read_hashed`, `hashline_edit`, and `compact_plus_query_tool_output`.
-- Original `toolResult` messages are preserved in the session branch; pruning only affects future context snapshots by stubbing content, not deleting messages.
 
-**Attribution:** The batch capture, LLM semantic summarization, short refs, branch-aware indexing, and recovery query patterns are adapted from `pi-context-prune` (MIT). Compact+ integrates these into its existing settings, state, telemetry, and context composition rather than running as a separate extension.
+- Off by default; requires explicit enablement.
+- Only the safe `agent-message` mode is implemented. Summarization happens
+  after the agent's final text response.
+- Only text-only tool results are eligible; images, binaries, and mixed content
+  are skipped.
+- Conservative excluded tools by default: `read`, `read_hashed`,
+  `hashline_edit`, and `compact_plus_query_tool_output`.
+- Original `toolResult` messages are preserved in the session branch. Pruning
+  only affects future context snapshots by stubbing content, not deleting
+  messages.
+
+**Attribution and reuse:** Batch capture, LLM semantic summarization, short
+refs, branch-aware indexing, and recovery-query behavior were adapted from
+`pi-context-prune` (MIT). Compact+ does not copy the standalone extension wiring;
+it integrates the reused/adapted pieces into Compact+ settings, state,
+telemetry/status, lifecycle hooks, and context composition. Source files that
+closely follow or adapt `pi-context-prune` mechanics include attribution comments.
 
 ### Features
 
@@ -175,14 +193,21 @@ threshold profile.
 When pruning is enabled, Compact+ registers a recovery query tool:
 
 - **Name:** `compact_plus_query_tool_output`
-- **Parameters:** `query`, `recordId`, `ref` (short ref such as `t1`), `toolCallId`, `toolName`, `limit`, `includeContent`
+- **Parameters:** `query`, `recordId`, `ref`, `toolCallId`, `toolName`,
+  `limit`, `includeContent`
 
-Use this tool to recover original output by short ref or search terms. Query results are bounded by record count, chars scanned, and max returned chars. Full content recovery requires `includeContent=true` and is limited by `toolOutputQueryMaxChars`.
+Use this tool to recover original output by short ref or search terms. Query
+results are bounded by record count, chars scanned, and max returned chars. Full
+content recovery requires `includeContent=true` and is limited by
+`toolOutputQueryMaxChars`.
 
 **Caveats:**
+
 - LLM summarization adds latency and token cost per batch.
-- Summaries may omit details; always verify against original output before relying on exact text, line numbers, diagnostics, or hashes.
-- Stubbed content is labeled as historical data, not instructions, to reduce prompt-injection risk from captured tool output.
+- Summaries may omit details; always verify against original output before
+  relying on exact text, line numbers, diagnostics, or hashes.
+- Stubbed content is labeled as historical data, not instructions, to reduce
+  prompt-injection risk from captured tool output.
 - Branch navigation (e.g., switching to a different session branch) removes stale index records automatically.
 - Sub-agents currently run with `--no-extensions` and do not inherit pruning behavior.
 
