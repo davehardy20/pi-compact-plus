@@ -13,6 +13,8 @@ lightweight checkpoints.
 | `/compact-plus` | Manual standard compaction |
 | `/compact-plus hard` | Manual hard compaction (aggressive pruning) |
 | `/compact-plus status` | Show usage, mode, cooldown state, and last compaction telemetry |
+| `/compact-plus tool-prune status` | Show detailed tool-output pruning status |
+| `/compact-plus tool-prune flush` | Manually flush pending tool-output batches |
 | `/compact-plus-status` | Show package identity, version, and source path |
 | `/checkpoint [note]` | Save a lightweight checkpoint without compacting |
 
@@ -54,6 +56,24 @@ After compaction, a compact "focus echo" is injected at the recency position
 The echo contains the objective, active files, blockers, decisions,
 dependency chain, and next step.
 
+### Experimental tool-output pruning
+
+Compact+ includes an experimental, default-off tool-output pruning subsystem inspired by the MIT-licensed `pi-context-prune` prior art. When enabled, Compact+:
+
+1. Captures eligible tool results after each assistant turn.
+2. Summarizes them with an LLM call after the final assistant message.
+3. Replaces the original text content with compact recovery stubs in future model context.
+4. Preserves recovery through a built-in query tool (`compact_plus_query_tool_output`).
+
+**Safety defaults:**
+- Off by default; requires explicit enablement.
+- Only the safe `agent-message` mode is implemented (summarization happens after the agent's final text response).
+- Only text-only tool results are eligible; images, binaries, and mixed content are skipped.
+- Conservative excluded tools by default: `read`, `read_hashed`, `hashline_edit`, and `compact_plus_query_tool_output`.
+- Original `toolResult` messages are preserved in the session branch; pruning only affects future context snapshots by stubbing content, not deleting messages.
+
+**Attribution:** The batch capture, LLM semantic summarization, short refs, branch-aware indexing, and recovery query patterns are adapted from `pi-context-prune` (MIT). Compact+ integrates these into its existing settings, state, telemetry, and context composition rather than running as a separate extension.
+
 ### Features
 
 - **Content classification**: Messages are classified as critical, contextual, or ephemeral for hard-mode pruning.
@@ -61,6 +81,7 @@ dependency chain, and next step.
 - **Summary normalization**: Compaction summaries are normalized and validated before injection.
 - **Session persistence**: Telemetry state is persisted across sessions.
 - **Model change reset**: State resets when the model changes.
+- **Tool-output pruning** (experimental): LLM-summarized tool output stubs with recovery query tool.
 
 ## Install
 
@@ -104,6 +125,17 @@ hard compaction at `90%`.
 | `COMPACT_PLUS_HARD_THRESHOLD` | 90 | Hard compaction threshold |
 | `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Auto-compaction cooldown in ms |
 | `COMPACT_PLUS_SETTINGS_PATH` | `~/.pi/agent/settings.json` | Optional JSON config path |
+| `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `false` | Enable experimental tool-output pruning |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE` | `off` | Pruning mode (`off` or `agent-message`) |
+| `COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY` | `llm` | Summary strategy (`llm` only for v1) |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY` | `stub` | Prune strategy (`stub` or `delete`; v1 uses `stub`) |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS` | (default) | Minimum tool output chars to be eligible |
+| `COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS` | (default) | Max chars per LLM summary |
+| `COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS` | (default) | Max chars returned by recovery query |
+| `COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_MODEL` | `default` | Summarizer model (`default` or `provider/model-id`) |
+| `COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_THINKING` | `default` | Summarizer thinking level |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS` | (comma list) | Tools to exclude from pruning |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS` | (comma list) | Tools to include (empty = all eligible) |
 
 Example `settings.json`:
 
@@ -114,7 +146,11 @@ Example `settings.json`:
     "standard": 70,
     "hard": 90
   },
-  "cooldownMs": 120000
+  "cooldownMs": 120000,
+  "experimentalToolOutputPruning": true,
+  "toolOutputPruningMode": "agent-message",
+  "toolOutputSummaryStrategy": "llm",
+  "toolOutputPruneStrategy": "stub"
 }
 ```
 
@@ -133,6 +169,22 @@ threshold profile.
 - If custom summarization still fails after that, Compact+ falls back to Pi's default compaction.
 - The extension persists telemetry to `~/.pi/agent/state/compact-plus-telemetry.json`.
 - State resets when the model changes to avoid stale compaction context from a different model.
+
+### Tool-output pruning recovery
+
+When pruning is enabled, Compact+ registers a recovery query tool:
+
+- **Name:** `compact_plus_query_tool_output`
+- **Parameters:** `query`, `recordId`, `ref` (short ref such as `t1`), `toolCallId`, `toolName`, `limit`, `includeContent`
+
+Use this tool to recover original output by short ref or search terms. Query results are bounded by record count, chars scanned, and max returned chars. Full content recovery requires `includeContent=true` and is limited by `toolOutputQueryMaxChars`.
+
+**Caveats:**
+- LLM summarization adds latency and token cost per batch.
+- Summaries may omit details; always verify against original output before relying on exact text, line numbers, diagnostics, or hashes.
+- Stubbed content is labeled as historical data, not instructions, to reduce prompt-injection risk from captured tool output.
+- Branch navigation (e.g., switching to a different session branch) removes stale index records automatically.
+- Sub-agents currently run with `--no-extensions` and do not inherit pruning behavior.
 
 ## Troubleshooting
 
@@ -155,6 +207,17 @@ Run `/compact-plus status` for detailed runtime state:
   level, compatibility notes, fallback reason, and focus files
 - the latest persisted focus echo derived from the most recent custom
   compaction summary
+- a one-line tool-output pruning status when the experimental feature is enabled
+
+Run `/compact-plus tool-prune status` for detailed pruning state:
+
+- enabled/mode/strategy
+- indexed record count in the current branch
+- pending batch/record counts
+- whether a flush is in progress
+- last summary status and time
+- excluded/included tools
+- summarizer model and thinking level
 
 If commands appear twice, Pi may be loading both the package and the old local
 extension. Disable or remove the old local auto-discovered extension before

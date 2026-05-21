@@ -3,6 +3,7 @@ import type {
 	CompactionTelemetry,
 	TelemetryPersistenceIssue,
 } from "./types.js";
+import { ToolOutputPruningState } from "./tool-output-pruning/state.js";
 
 /**
  * Encapsulates all mutable state for Compact+.
@@ -22,6 +23,7 @@ export class CompactionState {
 	lastInjectedEcho: string | null = null;
 	telemetryPersistenceIssues: TelemetryPersistenceIssue[] = [];
 	echoInjected = false;
+	toolOutputPruning = new ToolOutputPruningState();
 
 	/** Reset all state to initial values. */
 	reset(): void {
@@ -38,6 +40,7 @@ export class CompactionState {
 		this.lastInjectedEcho = null;
 		this.telemetryPersistenceIssues = [];
 		this.echoInjected = false;
+		this.toolOutputPruning.reset();
 	}
 
 	/**
@@ -60,6 +63,7 @@ export class CompactionState {
 			this.lastFallbackReason = null;
 			this.lastInjectedEcho = null;
 			this.echoInjected = false;
+			this.toolOutputPruning.reset();
 		}
 		this.lastModelKey = key;
 		return true;

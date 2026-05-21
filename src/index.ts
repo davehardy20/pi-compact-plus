@@ -61,7 +61,25 @@ import {
 	hasAdversarialPatterns,
 	reorderForPositioning,
 } from "./reorder.js";
+import { resolveCompactPlusSettings } from "./settings.js";
 import { CompactionState } from "./state.js";
+import {
+	buildPruningStatusDetail,
+	formatPruningStatusLines,
+	manualFlushPendingBatches,
+} from "./tool-output-pruning/commands.js";
+import {
+	captureTurnEndBatch,
+	flushPendingBatches,
+	isFinalAssistantMessageForToolPrune,
+	shouldFlushOnMessageEnd,
+} from "./tool-output-pruning/lifecycle.js";
+import {
+	formatToolOutputPruningStatusLine,
+	isToolOutputPruningEnabled,
+} from "./tool-output-pruning/policy.js";
+import { applyToolOutputPruning } from "./tool-output-pruning/pruner.js";
+import { createQueryToolDefinition } from "./tool-output-pruning/query-tool.js";
 import {
 	CHECKPOINT_CANDIDATE_PERCENT,
 	CHECKPOINT_CUSTOM_TYPE,
@@ -167,13 +185,60 @@ function coerceStringArray(value: unknown): string[] | undefined {
 // ── Extension ────────────────────────────────────────────────────────
 
 export default function compactPlusExtension(pi: ExtensionAPI) {
+	// ── Register recovery query tool (inactive unless pruning enabled) ─
+
+	pi.registerTool(
+		createQueryToolDefinition({
+			getState: () => state.toolOutputPruning,
+			getSettings: () => resolveCompactPlusSettings(),
+		}),
+	);
+
 	// ── Commands ───────────────────────────────────────────────────────
 
 	pi.registerCommand("compact-plus", {
 		description:
-			"Compact+ context compaction. Usage: /compact-plus [hard|status]",
+			"Compact+ context compaction. Usage: /compact-plus [hard|status|tool-prune status|tool-prune flush]",
 		handler: async (args, ctx) => {
 			const trimmed = args.trim().toLowerCase();
+
+			// Handle tool-prune subcommands
+			if (trimmed.startsWith("tool-prune ")) {
+				const sub = trimmed.slice("tool-prune ".length).trim();
+				const pruningSettings = resolveCompactPlusSettings();
+
+				if (sub === "status") {
+					const detail = buildPruningStatusDetail({
+						state: state.toolOutputPruning,
+						settings: pruningSettings,
+					});
+					const lines = formatPruningStatusLines(detail);
+					ctx.ui.notify(lines.join("\n"), "info");
+					return;
+				}
+
+				if (sub === "flush") {
+					const branchEntries = ctx.sessionManager
+						.getBranch()
+						.filter((e): e is SessionMessageEntry => e.type === "message");
+					const result = await manualFlushPendingBatches({
+						state: state.toolOutputPruning,
+						settings: pruningSettings,
+						ctx,
+						branchEntries,
+						pi,
+					});
+					ctx.ui.notify(result.message, result.ok ? "info" : "warning");
+					return;
+				}
+
+				ctx.ui.notify(
+					"Usage: /compact-plus tool-prune [status|flush]",
+					"warning",
+				);
+				return;
+			}
+
 			if (trimmed === "status") {
 				const usage = getEffectiveUsage(ctx);
 				const status = buildStatusSnapshot({
@@ -187,6 +252,18 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 					telemetryPersistenceIssues: state.telemetryPersistenceIssues,
 				});
 				const lines = formatStatusLines(status);
+				const pruningSettings = resolveCompactPlusSettings();
+				lines.push(
+					formatToolOutputPruningStatusLine({
+						enabled: isToolOutputPruningEnabled(pruningSettings),
+						mode: pruningSettings.toolOutputPruningMode,
+						strategy: pruningSettings.toolOutputPruneStrategy,
+						activeRecordCount: state.toolOutputPruning.activeRecordCount,
+						lastPrunedCount: state.toolOutputPruning.lastPrunedCount,
+						lastSummaryStatus: state.toolOutputPruning.lastSummaryStatus,
+						lastSummaryTime: state.toolOutputPruning.lastSummaryTime,
+					}),
+				);
 				ctx.ui.notify(lines.join("\n"), "info");
 				return;
 			}
@@ -324,6 +401,9 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 
 		if (state.isCompacting) return;
 
+		// Prevent competing with an in-flight tool-output pruning flush
+		if (state.toolOutputPruning.isFlushing) return;
+
 		// Prevent double-triggering within the same turn
 		if (state.isSameTurn(turnIndex)) return;
 
@@ -366,25 +446,66 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// ── Auto-trigger on assistant message_end (catches mid-turn growth) ─
+	// ── agent_start: reset pending tool-output captures ───────────────
+
+	pi.on("agent_start", async (_event, _ctx) => {
+		state.toolOutputPruning.resetPending();
+	});
+
+	// ── turn_end: capture eligible tool results into pending batches ───
+
+	pi.on("turn_end", async (event, ctx) => {
+		const pruningSettings = resolveCompactPlusSettings();
+		if (isToolOutputPruningEnabled(pruningSettings)) {
+			// toolResults from TurnEndEvent are ToolResultMessage[] which extend AgentMessage
+			captureTurnEndBatch(
+				event.message,
+				event.toolResults as AgentMessage[],
+				event.turnIndex,
+				Date.now(),
+				pruningSettings,
+				state.toolOutputPruning,
+			);
+		}
+		await maybeAutoCompact(ctx, "turn_end", event.turnIndex);
+	});
+
+	// ── message_end: auto-compact + flush pending tool-output batches ─
 
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
-		// Only check on assistant messages that have valid usage (not errors/aborts)
+
 		const assistant = event.message as Extract<
 			typeof event.message,
 			{ role: "assistant" }
 		>;
-		if (assistant.stopReason === "error" || assistant.stopReason === "aborted")
-			return;
+
+		// Flush pending tool-output batches for a completed assistant response
+		const pruningSettings = resolveCompactPlusSettings();
+		if (
+			isFinalAssistantMessageForToolPrune(event.message) &&
+			isToolOutputPruningEnabled(pruningSettings) &&
+			shouldFlushOnMessageEnd(
+				state.toolOutputPruning,
+				pruningSettings,
+				state.isCompacting,
+			)
+		) {
+			const branchEntries = ctx.sessionManager
+				.getBranch()
+				.filter((e): e is SessionMessageEntry => e.type === "message");
+			await flushPendingBatches(
+				state.toolOutputPruning,
+				pruningSettings,
+				ctx,
+				branchEntries,
+				pi,
+			);
+		}
+
+		// Only auto-compact on assistant messages that have valid usage
 		if (!assistant.usage) return;
 		await maybeAutoCompact(ctx, "message_end");
-	});
-
-	// ── Auto-trigger on turn_end (fallback / final check) ──────────────
-
-	pi.on("turn_end", async (event, ctx) => {
-		await maybeAutoCompact(ctx, "turn_end", event.turnIndex);
 	});
 
 	// ── session_before_compact ─────────────────────────────────────────
@@ -595,16 +716,59 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		};
 	});
 
-	// ── Position-aware reordering (focus echo) ──────────────────────
+	// ── session_tree: reconcile finalized records with new branch ─────
 
-	pi.on("context", async (event) => {
-		const result = reorderForPositioning(event.messages, state.echoInjected);
-		if (result) {
-			state.lastInjectedEcho = result.echoText;
+	pi.on("session_tree", async (_event, ctx) => {
+		const pruningSettings = resolveCompactPlusSettings();
+		if (isToolOutputPruningEnabled(pruningSettings)) {
+			const branchEntries = ctx.sessionManager
+				.getBranch()
+				.filter((e): e is SessionMessageEntry => e.type === "message");
+			const entryIds = new Set(branchEntries.map((e) => e.id));
+			state.toolOutputPruning.reconcileWithBranch(entryIds);
+		}
+	});
+
+	// ── session_shutdown: clear pending/in-flight status ───────────────
+
+	pi.on("session_shutdown", async (_event, _ctx) => {
+		state.toolOutputPruning.resetPending();
+	});
+
+	// ── Position-aware reordering (focus echo) + tool-output pruning ──
+
+	pi.on("context", async (event, ctx) => {
+		const pruningSettings = resolveCompactPlusSettings();
+		const branchEntries = ctx.sessionManager
+			.getBranch()
+			.filter((e): e is SessionMessageEntry => e.type === "message");
+
+		// Apply tool-output pruning first
+		const pruningResult = applyToolOutputPruning(
+			event.messages,
+			branchEntries,
+			state.toolOutputPruning,
+			pruningSettings,
+		);
+		const messagesAfterPruning = pruningResult?.messages ?? event.messages;
+
+		// Then apply focus echo reordering
+		const reorderResult = reorderForPositioning(
+			messagesAfterPruning,
+			state.echoInjected,
+		);
+
+		if (reorderResult) {
+			state.lastInjectedEcho = reorderResult.echoText;
 			state.echoInjected = true;
 			await persistTelemetrySnapshot();
-			return { messages: result.messages };
+			return { messages: reorderResult.messages };
 		}
+
+		if (pruningResult) {
+			return { messages: pruningResult.messages };
+		}
+
 		return undefined;
 	});
 
@@ -630,6 +794,7 @@ export const __test__ = {
 	getLastFallbackReason: () => state.lastFallbackReason,
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,
+	getToolOutputPruningState: () => state.toolOutputPruning,
 	CHECKPOINT_CANDIDATE_PERCENT,
 	STANDARD_THRESHOLD_PERCENT,
 	HARD_THRESHOLD_PERCENT,
@@ -646,4 +811,5 @@ export const __test__ = {
 	buildBranchInstructions,
 	buildCheckpointData,
 	hasAdversarialPatterns,
+	isToolOutputPruningEnabled,
 };

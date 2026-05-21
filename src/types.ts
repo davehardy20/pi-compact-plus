@@ -123,3 +123,9 @@ export const CHECKPOINT_CUSTOM_TYPE = "compact-plus-checkpoint";
 export const REGROWTH_TOKENS = 1000;
 export const CHECKPOINT_NOTE_MAX_LENGTH = 500;
 export const CHECKPOINT_SCHEMA_VERSION = 2;
+
+// Tool-output pruning custom types
+export const TOOL_PRUNE_SUMMARY_CUSTOM_TYPE = "compact-plus-tool-prune-summary";
+export const TOOL_PRUNE_INDEX_CUSTOM_TYPE = "compact-plus-tool-prune-index";
+export const TOOL_PRUNE_STATS_CUSTOM_TYPE = "compact-plus-tool-prune-stats";
+export const QUERY_TOOL_OUTPUT_TOOL_NAME = "compact_plus_query_tool_output";
