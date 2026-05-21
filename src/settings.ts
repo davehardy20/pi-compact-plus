@@ -171,13 +171,17 @@ export function resolveCompactPlusSettings(
 		DEFAULT_COMPACT_PLUS_SETTINGS.cooldownMs,
 	);
 
-	const experimentalToolOutputPruning = parseEnvBool(
-		env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING,
-		resolveBoolSetting(
-			fileSettings.experimentalToolOutputPruning,
-			DEFAULT_COMPACT_PLUS_SETTINGS.experimentalToolOutputPruning,
-		),
+	const fileExperimentalToolOutputPruning = resolveBoolSetting(
+		fileSettings.experimentalToolOutputPruning,
+		DEFAULT_COMPACT_PLUS_SETTINGS.experimentalToolOutputPruning,
 	);
+	const experimentalToolOutputPruning =
+		env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING === undefined
+			? fileExperimentalToolOutputPruning
+			: parseEnvBool(
+					env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING,
+					DEFAULT_COMPACT_PLUS_SETTINGS.experimentalToolOutputPruning,
+				);
 
 	const toolOutputPruningMode = resolveEnumSetting(
 		env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE,
@@ -248,18 +252,16 @@ export function resolveCompactPlusSettings(
 
 	const toolOutputPruneExcludedTools = parseEnvStringArray(
 		env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS,
-		resolveStringArraySetting(
-			fileSettings.toolOutputPruneExcludedTools,
-			[...DEFAULT_COMPACT_PLUS_SETTINGS.toolOutputPruneExcludedTools],
-		),
+		resolveStringArraySetting(fileSettings.toolOutputPruneExcludedTools, [
+			...DEFAULT_COMPACT_PLUS_SETTINGS.toolOutputPruneExcludedTools,
+		]),
 	);
 
 	const toolOutputPruneIncludedTools = parseEnvStringArray(
 		env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS,
-		resolveStringArraySetting(
-			fileSettings.toolOutputPruneIncludedTools,
-			[...DEFAULT_COMPACT_PLUS_SETTINGS.toolOutputPruneIncludedTools],
-		),
+		resolveStringArraySetting(fileSettings.toolOutputPruneIncludedTools, [
+			...DEFAULT_COMPACT_PLUS_SETTINGS.toolOutputPruneIncludedTools,
+		]),
 	);
 
 	if (
@@ -359,7 +361,7 @@ function resolveEnumSetting<T extends string>(
 ): T {
 	if (envValue !== undefined) {
 		const normalized = envValue.trim().toLowerCase();
-		if (allowed.includes(normalized as T)) return normalized as T;
+		return allowed.includes(normalized as T) ? (normalized as T) : defaultValue;
 	}
 	if (typeof fileValue === "string" && allowed.includes(fileValue as T)) {
 		return fileValue as T;
