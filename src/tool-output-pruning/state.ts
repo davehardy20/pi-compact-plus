@@ -1,7 +1,10 @@
-import type {
-	PendingToolOutputBatch,
-	ToolOutputRecord,
-	ToolOutputPruningStateSnapshot,
+import {
+	MAX_FINALIZED_RECORDS,
+	MAX_PENDING_BATCHES,
+	MAX_PENDING_RECORDS,
+	type PendingToolOutputBatch,
+	type ToolOutputPruningStateSnapshot,
+	type ToolOutputRecord,
 } from "./types.js";
 
 /**
@@ -37,6 +40,65 @@ export class ToolOutputPruningState {
 		this.pendingBatches = [];
 		this.pendingRecords = [];
 		this.isFlushing = false;
+	}
+
+	/**
+	 * Add a pending batch and its records, enforcing bounded pending limits.
+	 * If limits are exceeded, oldest batches and their records are dropped.
+	 */
+	addPendingBatch(
+		batch: PendingToolOutputBatch,
+		records: ToolOutputRecord[],
+	): void {
+		this.pendingBatches.push(batch);
+		this.pendingRecords.push(...records);
+		this.trimPending();
+	}
+
+	private trimPending(): void {
+		// Drop oldest batches if over batch limit
+		while (this.pendingBatches.length > MAX_PENDING_BATCHES) {
+			const removed = this.pendingBatches.shift();
+			if (!removed) break;
+			const removedIds = new Set(removed.recordIds);
+			this.pendingRecords = this.pendingRecords.filter(
+				(r) => !removedIds.has(r.recordId),
+			);
+		}
+		// Drop oldest batches if still over record limit
+		while (
+			this.pendingRecords.length > MAX_PENDING_RECORDS &&
+			this.pendingBatches.length > 0
+		) {
+			const removed = this.pendingBatches.shift();
+			if (!removed) break;
+			const removedIds = new Set(removed.recordIds);
+			this.pendingRecords = this.pendingRecords.filter(
+				(r) => !removedIds.has(r.recordId),
+			);
+		}
+		// Final safety trim if records still exceed limit (orphaned records)
+		if (this.pendingRecords.length > MAX_PENDING_RECORDS) {
+			this.pendingRecords = this.pendingRecords.slice(-MAX_PENDING_RECORDS);
+		}
+	}
+
+	/**
+	 * Add a finalized record, enforcing the finalized record limit.
+	 * If the limit is exceeded, oldest records are dropped.
+	 */
+	addFinalizedRecord(record: ToolOutputRecord): void {
+		const exists = this.finalizedRecords.some(
+			(r) => r.recordId === record.recordId,
+		);
+		if (!exists) {
+			this.finalizedRecords.push(record);
+		}
+		if (this.finalizedRecords.length > MAX_FINALIZED_RECORDS) {
+			this.finalizedRecords = this.finalizedRecords.slice(
+				-MAX_FINALIZED_RECORDS,
+			);
+		}
 	}
 
 	/** Generate the next short ref (t1, t2, …). */

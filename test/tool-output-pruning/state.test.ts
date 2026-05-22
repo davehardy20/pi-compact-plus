@@ -286,3 +286,117 @@ describe("ToolOutputPruningState", () => {
 		expect(state.activeRecordCount).toBe(1);
 	});
 });
+
+import {
+	MAX_FINALIZED_RECORDS,
+	MAX_PENDING_BATCHES,
+	MAX_PENDING_RECORDS,
+} from "../../src/tool-output-pruning/types.js";
+
+describe("ToolOutputPruningState bounded limits", () => {
+	let state: ToolOutputPruningState;
+
+	beforeEach(() => {
+		state = new ToolOutputPruningState();
+	});
+
+	it("addPendingBatch drops oldest batches when over MAX_PENDING_BATCHES", () => {
+		for (let i = 0; i < MAX_PENDING_BATCHES + 5; i++) {
+			const batch = {
+				batchId: `b${i}`,
+				turnIndex: i,
+				timestamp: Date.now(),
+				recordIds: [`r${i}`],
+			};
+			const record = {
+				recordId: `r${i}`,
+				entryId: null,
+				toolCallId: `tc${i}`,
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: `t${i + 1}`,
+				argsPreview: null,
+				fallbackSnippets: null,
+			};
+			state.addPendingBatch(batch, [record]);
+		}
+		expect(state.pendingBatches.length).toBe(MAX_PENDING_BATCHES);
+		expect(state.pendingRecords.length).toBe(MAX_PENDING_BATCHES);
+		// Oldest batches should have been dropped
+		expect(state.pendingBatches[0]?.batchId).toBe(`b5`);
+	});
+
+	it("addPendingBatch drops oldest records when over MAX_PENDING_RECORDS", () => {
+		// Add one batch with many records to exceed the record limit
+		const records: import("../../src/tool-output-pruning/types.js").ToolOutputRecord[] =
+			[];
+		for (let i = 0; i < MAX_PENDING_RECORDS + 10; i++) {
+			records.push({
+				recordId: `r${i}`,
+				entryId: null,
+				toolCallId: `tc${i}`,
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: `t${i + 1}`,
+				argsPreview: null,
+				fallbackSnippets: null,
+			});
+		}
+		const batch = {
+			batchId: "b0",
+			turnIndex: 0,
+			timestamp: Date.now(),
+			recordIds: records.map((r) => r.recordId),
+		};
+		state.addPendingBatch(batch, records);
+		expect(state.pendingRecords.length).toBeLessThanOrEqual(
+			MAX_PENDING_RECORDS,
+		);
+	});
+
+	it("addFinalizedRecord enforces MAX_FINALIZED_RECORDS", () => {
+		for (let i = 0; i < MAX_FINALIZED_RECORDS + 10; i++) {
+			state.addFinalizedRecord({
+				recordId: `r${i}`,
+				entryId: `e${i}`,
+				toolCallId: `tc${i}`,
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: "summary",
+				shortRef: `t${i + 1}`,
+				argsPreview: null,
+				fallbackSnippets: null,
+			});
+		}
+		expect(state.finalizedRecords.length).toBe(MAX_FINALIZED_RECORDS);
+		// Oldest records should have been dropped
+		expect(state.finalizedRecords[0]?.recordId).toBe(`r10`);
+	});
+
+	it("addFinalizedRecord deduplicates by recordId", () => {
+		const record = {
+			recordId: "r1",
+			entryId: "e1",
+			toolCallId: "tc1",
+			toolName: "bash",
+			timestamp: Date.now(),
+			chars: 100,
+			isError: false,
+			summary: "summary",
+			shortRef: "t1",
+			argsPreview: null,
+			fallbackSnippets: null,
+		};
+		state.addFinalizedRecord(record);
+		state.addFinalizedRecord(record);
+		expect(state.finalizedRecords.length).toBe(1);
+	});
+});

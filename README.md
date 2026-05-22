@@ -79,11 +79,18 @@ When enabled, Compact+:
   after the agent's final text response.
 - Only text-only tool results are eligible; images, binaries, and mixed content
   are skipped.
-- Conservative excluded tools by default: `read`, `read_hashed`,
-  `hashline_edit`, and `compact_plus_query_tool_output`.
+- Protected exclusions are non-overridable: `read`, `read_hashed`,
+  `hashline_edit`, `compact_plus_query_tool_output`, and Compact+ internal
+  tools are never eligible, even if user include/exclude settings change.
+- User excluded/included tool settings only apply after protected exclusions.
 - Original `toolResult` messages are preserved in the session branch. Pruning
   only affects future context snapshots by stubbing content, not deleting
   messages.
+- Capture, pending/finalized state, summarizer inputs, query scanning, and
+  query output are bounded with hard internal limits so long sessions degrade
+  by trimming/skipping instead of growing without bound.
+- Summarization is atomic: a flushed batch is indexed/pruned only when every
+  pending record has a non-empty summary tied to its short ref.
 
 **Attribution and reuse:** Batch capture, LLM semantic summarization, short
 refs, branch-aware indexing, and recovery-query behavior were adapted from
@@ -151,9 +158,17 @@ hard compaction at `90%`.
 | `COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS` | (default) | Max chars per LLM summary |
 | `COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS` | (default) | Max chars returned by recovery query |
 | `COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_MODEL` | `default` | Summarizer model (`default` or `provider/model-id`) |
-| `COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_THINKING` | `default` | Summarizer thinking level |
-| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS` | (comma list) | Tools to exclude from pruning |
-| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS` | (comma list) | Tools to include (empty = all eligible) |
+| `COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_THINKING` | `low` | Thinking level; see notes below |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS` | (comma list) | Additional user exclusions |
+| `COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS` | (comma list) | User include allow-list |
+
+Tool-output pruning notes:
+
+- Summarizer thinking values: `default`, `off`, `minimal`, `low`, `medium`,
+  `high`, or `xhigh`.
+- User exclusions add tools to skip; protected exclusions still apply.
+- User includes are evaluated after protected exclusions; empty means all
+  eligible tools.
 
 Example `settings.json`:
 
@@ -190,16 +205,24 @@ threshold profile.
 
 ### Tool-output pruning recovery
 
-When pruning is enabled, Compact+ registers a recovery query tool:
+V1 appends `compact-plus-tool-prune-summary` entries for summary visibility and
+observability. The runtime index and stats are kept in extension state and
+reconciled against the active branch; separate append-only index/stats entries
+are intentionally deferred until persistence is implemented and tested.
+
+Compact+ always registers a recovery query tool so recovery stubs can point to
+an available tool, but execution remains inactive and throws unless pruning is
+effectively enabled:
 
 - **Name:** `compact_plus_query_tool_output`
 - **Parameters:** `query`, `recordId`, `ref`, `toolCallId`, `toolName`,
   `limit`, `includeContent`
 
 Use this tool to recover original output by short ref or search terms. Query
-results are bounded by record count, chars scanned, and max returned chars. Full
+results are bounded by record count, scanned record count, per-record original
+text scan chars, total original text scan chars, and max returned chars. Full
 content recovery requires `includeContent=true` and is limited by
-`toolOutputQueryMaxChars`.
+`toolOutputQueryMaxChars` plus hard internal scan/result-size caps.
 
 **Caveats:**
 
@@ -242,7 +265,7 @@ Run `/compact-plus tool-prune status` for detailed pruning state:
 - pending batch/record counts
 - whether a flush is in progress
 - last summary status and time
-- excluded/included tools
+- protected exclusions plus user excluded/included tools
 - summarizer model and thinking level
 
 If commands appear twice, Pi may be loading both the package and the old local

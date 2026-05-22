@@ -20,6 +20,10 @@ vi.mock("../src/persist.js", () => ({
 
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
 
+vi.mock("@earendil-works/pi-ai", () => ({
+	completeSimple: vi.fn(),
+}));
+
 const defaultSettingsPathForTests =
 	"/tmp/compact-plus-test-missing-settings.json";
 fs.rmSync(defaultSettingsPathForTests, { force: true });
@@ -27,6 +31,7 @@ process.env.COMPACT_PLUS_SETTINGS_PATH = defaultSettingsPathForTests;
 
 const persist = await import("../src/persist.js");
 const piCore = await import("@earendil-works/pi-coding-agent");
+const { completeSimple } = await import("@earendil-works/pi-ai");
 const { formatStatusLines } = await import("../src/policy.js");
 const {
 	buildPersistedFocusEcho,
@@ -61,6 +66,7 @@ interface MockCtx {
 		contextWindow: number;
 		provider: string;
 		id: string;
+		api?: string;
 	} | null;
 	modelRegistry: {
 		getApiKeyAndHeaders: ReturnType<typeof vi.fn>;
@@ -134,6 +140,7 @@ function createMockCtx(options?: {
 					contextWindow: options.contextWindow,
 					provider: "test",
 					id: "test-model",
+					api: "openai-completions",
 				}
 			: null,
 		modelRegistry: {
@@ -207,7 +214,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(pi.commands.has("compact-plus-status")).toBe(true);
 	});
 
-	it("registers the compact_plus_query_tool_output recovery query tool", () => {
+	it("registers the recovery query tool while pruning is disabled but keeps execution inactive", async () => {
 		const pi = createMockPi();
 
 		compactPlusExtension(pi as never);
@@ -215,8 +222,129 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(pi.registerTool).toHaveBeenCalledTimes(1);
 		const registered = vi.mocked(pi.registerTool).mock.calls[0]?.[0];
 		expect(registered?.name).toBe("compact_plus_query_tool_output");
-		expect(registered?.label).toBe("Query pruned tool output");
-		expect(registered?.parameters).toBeDefined();
+		await expect(
+			registered?.execute("tc-disabled", {}, undefined, undefined, {
+				sessionManager: { getBranch: vi.fn(() => []) },
+			} as never),
+		).rejects.toThrow("inactive because tool-output pruning is not enabled");
+	});
+
+	it("registers the compact_plus_query_tool_output recovery query tool when pruning is enabled", () => {
+		const prevEnv: Record<string, string | undefined> = {
+			COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING:
+				process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING,
+			COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE,
+			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY,
+			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY,
+		};
+		process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING = "true";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE = "agent-message";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY = "llm";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY = "stub";
+		try {
+			const pi = createMockPi();
+
+			compactPlusExtension(pi as never);
+
+			expect(pi.registerTool).toHaveBeenCalledTimes(1);
+			const registered = vi.mocked(pi.registerTool).mock.calls[0]?.[0];
+			expect(registered?.name).toBe("compact_plus_query_tool_output");
+			expect(registered?.label).toBe("Query pruned tool output");
+			expect(registered?.parameters).toBeDefined();
+		} finally {
+			for (const [key, value] of Object.entries(prevEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
+	});
+
+	it("keeps the registered recovery tool available when pruning is enabled after extension load", async () => {
+		const prevEnv: Record<string, string | undefined> = {
+			COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING:
+				process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING,
+			COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE,
+			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY,
+			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY,
+		};
+		delete process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING;
+		delete process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE;
+		delete process.env.COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY;
+		delete process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY;
+		try {
+			const pi = createMockPi();
+			compactPlusExtension(pi as never);
+			const registered = vi.mocked(pi.registerTool).mock.calls[0]?.[0];
+			expect(registered?.name).toBe("compact_plus_query_tool_output");
+
+			process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING = "true";
+			process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE = "agent-message";
+			process.env.COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY = "llm";
+			process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY = "stub";
+
+			const pruningState = __test__.getToolOutputPruningState();
+			pruningState.finalizedRecords.push({
+				recordId: "rec-tc1",
+				entryId: "entry-0",
+				toolCallId: "tc1",
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: "summary of output",
+				shortRef: "t1",
+				argsPreview: null,
+				fallbackSnippets: null,
+			});
+
+			const messages = [
+				{
+					role: "toolResult",
+					toolCallId: "tc1",
+					toolName: "bash",
+					content: [{ type: "text", text: "original output" }],
+					isError: false,
+				},
+			] as TestAgentMessage[];
+			const ctx = createMockCtx({ messages });
+			const contextHandler = pi.events.get("context")?.[0];
+			expect(contextHandler).toBeDefined();
+			if (!contextHandler) throw new Error("handler not registered");
+
+			const result = (await contextHandler(
+				{ messages },
+				ctx,
+			)) as ContextHandlerResult;
+			expect(result?.messages[0]?.content[0].text).toContain(
+				"compact_plus_query_tool_output",
+			);
+
+			const queryResult = await registered?.execute(
+				"query-tc",
+				{ ref: "t1" },
+				undefined,
+				undefined,
+				ctx as never,
+			);
+			expect(queryResult?.details.matches[0]?.shortRef).toBe("t1");
+		} finally {
+			for (const [key, value] of Object.entries(prevEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
 	});
 
 	it("registers session lifecycle and compaction event handlers", () => {
@@ -3542,6 +3670,163 @@ Run tests.`;
 	});
 });
 
+describe("Tool-output pruning lifecycle boundaries", () => {
+	beforeEach(() => {
+		__test__.resetState();
+		vi.clearAllMocks();
+		delete process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING;
+		delete process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE;
+	});
+
+	afterEach(() => {
+		delete process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING;
+		delete process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE;
+	});
+
+	it("clears finalized and pending pruning state on session_start", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const pruningState = __test__.getToolOutputPruningState();
+		pruningState.pendingRecords.push({
+			recordId: "pending-1",
+			entryId: null,
+			toolCallId: "tc-pending",
+			toolName: "bash",
+			timestamp: Date.now(),
+			chars: 100,
+			isError: false,
+			summary: null,
+			shortRef: "t1",
+			argsPreview: null,
+			fallbackSnippets: null,
+		});
+		pruningState.finalizedRecords.push({
+			recordId: "final-1",
+			entryId: "entry-stale",
+			toolCallId: "tc-final",
+			toolName: "bash",
+			timestamp: Date.now(),
+			chars: 100,
+			isError: false,
+			summary: "summary",
+			shortRef: "t2",
+			argsPreview: null,
+			fallbackSnippets: null,
+		});
+
+		const sessionStartHandler = pi.events.get("session_start")?.[0];
+		expect(sessionStartHandler).toBeDefined();
+		if (!sessionStartHandler) throw new Error("handler not registered");
+		await sessionStartHandler({}, createMockCtx());
+
+		expect(pruningState.pendingRecords).toHaveLength(0);
+		expect(pruningState.finalizedRecords).toHaveLength(0);
+	});
+
+	it("clears pending captures and reconciles finalized records on session_tree", async () => {
+		process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING = "true";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE = "agent-message";
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const pruningState = __test__.getToolOutputPruningState();
+		pruningState.pendingRecords.push({
+			recordId: "pending-1",
+			entryId: null,
+			toolCallId: "tc-pending",
+			toolName: "bash",
+			timestamp: Date.now(),
+			chars: 100,
+			isError: false,
+			summary: null,
+			shortRef: "t1",
+			argsPreview: null,
+			fallbackSnippets: null,
+		});
+		pruningState.finalizedRecords.push(
+			{
+				recordId: "keep",
+				entryId: "entry-0",
+				toolCallId: "tc-keep",
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: "keep",
+				shortRef: "t2",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+			{
+				recordId: "drop",
+				entryId: "entry-drop",
+				toolCallId: "tc-drop",
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: "drop",
+				shortRef: "t3",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+		);
+
+		const sessionTreeHandler = pi.events.get("session_tree")?.[0];
+		expect(sessionTreeHandler).toBeDefined();
+		if (!sessionTreeHandler) throw new Error("handler not registered");
+		await sessionTreeHandler(
+			{},
+			createMockCtx({
+				messages: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-keep",
+						toolName: "bash",
+						content: [{ type: "text", text: "output" }],
+					},
+				],
+			}),
+		);
+
+		expect(pruningState.pendingRecords).toHaveLength(0);
+		expect(pruningState.finalizedRecords).toHaveLength(1);
+		expect(pruningState.finalizedRecords[0]?.recordId).toBe("keep");
+	});
+
+	it("clears finalized and pending pruning state on session_shutdown", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const pruningState = __test__.getToolOutputPruningState();
+		pruningState.pendingBatches.push({
+			batchId: "batch-1",
+			turnIndex: 0,
+			timestamp: Date.now(),
+			recordIds: ["pending-1"],
+		});
+		pruningState.finalizedRecords.push({
+			recordId: "final-1",
+			entryId: "entry-stale",
+			toolCallId: "tc-final",
+			toolName: "bash",
+			timestamp: Date.now(),
+			chars: 100,
+			isError: false,
+			summary: "summary",
+			shortRef: "t1",
+			argsPreview: null,
+			fallbackSnippets: null,
+		});
+
+		const sessionShutdownHandler = pi.events.get("session_shutdown")?.[0];
+		expect(sessionShutdownHandler).toBeDefined();
+		if (!sessionShutdownHandler) throw new Error("handler not registered");
+		await sessionShutdownHandler({}, createMockCtx());
+
+		expect(pruningState.pendingBatches).toHaveLength(0);
+		expect(pruningState.finalizedRecords).toHaveLength(0);
+	});
+});
+
 describe("Tool-output pruning commands", () => {
 	beforeEach(() => {
 		__test__.resetState();
@@ -3666,11 +3951,40 @@ describe("Tool-output pruning commands", () => {
 		expect(compactPlusCommand).toBeDefined();
 		if (!compactPlusCommand) throw new Error("command not registered");
 
-		const ctx = createMockCtx();
+		vi.mocked(completeSimple).mockResolvedValueOnce({
+			role: "assistant",
+			content: [{ type: "text", text: "## t1\nSummary one." }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "gpt-4",
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		} as never);
+
+		const ctx = createMockCtx({
+			contextWindow: 100000,
+			messages: [
+				{
+					role: "toolResult",
+					toolCallId: "tc1",
+					toolName: "bash",
+					content: [{ type: "text", text: "output" }],
+					isError: false,
+				},
+			],
+		});
 		await compactPlusCommand.handler("tool-prune flush", ctx);
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("Flush completed; no records were indexed."),
+			expect.stringContaining("Flushed 1 tool-output record(s)."),
 			"info",
 		);
 	});

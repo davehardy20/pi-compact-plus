@@ -10,13 +10,21 @@ const mockCompleteSimple = vi.mocked(completeSimple);
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
+	buildSummarizerInputs,
 	captureTurnEndBatch,
 	flushPendingBatches,
 	isFinalAssistantMessageForToolPrune,
 	shouldFlushOnMessageEnd,
 } from "../../src/tool-output-pruning/lifecycle.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type { ToolOutputPruningSettings } from "../../src/tool-output-pruning/types.js";
+import type {
+	ToolOutputPruningSettings,
+	ToolOutputRecord,
+} from "../../src/tool-output-pruning/types.js";
+import {
+	MAX_FINALIZED_RECORDS,
+	MAX_SUMMARIZER_INPUTS_PER_BATCH,
+} from "../../src/tool-output-pruning/types.js";
 
 const ENABLED_SETTINGS: ToolOutputPruningSettings = {
 	experimentalToolOutputPruning: true,
@@ -66,6 +74,29 @@ function makeToolResult(options: {
 		isError: false,
 		timestamp: Date.now(),
 	} as unknown as AgentMessage;
+}
+
+function makeRecord(options: {
+	recordId: string;
+	entryId: string | null;
+	toolCallId: string;
+	shortRef: string;
+	summary?: string | null;
+	toolName?: string;
+}): ToolOutputRecord {
+	return {
+		recordId: options.recordId,
+		entryId: options.entryId,
+		toolCallId: options.toolCallId,
+		toolName: options.toolName ?? "bash",
+		timestamp: Date.now(),
+		chars: 100,
+		isError: false,
+		summary: options.summary ?? null,
+		shortRef: options.shortRef,
+		argsPreview: null,
+		fallbackSnippets: null,
+	};
 }
 
 function makeMockContext() {
@@ -473,25 +504,7 @@ describe("flushPendingBatches", () => {
 		expect(state.isFlushing).toBe(false);
 	});
 
-	it("does not finalize records when branch entry is missing", async () => {
-		mockCompleteSimple.mockResolvedValueOnce({
-			role: "assistant",
-			content: [{ type: "text", text: "## t1\nSummary one." }],
-			api: "openai-completions",
-			provider: "openai",
-			model: "gpt-4",
-			usage: {
-				input: 10,
-				output: 5,
-				totalTokens: 15,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		});
-
+	it("fails atomically when branch entry is missing", async () => {
 		state.pendingRecords.push({
 			recordId: "r1",
 			entryId: null,
@@ -522,9 +535,96 @@ describe("flushPendingBatches", () => {
 			pi,
 		);
 
-		expect(result.ok).toBe(true);
+		expect(result.ok).toBe(false);
 		expect(state.finalizedRecords).toHaveLength(0);
 		expect(state.pendingBatches).toHaveLength(0);
+		expect(state.lastSummaryStatus).toBe("error");
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("restores the full finalized-record snapshot when appendEntry fails after trimming", async () => {
+		mockCompleteSimple.mockResolvedValueOnce({
+			role: "assistant",
+			content: [
+				{
+					type: "text",
+					text: `## t${MAX_FINALIZED_RECORDS + 1}\nNew summary.`,
+				},
+			],
+			api: "openai-completions",
+			provider: "openai",
+			model: "gpt-4",
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		for (let i = 0; i < MAX_FINALIZED_RECORDS; i++) {
+			state.finalizedRecords.push(
+				makeRecord({
+					recordId: `old-${i}`,
+					entryId: `old-entry-${i}`,
+					toolCallId: `old-tc-${i}`,
+					shortRef: `t${i + 1}`,
+					summary: `old summary ${i}`,
+				}),
+			);
+		}
+		const beforeRecordIds = state.finalizedRecords.map((r) => r.recordId);
+
+		state.pendingRecords.push(
+			makeRecord({
+				recordId: "new-record",
+				entryId: null,
+				toolCallId: "new-tc",
+				shortRef: `t${MAX_FINALIZED_RECORDS + 1}`,
+			}),
+		);
+		state.pendingBatches.push({
+			batchId: "new-batch",
+			turnIndex: 0,
+			timestamp: Date.now(),
+			recordIds: ["new-record"],
+		});
+		pi.appendEntry.mockImplementationOnce(() => {
+			throw new Error("append failed after indexing");
+		});
+
+		const result = await flushPendingBatches(
+			state,
+			ENABLED_SETTINGS,
+			makeMockContext(),
+			[
+				{
+					id: "new-entry",
+					message: makeToolResult({
+						toolCallId: "new-tc",
+						toolName: "bash",
+						text: "new original output",
+					}),
+				},
+			],
+			pi,
+		);
+
+		expect(result.ok).toBe(false);
+		expect(state.finalizedRecords.map((r) => r.recordId)).toEqual(
+			beforeRecordIds,
+		);
+		expect(
+			state.finalizedRecords.some((r) => r.recordId === "new-record"),
+		).toBe(false);
+		expect(state.pendingBatches).toHaveLength(0);
+		expect(state.pendingRecords).toHaveLength(0);
+		expect(state.lastSummaryStatus).toBe("error");
+		expect(state.isFlushing).toBe(false);
 	});
 
 	it("sets flushing flag during operation and clears after", async () => {
@@ -589,5 +689,212 @@ describe("flushPendingBatches", () => {
 
 		await flushPromise;
 		expect(state.isFlushing).toBe(false);
+	});
+});
+
+describe("buildSummarizerInputs atomic resolution", () => {
+	it(`returns null when inputs exceed MAX_SUMMARIZER_INPUTS_PER_BATCH (${MAX_SUMMARIZER_INPUTS_PER_BATCH})`, () => {
+		const branchEntries: Array<{ id: string; message: AgentMessage }> = [];
+		const pendingRecords: ToolOutputRecord[] = [];
+		for (let i = 0; i < MAX_SUMMARIZER_INPUTS_PER_BATCH + 10; i++) {
+			branchEntries.push({
+				id: `e${i}`,
+				message: makeToolResult({
+					toolCallId: `tc${i}`,
+					toolName: "bash",
+					text: "output",
+				}),
+			});
+			pendingRecords.push({
+				recordId: `r${i}`,
+				entryId: null,
+				toolCallId: `tc${i}`,
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: `t${i + 1}`,
+				argsPreview: null,
+				fallbackSnippets: null,
+			});
+		}
+		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
+		expect(inputs).toBeNull();
+	});
+
+	it("returns null when a pending record is missing from the branch", () => {
+		const pendingRecords: ToolOutputRecord[] = [
+			{
+				recordId: "r1",
+				entryId: null,
+				toolCallId: "tc1",
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: "t1",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+			{
+				recordId: "r2",
+				entryId: null,
+				toolCallId: "tc2",
+				toolName: "read",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: "t2",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+		];
+		const branchEntries = [
+			{
+				id: "e1",
+				message: makeToolResult({
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "output1",
+				}),
+			},
+			// tc2 is missing
+		];
+		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
+		expect(inputs).toBeNull();
+	});
+
+	it("returns all inputs when every record is present within limits", () => {
+		const pendingRecords: ToolOutputRecord[] = [
+			{
+				recordId: "r1",
+				entryId: null,
+				toolCallId: "tc1",
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: "t1",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+		];
+		const branchEntries = [
+			{
+				id: "e1",
+				message: makeToolResult({
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "output1",
+				}),
+			},
+		];
+		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
+		expect(inputs).toEqual([expect.objectContaining({ recordId: "r1" })]);
+	});
+});
+
+describe("flushPendingBatches multi-record atomicity", () => {
+	let state: ToolOutputPruningState;
+	let pi: { appendEntry: ReturnType<typeof vi.fn> };
+
+	beforeEach(() => {
+		state = new ToolOutputPruningState();
+		pi = { appendEntry: vi.fn() };
+		mockCompleteSimple.mockReset();
+	});
+
+	it("fails atomically when LLM returns fewer summaries than records", async () => {
+		mockCompleteSimple.mockResolvedValueOnce({
+			role: "assistant",
+			content: [{ type: "text", text: "## t1\nSummary one." }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "gpt-4",
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		state.pendingRecords.push(
+			{
+				recordId: "r1",
+				entryId: null,
+				toolCallId: "tc1",
+				toolName: "bash",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: "t1",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+			{
+				recordId: "r2",
+				entryId: null,
+				toolCallId: "tc2",
+				toolName: "read",
+				timestamp: Date.now(),
+				chars: 100,
+				isError: false,
+				summary: null,
+				shortRef: "t2",
+				argsPreview: null,
+				fallbackSnippets: null,
+			},
+		);
+		state.pendingBatches.push({
+			batchId: "b1",
+			turnIndex: 0,
+			timestamp: Date.now(),
+			recordIds: ["r1", "r2"],
+		});
+
+		const branchEntries = [
+			{
+				id: "e1",
+				message: makeToolResult({
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "original1",
+				}),
+			},
+			{
+				id: "e2",
+				message: makeToolResult({
+					toolCallId: "tc2",
+					toolName: "read",
+					text: "original2",
+				}),
+			},
+		];
+
+		const ctx = makeMockContext();
+		const result = await flushPendingBatches(
+			state,
+			ENABLED_SETTINGS,
+			ctx,
+			branchEntries,
+			pi,
+		);
+
+		expect(result.ok).toBe(false);
+		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.pendingBatches).toHaveLength(0);
+		expect(state.pendingRecords).toHaveLength(0);
+		expect(state.lastSummaryStatus).toBe("error");
+		expect(pi.appendEntry).not.toHaveBeenCalled();
 	});
 });

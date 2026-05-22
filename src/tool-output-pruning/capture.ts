@@ -1,11 +1,23 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { QUERY_TOOL_OUTPUT_TOOL_NAME } from "../types.js";
-import type {
-	PendingToolOutputBatch,
-	ToolOutputPruningSettings,
-	ToolOutputRecord,
+import type { ToolOutputPruningState } from "./state.js";
+import {
+	MAX_RECORDS_PER_BATCH,
+	type PendingToolOutputBatch,
+	type ToolOutputPruningSettings,
+	type ToolOutputRecord,
 } from "./types.js";
-import { ToolOutputPruningState } from "./state.js";
+
+/**
+ * Protected tool exclusions that cannot be overridden by user settings.
+ * These tools are critical for exact-output workflows and must never be pruned.
+ */
+export const PROTECTED_EXCLUDED_TOOLS: readonly string[] = [
+	"read",
+	"read_hashed",
+	"hashline_edit",
+	QUERY_TOOL_OUTPUT_TOOL_NAME,
+];
 
 export interface CaptureBatchResult {
 	batch: PendingToolOutputBatch;
@@ -63,12 +75,27 @@ export function isCompactPlusInternalTool(toolName: string): boolean {
 }
 
 /**
+ * Check whether a tool name is excluded from pruning.
+ * Checks protected exclusions (non-overridable), internal tools, and
+ * user-configured exclusions.
+ */
+export function isExcludedTool(
+	toolName: string,
+	settings: ToolOutputPruningSettings,
+): boolean {
+	if (PROTECTED_EXCLUDED_TOOLS.includes(toolName)) return true;
+	if (isCompactPlusInternalTool(toolName)) return true;
+	if (settings.toolOutputPruneExcludedTools.includes(toolName)) return true;
+	return false;
+}
+
+/**
  * Check whether a toolResult message is eligible for pruning capture.
  *
  * Eligibility rules:
  * - Must be a toolResult with text-only content
  * - Must not be from a Compact+ internal tool
- * - Must not be in the excluded-tools list
+ * - Must not be in the protected or user-configured excluded-tools list
  * - If included-tools is non-empty, must be in that list
  * - Total text length must meet the minimum threshold
  */
@@ -79,8 +106,7 @@ export function isEligibleToolResult(
 	if (message.role !== "toolResult") return false;
 
 	const toolName = (message as { toolName?: string }).toolName ?? "";
-	if (isCompactPlusInternalTool(toolName)) return false;
-	if (settings.toolOutputPruneExcludedTools.includes(toolName)) return false;
+	if (isExcludedTool(toolName, settings)) return false;
 	if (
 		settings.toolOutputPruneIncludedTools.length > 0 &&
 		!settings.toolOutputPruneIncludedTools.includes(toolName)
@@ -114,7 +140,7 @@ export function buildArgsPreview(
 	}
 
 	if (preview.length > maxChars) {
-		return preview.slice(0, Math.max(0, maxChars - 1)) + "…";
+		return `${preview.slice(0, Math.max(0, maxChars - 1))}…`;
 	}
 	return preview;
 }
@@ -134,7 +160,7 @@ export function buildFallbackSnippets(
 	const tailSize = Math.floor(maxChars * 0.4);
 	const separator = "\n…\n";
 
-	return text.slice(0, headSize) + separator + text.slice(-tailSize);
+	return `${text.slice(0, headSize)}${separator}${text.slice(-tailSize)}`;
 }
 
 /**
@@ -155,22 +181,23 @@ export function captureBatch(
 ): CaptureBatchResult | null {
 	if (assistantMessage.role !== "assistant") return null;
 
-	const eligibleResults = toolResults.filter((tr) =>
+	let eligibleResults = toolResults.filter((tr) =>
 		isEligibleToolResult(tr, settings),
 	);
 	if (eligibleResults.length === 0) return null;
+	if (eligibleResults.length > MAX_RECORDS_PER_BATCH) {
+		eligibleResults = eligibleResults.slice(0, MAX_RECORDS_PER_BATCH);
+	}
 
 	const batchId = `batch-${turnIndex}-${timestamp}`;
 	const records: ToolOutputRecord[] = [];
 	const recordIds: string[] = [];
 
 	for (const result of eligibleResults) {
-		const toolCallId =
-			(result as { toolCallId?: string }).toolCallId ?? "";
+		const toolCallId = (result as { toolCallId?: string }).toolCallId ?? "";
 		const toolName = (result as { toolName?: string }).toolName ?? "";
 		const text = extractToolResultText(result);
-		const isError =
-			(result as { isError?: boolean }).isError ?? false;
+		const isError = (result as { isError?: boolean }).isError ?? false;
 
 		const recordId = `rec-${toolCallId}-${timestamp}`;
 		const shortRef = state.generateShortRef();
@@ -228,7 +255,7 @@ export function serializeBatchForSummarizer(
 		const text = extractToolResultText(toolResult);
 		const boundedText =
 			text.length > maxChars
-				? text.slice(0, Math.max(0, maxChars - 1)) + "…"
+				? `${text.slice(0, Math.max(0, maxChars - 1))}…`
 				: text;
 
 		const header = `[${record.shortRef}] ${record.toolName} (toolCallId: ${record.toolCallId})`;

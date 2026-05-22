@@ -455,6 +455,10 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 			state.lastInjectedEcho = persisted.lastInjectedEcho;
 			state.lastModelKey = persisted.lastModelKey;
 		}
+		// Runtime tool-output indexes are branch/session-scoped and are not yet
+		// persisted; clear them at session boundaries to avoid stale status or
+		// recovery matches in long-lived extension instances.
+		state.toolOutputPruning.reset();
 	});
 
 	// ── agent_start: reset pending tool-output captures ───────────────
@@ -730,6 +734,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 	// ── session_tree: reconcile finalized records with new branch ─────
 
 	pi.on("session_tree", async (_event, ctx) => {
+		state.toolOutputPruning.resetPending();
 		const pruningSettings = resolveCompactPlusSettings();
 		if (isToolOutputPruningEnabled(pruningSettings)) {
 			const branchEntries = ctx.sessionManager
@@ -740,10 +745,10 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// ── session_shutdown: clear pending/in-flight status ───────────────
+	// ── session_shutdown: clear runtime tool-output state ────────────────
 
 	pi.on("session_shutdown", async (_event, _ctx) => {
-		state.toolOutputPruning.resetPending();
+		state.toolOutputPruning.reset();
 	});
 
 	// ── Position-aware reordering (focus echo) + tool-output pruning ──

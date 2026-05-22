@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+	buildPruningOneLineStatus,
 	buildPruningStatusDetail,
 	formatPruningStatusLines,
-	buildPruningOneLineStatus,
 } from "../../src/tool-output-pruning/commands.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
 import type { ToolOutputPruningSettings } from "../../src/tool-output-pruning/types.js";
@@ -119,11 +119,16 @@ describe("formatPruningStatusLines", () => {
 			}),
 		});
 		const lines = formatPruningStatusLines(detail);
-		expect(lines.some((l) => l.includes("Status: on (experimental)"))).toBe(true);
+		expect(lines.some((l) => l.includes("Status: on (experimental)"))).toBe(
+			true,
+		);
 		expect(lines.some((l) => l.includes("agent-message"))).toBe(true);
 		expect(lines.some((l) => l.includes("stub"))).toBe(true);
 		expect(lines.some((l) => l.includes("Last pruned count: 3"))).toBe(true);
-		expect(lines.some((l) => l.includes("Excluded tools:"))).toBe(true);
+		const protectedLine = lines.find((l) => l.includes("Protected exclusions"));
+		expect(protectedLine).toContain("read");
+		expect(protectedLine).toContain("compact_plus_query_tool_output");
+		expect(lines.some((l) => l.includes("User excluded tools:"))).toBe(true);
 	});
 });
 

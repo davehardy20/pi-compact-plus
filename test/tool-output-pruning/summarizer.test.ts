@@ -6,18 +6,22 @@ vi.mock("@earendil-works/pi-ai", () => ({
 }));
 
 import { completeSimple } from "@earendil-works/pi-ai";
+
 const mockCompleteSimple = vi.mocked(completeSimple);
 
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type {
+	ExtensionContext,
+	ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
 import {
-	resolveSummarizerModel,
 	buildSummarizerPrompt,
-	summarizeBatch,
+	resolveSummarizerModel,
 	SUMMARIZER_SYSTEM_PROMPT,
 	SUMMARIZER_USER_PROMPT_PREFIX,
 	type SummarizerInput,
+	summarizeBatch,
 } from "../../src/tool-output-pruning/summarizer.js";
-import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
-import type { Model, Api } from "@earendil-works/pi-ai";
 
 function makeMockModel(id: string, provider: string): Model<Api> {
 	return {
@@ -302,7 +306,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 5, totalTokens: 15, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -345,14 +356,21 @@ describe("summarizeBatch", () => {
 		}
 	});
 
-	it("falls back to assigning whole response to first input when parsing fails", async () => {
+	it("returns failure for unstructured response without expected ref", async () => {
 		mockCompleteSimple.mockResolvedValueOnce({
 			role: "assistant",
 			content: [{ type: "text", text: "Unstructured single summary." }],
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 5, totalTokens: 15, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -378,9 +396,119 @@ describe("summarizeBatch", () => {
 			ctx,
 		);
 
-		expect(result.ok).toBe(true);
-		if (result.ok) {
-			expect(result.summaries.get("r1")).toBe("Unstructured single summary.");
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("incomplete summaries");
+		}
+	});
+
+	it("returns failure when a ref is missing from multi-record response", async () => {
+		mockCompleteSimple.mockResolvedValueOnce({
+			role: "assistant",
+			content: [{ type: "text", text: "## t1\nSummary one." }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "gpt-4",
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const ctx = makeMockContext(makeMockModel("m", "p"));
+		const result = await summarizeBatch(
+			[
+				{
+					recordId: "r1",
+					shortRef: "t1",
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "text",
+					isError: false,
+					argsPreview: null,
+				},
+				{
+					recordId: "r2",
+					shortRef: "t2",
+					toolCallId: "tc2",
+					toolName: "read",
+					text: "text",
+					isError: false,
+					argsPreview: null,
+				},
+			],
+			{
+				toolOutputSummaryMaxChars: 1600,
+				toolOutputSummarizerModel: "default",
+				toolOutputSummarizerThinking: "default",
+			} as Parameters<typeof summarizeBatch>[1],
+			ctx,
+		);
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("incomplete summaries");
+		}
+	});
+
+	it("returns failure when a summary section is empty", async () => {
+		mockCompleteSimple.mockResolvedValueOnce({
+			role: "assistant",
+			content: [{ type: "text", text: "## t1\n\n## t2\nSummary two." }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "gpt-4",
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const ctx = makeMockContext(makeMockModel("m", "p"));
+		const result = await summarizeBatch(
+			[
+				{
+					recordId: "r1",
+					shortRef: "t1",
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "text",
+					isError: false,
+					argsPreview: null,
+				},
+				{
+					recordId: "r2",
+					shortRef: "t2",
+					toolCallId: "tc2",
+					toolName: "read",
+					text: "text",
+					isError: false,
+					argsPreview: null,
+				},
+			],
+			{
+				toolOutputSummaryMaxChars: 1600,
+				toolOutputSummarizerModel: "default",
+				toolOutputSummarizerThinking: "default",
+			} as Parameters<typeof summarizeBatch>[1],
+			ctx,
+		);
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("incomplete summaries");
 		}
 	});
 
@@ -396,7 +524,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 5, totalTokens: 15, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -437,9 +572,16 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 0, totalTokens: 10, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 0,
+				totalTokens: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "aborted",
-			 timestamp: Date.now(),
+			timestamp: Date.now(),
 		});
 
 		const ctx = makeMockContext(makeMockModel("m", "p"));
@@ -477,7 +619,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 0, totalTokens: 10, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 0,
+				totalTokens: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "error",
 			errorMessage: "Rate limited",
 			timestamp: Date.now(),
@@ -518,7 +667,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 1, totalTokens: 11, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 1,
+				totalTokens: 11,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -620,7 +776,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 1, totalTokens: 11, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 1,
+				totalTokens: 11,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -658,7 +821,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 1, totalTokens: 11, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 1,
+				totalTokens: 11,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -695,7 +865,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 1, totalTokens: 11, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 1,
+				totalTokens: 11,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -739,7 +916,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 5, totalTokens: 15, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -779,7 +963,14 @@ describe("summarizeBatch", () => {
 			api: "openai-completions",
 			provider: "openai",
 			model: "gpt-4",
-			usage: { input: 10, output: 1, totalTokens: 11, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 10,
+				output: 1,
+				totalTokens: 11,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
@@ -808,12 +999,17 @@ describe("summarizeBatch", () => {
 		const callArgs = mockCompleteSimple.mock.calls[0];
 		const context = callArgs[1] as {
 			systemPrompt?: string;
-			messages: Array<{ role: string; content: Array<{ type: string; text: string }> }>;
+			messages: Array<{
+				role: string;
+				content: Array<{ type: string; text: string }>;
+			}>;
 		};
 		expect(context.systemPrompt).toBe(SUMMARIZER_SYSTEM_PROMPT);
 		expect(context.messages).toHaveLength(1);
 		expect(context.messages[0]!.role).toBe("user");
 		expect(context.messages[0]!.content[0]!.type).toBe("text");
-		expect(context.messages[0]!.content[0]!.text).toContain(SUMMARIZER_USER_PROMPT_PREFIX);
+		expect(context.messages[0]!.content[0]!.text).toContain(
+			SUMMARIZER_USER_PROMPT_PREFIX,
+		);
 	});
 });

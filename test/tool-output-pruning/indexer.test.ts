@@ -1,16 +1,19 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-	indexToolResultsFromBranch,
 	findEntryIdForToolCallId,
+	indexToolResultsFromBranch,
 } from "../../src/tool-output-pruning/indexer.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	PendingToolOutputBatch,
 	ToolOutputRecord,
 } from "../../src/tool-output-pruning/types.js";
 
-function makeBranchEntry(id: string, message: unknown): { id: string; message: AgentMessage } {
+function makeBranchEntry(
+	id: string,
+	message: unknown,
+): { id: string; message: AgentMessage } {
 	return { id, message: message as AgentMessage };
 }
 
@@ -52,15 +55,17 @@ describe("findEntryIdForToolCallId", () => {
 	});
 
 	it("returns null when no match exists", () => {
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-		];
+		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
 		expect(findEntryIdForToolCallId(entries, "tc99")).toBeNull();
 	});
 
 	it("ignores non-toolResult entries", () => {
 		const entries = [
-			makeBranchEntry("e1", { role: "user", content: "hello", timestamp: Date.now() }),
+			makeBranchEntry("e1", {
+				role: "user",
+				content: "hello",
+				timestamp: Date.now(),
+			}),
 			makeBranchEntry("e2", makeToolResultMessage("tc1")),
 		];
 		expect(findEntryIdForToolCallId(entries, "tc1")).toBe("e2");
@@ -79,15 +84,24 @@ describe("indexToolResultsFromBranch", () => {
 	});
 
 	it("reconciles records with branch entries and finalizes them", () => {
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-		];
+		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
 		const records = [makeRecord("tc1", "r1")];
 		const summaries = new Map<string, string>([["r1", "summary text"]]);
 
 		indexToolResultsFromBranch(
 			entries,
-			[{ batch: { batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1"] }, records, summaries }],
+			[
+				{
+					batch: {
+						batchId: "b1",
+						turnIndex: 0,
+						timestamp: 1000,
+						recordIds: ["r1"],
+					},
+					records,
+					summaries,
+				},
+			],
 			state,
 		);
 
@@ -97,18 +111,24 @@ describe("indexToolResultsFromBranch", () => {
 	});
 
 	it("skips records whose toolCallId is not in the branch", () => {
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-		];
-		const records = [
-			makeRecord("tc1", "r1"),
-			makeRecord("tc2", "r2"),
-		];
+		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
+		const records = [makeRecord("tc1", "r1"), makeRecord("tc2", "r2")];
 		const summaries = new Map<string, string>();
 
 		indexToolResultsFromBranch(
 			entries,
-			[{ batch: { batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1", "r2"] }, records, summaries }],
+			[
+				{
+					batch: {
+						batchId: "b1",
+						turnIndex: 0,
+						timestamp: 1000,
+						recordIds: ["r1", "r2"],
+					},
+					records,
+					summaries,
+				},
+			],
 			state,
 		);
 
@@ -117,20 +137,40 @@ describe("indexToolResultsFromBranch", () => {
 	});
 
 	it("does not duplicate finalized records", () => {
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-		];
+		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
 		const records = [makeRecord("tc1", "r1")];
 		const summaries = new Map<string, string>();
 
 		indexToolResultsFromBranch(
 			entries,
-			[{ batch: { batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1"] }, records, summaries }],
+			[
+				{
+					batch: {
+						batchId: "b1",
+						turnIndex: 0,
+						timestamp: 1000,
+						recordIds: ["r1"],
+					},
+					records,
+					summaries,
+				},
+			],
 			state,
 		);
 		indexToolResultsFromBranch(
 			entries,
-			[{ batch: { batchId: "b2", turnIndex: 1, timestamp: 2000, recordIds: ["r1"] }, records, summaries }],
+			[
+				{
+					batch: {
+						batchId: "b2",
+						turnIndex: 1,
+						timestamp: 2000,
+						recordIds: ["r1"],
+					},
+					records,
+					summaries,
+				},
+			],
 			state,
 		);
 
@@ -143,15 +183,24 @@ describe("indexToolResultsFromBranch", () => {
 			{ batchId: "b2", turnIndex: 1, timestamp: 2000, recordIds: ["r2"] },
 		);
 
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-		];
+		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
 		const records = [makeRecord("tc1", "r1")];
 		const summaries = new Map<string, string>();
 
 		indexToolResultsFromBranch(
 			entries,
-			[{ batch: { batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1"] }, records, summaries }],
+			[
+				{
+					batch: {
+						batchId: "b1",
+						turnIndex: 0,
+						timestamp: 1000,
+						recordIds: ["r1"],
+					},
+					records,
+					summaries,
+				},
+			],
 			state,
 		);
 
@@ -160,15 +209,24 @@ describe("indexToolResultsFromBranch", () => {
 	});
 
 	it("preserves summary as null when not provided in summaries map", () => {
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-		];
+		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
 		const records = [makeRecord("tc1", "r1")];
 		const summaries = new Map<string, string>();
 
 		indexToolResultsFromBranch(
 			entries,
-			[{ batch: { batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1"] }, records, summaries }],
+			[
+				{
+					batch: {
+						batchId: "b1",
+						turnIndex: 0,
+						timestamp: 1000,
+						recordIds: ["r1"],
+					},
+					records,
+					summaries,
+				},
+			],
 			state,
 		);
 
@@ -181,12 +239,22 @@ describe("indexToolResultsFromBranch", () => {
 			makeBranchEntry("e2", makeToolResultMessage("tc2")),
 		];
 		const batch1 = {
-			batch: { batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1"] } as PendingToolOutputBatch,
+			batch: {
+				batchId: "b1",
+				turnIndex: 0,
+				timestamp: 1000,
+				recordIds: ["r1"],
+			} as PendingToolOutputBatch,
 			records: [makeRecord("tc1", "r1")],
 			summaries: new Map<string, string>([["r1", "sum1"]]),
 		};
 		const batch2 = {
-			batch: { batchId: "b2", turnIndex: 1, timestamp: 2000, recordIds: ["r2"] } as PendingToolOutputBatch,
+			batch: {
+				batchId: "b2",
+				turnIndex: 1,
+				timestamp: 2000,
+				recordIds: ["r2"],
+			} as PendingToolOutputBatch,
 			records: [makeRecord("tc2", "r2")],
 			summaries: new Map<string, string>([["r2", "sum2"]]),
 		};

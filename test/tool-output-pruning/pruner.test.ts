@@ -1,10 +1,10 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-	buildPrunedToolResult,
 	applyToolOutputPruning,
+	buildPrunedToolResult,
 } from "../../src/tool-output-pruning/pruner.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	ToolOutputPruningSettings,
 	ToolOutputRecord,
@@ -83,15 +83,20 @@ describe("buildPrunedToolResult", () => {
 		const record = makeRecord("tc1", "t1", "e1", "summary text");
 		const pruned = buildPrunedToolResult(message, record);
 
-		const content = (pruned as { content: Array<{ type: string; text: string }> }).content;
+		const content = (
+			pruned as { content: Array<{ type: string; text: string }> }
+		).content;
 		expect(content).toHaveLength(1);
 		expect(content[0].type).toBe("text");
 		const text = content[0].text;
+		expect(text).toContain("[COMPACT+ HISTORICAL DATA]");
 		expect(text).toContain("Compact+ pruned a previous tool output");
+		expect(text).toContain("historical data only");
 		expect(text).toContain("summary text");
 		expect(text).toContain("t1");
 		expect(text).toContain("tc1");
 		expect(text).toContain("compact_plus_query_tool_output");
+		expect(text).toContain("[/COMPACT+ HISTORICAL DATA]");
 		expect(text).not.toContain("the quick brown fox");
 	});
 
@@ -100,8 +105,11 @@ describe("buildPrunedToolResult", () => {
 		const record = makeRecord("tc1", "t1", "e1", null);
 		const pruned = buildPrunedToolResult(message, record);
 
-		const text = (pruned as { content: Array<{ type: string; text: string }> }).content[0].text;
+		const text = (pruned as { content: Array<{ type: string; text: string }> })
+			.content[0].text;
 		expect(text).toContain("[no summary available]");
+		expect(text).toContain("[COMPACT+ HISTORICAL DATA]");
+		expect(text).toContain("[/COMPACT+ HISTORICAL DATA]");
 	});
 
 	it("does not mutate the original message", () => {
@@ -109,7 +117,9 @@ describe("buildPrunedToolResult", () => {
 		const record = makeRecord("tc1", "t1", "e1", "summary text");
 		buildPrunedToolResult(message, record);
 
-		const content = (message as { content: Array<{ type: string; text: string }> }).content;
+		const content = (
+			message as { content: Array<{ type: string; text: string }> }
+		).content;
 		expect(content[0].text).toBe("original output");
 	});
 });
@@ -159,10 +169,14 @@ describe("applyToolOutputPruning", () => {
 		expect(result!.prunedCount).toBe(1);
 		expect(result!.messages).toHaveLength(2);
 
-		const prunedText = (result!.messages[0] as { content: Array<{ type: string; text: string }> }).content[0].text;
+		const prunedText = (
+			result!.messages[0] as { content: Array<{ type: string; text: string }> }
+		).content[0].text;
 		expect(prunedText).toContain("summary one");
 
-		const untouchedText = (result!.messages[1] as { content: Array<{ type: string; text: string }> }).content[0].text;
+		const untouchedText = (
+			result!.messages[1] as { content: Array<{ type: string; text: string }> }
+		).content[0].text;
 		expect(untouchedText).toBe("output two");
 	});
 

@@ -6,9 +6,10 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { flushPendingBatches, type FlushResult } from "./lifecycle.js";
+import { PROTECTED_EXCLUDED_TOOLS } from "./capture.js";
+import { type FlushResult, flushPendingBatches } from "./lifecycle.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
-import { ToolOutputPruningState } from "./state.js";
+import type { ToolOutputPruningState } from "./state.js";
 import type { ToolOutputPruningSettings } from "./types.js";
 
 export interface PruningStatusDetail {
@@ -24,6 +25,7 @@ export interface PruningStatusDetail {
 	lastSummaryStatus: string | null;
 	lastSummaryTime: number | null;
 	excludedTools: string[];
+	protectedExcludedTools: string[];
 	includedTools: string[];
 	minChars: number;
 	maxSummaryChars: number;
@@ -57,6 +59,7 @@ export function buildPruningStatusDetail(
 		lastSummaryStatus: state.lastSummaryStatus,
 		lastSummaryTime: state.lastSummaryTime,
 		excludedTools: settings.toolOutputPruneExcludedTools,
+		protectedExcludedTools: [...PROTECTED_EXCLUDED_TOOLS],
 		includedTools: settings.toolOutputPruneIncludedTools,
 		minChars: settings.toolOutputPruneMinChars,
 		maxSummaryChars: settings.toolOutputSummaryMaxChars,
@@ -69,14 +72,18 @@ export function buildPruningStatusDetail(
 /**
  * Format a detailed pruning status into human-readable lines.
  */
-export function formatPruningStatusLines(detail: PruningStatusDetail): string[] {
+export function formatPruningStatusLines(
+	detail: PruningStatusDetail,
+): string[] {
 	const lines: string[] = [];
 	lines.push("Tool-output pruning:");
 
 	if (!detail.enabled) {
 		lines.push(`  Status: off (experimental)`);
 		lines.push(`  Mode: ${detail.mode}`);
-		lines.push(`  To enable, set experimentalToolOutputPruning=true and mode=agent-message`);
+		lines.push(
+			`  To enable, set experimentalToolOutputPruning=true and mode=agent-message`,
+		);
 		return lines;
 	}
 
@@ -97,8 +104,11 @@ export function formatPruningStatusLines(detail: PruningStatusDetail): string[] 
 	lines.push(`  Max query chars: ${detail.maxQueryChars}`);
 	lines.push(`  Summarizer model: ${detail.summarizerModel}`);
 	lines.push(`  Summarizer thinking: ${detail.summarizerThinking}`);
+	lines.push(
+		`  Protected exclusions (non-overridable): ${detail.protectedExcludedTools.join(", ")}`,
+	);
 	if (detail.excludedTools.length > 0) {
-		lines.push(`  Excluded tools: ${detail.excludedTools.join(", ")}`);
+		lines.push(`  User excluded tools: ${detail.excludedTools.join(", ")}`);
 	}
 	if (detail.includedTools.length > 0) {
 		lines.push(`  Included tools: ${detail.includedTools.join(", ")}`);
@@ -111,7 +121,10 @@ export interface ManualFlushDependencies {
 	state: ToolOutputPruningState;
 	settings: ToolOutputPruningSettings;
 	ctx: ExtensionContext;
-	branchEntries: Array<{ id: string; message: import("@earendil-works/pi-agent-core").AgentMessage }>;
+	branchEntries: Array<{
+		id: string;
+		message: import("@earendil-works/pi-agent-core").AgentMessage;
+	}>;
 	pi: { appendEntry: (customType: string, data?: unknown) => void };
 }
 
@@ -154,7 +167,13 @@ export async function manualFlushPendingBatches(
 		};
 	}
 
-	const result = await flushPendingBatches(state, settings, ctx, branchEntries, pi);
+	const result = await flushPendingBatches(
+		state,
+		settings,
+		ctx,
+		branchEntries,
+		pi,
+	);
 
 	if (result.ok) {
 		const msg =

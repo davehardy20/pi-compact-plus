@@ -6,7 +6,9 @@ export {
 	extractToolResultText,
 	isCompactPlusInternalTool,
 	isEligibleToolResult,
+	isExcludedTool,
 	isTextOnlyToolResult,
+	PROTECTED_EXCLUDED_TOOLS,
 	serializeBatchForSummarizer,
 } from "./capture.js";
 export {

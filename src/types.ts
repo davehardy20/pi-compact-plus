@@ -124,8 +124,9 @@ export const REGROWTH_TOKENS = 1000;
 export const CHECKPOINT_NOTE_MAX_LENGTH = 500;
 export const CHECKPOINT_SCHEMA_VERSION = 2;
 
-// Tool-output pruning custom types
+// Tool-output pruning custom type.
+// V1 appends a compact summary/observability entry only. Runtime index and
+// stats remain in extension state; do not advertise unused append-only entry
+// types until persistence is implemented and tested.
 export const TOOL_PRUNE_SUMMARY_CUSTOM_TYPE = "compact-plus-tool-prune-summary";
-export const TOOL_PRUNE_INDEX_CUSTOM_TYPE = "compact-plus-tool-prune-index";
-export const TOOL_PRUNE_STATS_CUSTOM_TYPE = "compact-plus-tool-prune-stats";
 export const QUERY_TOOL_OUTPUT_TOOL_NAME = "compact_plus_query_tool_output";

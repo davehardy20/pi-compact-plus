@@ -1,6 +1,9 @@
 # Compact+ experimental tool-output pruning implementation plan
 
-Status: Steps 1–8 completed (settings/state skeleton, capture/indexer/refs, LLM summarizer, lifecycle flush/coordination, branch-aware context stubbing composed with focus echo, bounded recovery query tool, status/commands/README, final validation/live custom-path/Oracle review gate)
+Status: Steps 1–8 completed (settings/state skeleton, capture/indexer/refs,
+LLM summarizer, lifecycle flush/coordination, branch-aware context stubbing
+composed with focus echo, bounded recovery query tool, status/commands/README,
+final validation/live custom-path/Oracle review gate)
 Created: 2026-05-21
 Revised: 2026-05-21
 
@@ -163,7 +166,8 @@ Export helpers with branch-aware signatures:
 
 ### `src/index.ts`
 
-- [x] Register `compact_plus_query_tool_output` only when effective pruning is enabled.
+- [x] Register `compact_plus_query_tool_output` unconditionally, with execute-time inactive/default-off guard unless
+  pruning is effectively enabled.
 - [x] Hook lifecycle:
   - [x] `agent_start`: reset pending captures for this user prompt.
   - [x] `turn_end`: record candidate tool-call ids/batch boundaries if useful.

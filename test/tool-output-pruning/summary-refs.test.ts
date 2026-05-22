@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildRefMap,
-	lookupRef,
 	formatRefLine,
 	formatRefList,
+	lookupRef,
 } from "../../src/tool-output-pruning/summary-refs.js";
 import type { ToolOutputRecord } from "../../src/tool-output-pruning/types.js";
 

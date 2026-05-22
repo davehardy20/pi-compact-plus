@@ -1,9 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type {
-	PendingToolOutputBatch,
-	ToolOutputRecord,
-} from "./types.js";
-import { ToolOutputPruningState } from "./state.js";
+import type { ToolOutputPruningState } from "./state.js";
+import type { PendingToolOutputBatch, ToolOutputRecord } from "./types.js";
 
 /**
  * Represents a batch that has been summarized and is ready for indexing.
@@ -67,21 +64,13 @@ export function indexToolResultsFromBranch(
 					record.summary = summary;
 				}
 
-				// Avoid duplicates in finalized records
-				const exists = state.finalizedRecords.some(
-					(r) => r.recordId === record.recordId,
-				);
-				if (!exists) {
-					state.finalizedRecords.push(record);
-				}
+				state.addFinalizedRecord(record);
 			}
 		}
 	}
 
 	// Remove indexed batches from pending
-	const indexedBatchIds = new Set(
-		indexedBatches.map((b) => b.batch.batchId),
-	);
+	const indexedBatchIds = new Set(indexedBatches.map((b) => b.batch.batchId));
 	state.pendingBatches = state.pendingBatches.filter(
 		(b) => !indexedBatchIds.has(b.batchId),
 	);

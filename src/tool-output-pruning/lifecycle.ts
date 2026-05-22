@@ -11,6 +11,7 @@ import { isToolOutputPruningEnabled } from "./policy.js";
 import type { ToolOutputPruningState } from "./state.js";
 import { summarizeBatch } from "./summarizer.js";
 import type { ToolOutputPruningSettings, ToolOutputRecord } from "./types.js";
+import { MAX_SUMMARIZER_INPUTS_PER_BATCH } from "./types.js";
 
 export interface FlushResult {
 	ok: boolean;
@@ -74,13 +75,14 @@ export function isFinalAssistantMessageForToolPrune(
  * Build summarizer inputs from pending records and the current branch.
  *
  * Looks up each pending record's original tool result text from the branch
- * by toolCallId. If the tool result is no longer in the branch, the record
- * is skipped (it will be dropped during indexing).
+ * by toolCallId. Returns `null` if any record is no longer in the branch or
+ * if the total exceeds the summarizer limit, ensuring atomic all-record
+ * summarization: either every pending record is summarized or none are.
  */
-function buildSummarizerInputs(
+export function buildSummarizerInputs(
 	pendingRecords: ToolOutputRecord[],
 	branchEntries: Array<{ id: string; message: AgentMessage }>,
-): import("./summarizer.js").SummarizerInput[] {
+): import("./summarizer.js").SummarizerInput[] | null {
 	const inputs: import("./summarizer.js").SummarizerInput[] = [];
 
 	for (const record of pendingRecords) {
@@ -92,7 +94,9 @@ function buildSummarizerInputs(
 			);
 		})?.message;
 
-		if (!toolResult) continue;
+		if (!toolResult) {
+			return null;
+		}
 
 		const text = extractToolResultText(toolResult);
 		inputs.push({
@@ -106,6 +110,9 @@ function buildSummarizerInputs(
 		});
 	}
 
+	if (inputs.length > MAX_SUMMARIZER_INPUTS_PER_BATCH) {
+		return null;
+	}
 	return inputs;
 }
 
@@ -132,18 +139,25 @@ export async function flushPendingBatches(
 	}
 
 	state.isFlushing = true;
-	// Snapshot finalized count for atomic rollback on error
-	const finalizedCountBefore = state.finalizedRecords.length;
+	// Snapshot the full finalized array because indexing may trim/replace it before
+	// a later appendEntry side effect fails. Length-only rollback can keep failed
+	// records while dropping older finalized records.
+	const finalizedRecordsBefore = state.finalizedRecords.slice();
 
 	try {
 		const inputs = buildSummarizerInputs(state.pendingRecords, branchEntries);
 
-		if (inputs.length === 0) {
-			// Nothing resolvable in branch; clear pending and move on
+		if (inputs === null) {
+			// Atomicity violation: not all pending records are resolvable or within limits
+			state.lastSummaryStatus = "error";
 			state.resetPending();
-			state.lastSummaryStatus = "ok";
-			state.lastSummaryTime = Date.now();
-			return { ok: true, indexedCount: 0, prunedCount: 0 };
+			return {
+				ok: false,
+				indexedCount: 0,
+				prunedCount: 0,
+				error:
+					"Not all pending records could be resolved for atomic summarization",
+			};
 		}
 
 		const result = await summarizeBatch(inputs, settings, ctx);
@@ -200,8 +214,8 @@ export async function flushPendingBatches(
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		// Roll back any partially finalized records to preserve atomicity
-		state.finalizedRecords.length = finalizedCountBefore;
+		// Roll back any partially finalized records to preserve atomicity.
+		state.finalizedRecords = finalizedRecordsBefore.slice();
 		state.lastSummaryStatus = "error";
 		state.resetPending();
 		return {
@@ -240,8 +254,7 @@ export function captureTurnEndBatch(
 	);
 
 	if (result) {
-		state.pendingBatches.push(result.batch);
-		state.pendingRecords.push(...result.records);
+		state.addPendingBatch(result.batch, result.records);
 	}
 
 	return result;

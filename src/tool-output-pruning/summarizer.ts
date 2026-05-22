@@ -7,7 +7,7 @@
  * or the entire batch is treated as a failure with no side effects.
  */
 
-import type { Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ToolOutputPruningSettings } from "./types.js";
@@ -79,10 +79,7 @@ Rules:
  * - Falls back to ctx.model with a warning if the explicit model is unavailable
  */
 export function resolveSummarizerModel(
-	settings: Pick<
-		ToolOutputPruningSettings,
-		"toolOutputSummarizerModel"
-	>,
+	settings: Pick<ToolOutputPruningSettings, "toolOutputSummarizerModel">,
 	ctx: ExtensionContext,
 ): { model: Model<Api> | undefined; isFallback: boolean; warning?: string } {
 	const currentModel = ctx.model;
@@ -131,7 +128,7 @@ export function buildSummarizerPrompt(
 		const header = `--- Tool ${input.shortRef} | ${input.toolName} | callId=${input.toolCallId}${input.isError ? " | ERROR" : ""} ---`;
 		let body = input.text;
 		if (body.length > maxCharsPerInput) {
-			body = body.slice(0, maxCharsPerInput) + "\n…[truncated]";
+			body = `${body.slice(0, maxCharsPerInput)}\n…[truncated]`;
 		}
 		parts.push(header);
 		if (input.argsPreview) {
@@ -153,10 +150,10 @@ function parseSummariesFromResponse(
 
 	// Try to parse ## ref\n{summary} format
 	const headingRegex = /^##\s+(t\d+)\s*\n?/gm;
-	let match: RegExpExecArray | null;
 	const sections: Array<{ ref: string; text: string }> = [];
 
-	while ((match = headingRegex.exec(responseText)) !== null) {
+	let match = headingRegex.exec(responseText);
+	while (match !== null) {
 		const ref = match[1];
 		const start = match.index + match[0].length;
 		const nextMatch = headingRegex.exec(responseText);
@@ -165,6 +162,7 @@ function parseSummariesFromResponse(
 		headingRegex.lastIndex = start;
 		const text = responseText.slice(start, end).trim();
 		sections.push({ ref, text });
+		match = headingRegex.exec(responseText);
 	}
 
 	for (const section of sections) {
@@ -173,18 +171,18 @@ function parseSummariesFromResponse(
 			inputs.find((i) => i.shortRef === section.ref)?.recordId ?? section.ref;
 		let summary = section.text;
 		if (summary.length > maxCharsPerSummary) {
-			summary = summary.slice(0, maxCharsPerSummary) + "…";
+			summary = `${summary.slice(0, maxCharsPerSummary)}…`;
 		}
 		summaries.set(recordId, summary);
 	}
 
-	// Fallback: if no sections were parsed, assign the entire response to the first input
-	if (summaries.size === 0 && inputs.length > 0) {
-		let text = responseText.trim();
-		if (text.length > maxCharsPerSummary) {
-			text = text.slice(0, maxCharsPerSummary) + "…";
+	// Enforce all-record atomicity: every input must have a non-empty summary.
+	// Do not fall back to assigning the whole response to a single record.
+	for (const input of inputs) {
+		const summary = summaries.get(input.recordId);
+		if (!summary || summary.trim().length === 0) {
+			return new Map();
 		}
-		summaries.set(inputs[0]!.recordId, text);
 	}
 
 	return summaries;
@@ -301,6 +299,14 @@ export async function summarizeBatch(
 			inputs,
 			settings.toolOutputSummaryMaxChars,
 		);
+
+		if (summaries.size !== inputs.length) {
+			return {
+				ok: false,
+				error: `Summarizer returned incomplete summaries: expected ${inputs.length}, got ${summaries.size}`,
+				aborted: false,
+			};
+		}
 
 		let totalChars = 0;
 		for (const summary of summaries.values()) {
