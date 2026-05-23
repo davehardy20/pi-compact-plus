@@ -1,4 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	extractMessageText,
+	getDetails,
+	getIsError,
+	getToolCallId,
+	getToolName,
+	isTextOnlyMessageContent,
+} from "../pi-messages.js";
 import { QUERY_TOOL_OUTPUT_TOOL_NAME } from "../types.js";
 import type { ToolOutputPruningState } from "./state.js";
 import {
@@ -33,18 +41,7 @@ const ARGS_PREVIEW_MAX_CHARS = 200;
  */
 export function extractToolResultText(message: AgentMessage): string {
 	if (message.role !== "toolResult") return "";
-	const content = (message as { content?: unknown }).content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter(
-			(c): c is { type: "text"; text: string } =>
-				typeof c === "object" &&
-				c !== null &&
-				(c as { type?: string }).type === "text" &&
-				typeof (c as { text?: string }).text === "string",
-		)
-		.map((c) => c.text)
-		.join("");
+	return extractMessageText(message, "");
 }
 
 /**
@@ -53,14 +50,7 @@ export function extractToolResultText(message: AgentMessage): string {
  */
 export function isTextOnlyToolResult(message: AgentMessage): boolean {
 	if (message.role !== "toolResult") return false;
-	const content = (message as { content?: unknown }).content;
-	if (!Array.isArray(content) || content.length === 0) return false;
-	return content.every(
-		(c) =>
-			typeof c === "object" &&
-			c !== null &&
-			(c as { type?: string }).type === "text",
-	);
+	return isTextOnlyMessageContent(message);
 }
 
 /**
@@ -105,7 +95,7 @@ export function isEligibleToolResult(
 ): boolean {
 	if (message.role !== "toolResult") return false;
 
-	const toolName = (message as { toolName?: string }).toolName ?? "";
+	const toolName = getToolName(message) ?? "";
 	if (isExcludedTool(toolName, settings)) return false;
 	if (
 		settings.toolOutputPruneIncludedTools.length > 0 &&
@@ -129,7 +119,7 @@ export function buildArgsPreview(
 	maxChars = ARGS_PREVIEW_MAX_CHARS,
 ): string | null {
 	if (message.role !== "toolResult") return null;
-	const details = (message as { details?: unknown }).details;
+	const details = getDetails(message);
 	if (details === undefined || details === null) return null;
 
 	let preview: string;
@@ -194,10 +184,10 @@ export function captureBatch(
 	const recordIds: string[] = [];
 
 	for (const result of eligibleResults) {
-		const toolCallId = (result as { toolCallId?: string }).toolCallId ?? "";
-		const toolName = (result as { toolName?: string }).toolName ?? "";
+		const toolCallId = getToolCallId(result) ?? "";
+		const toolName = getToolName(result) ?? "";
 		const text = extractToolResultText(result);
-		const isError = (result as { isError?: boolean }).isError ?? false;
+		const isError = getIsError(result);
 
 		const recordId = `rec-${toolCallId}-${timestamp}`;
 		const shortRef = state.generateShortRef();
@@ -246,10 +236,9 @@ export function serializeBatchForSummarizer(
 	const parts: string[] = [];
 
 	for (const record of records) {
-		const toolResult = toolResults.find((tr) => {
-			const id = (tr as { toolCallId?: string }).toolCallId;
-			return id === record.toolCallId;
-		});
+		const toolResult = toolResults.find(
+			(tr) => getToolCallId(tr) === record.toolCallId,
+		);
 		if (!toolResult) continue;
 
 		const text = extractToolResultText(toolResult);

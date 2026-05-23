@@ -108,6 +108,27 @@ describe("queryToolOutput", () => {
 		expect(result.scannedRecords).toBe(1);
 	});
 
+	it("excludes records when the same entryId has a mismatched role or toolCallId", () => {
+		state.finalizedRecords.push(
+			makeRecord("tc1", "t1", "e1", "summary one"),
+			makeRecord("tc2", "t2", "e2", "summary two"),
+		);
+
+		const result = queryToolOutput({}, state, ENABLED_SETTINGS, [
+			{
+				id: "e1",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "not a tool result" }],
+				} as unknown as AgentMessage,
+			},
+			{ id: "e2", message: makeToolResultMessage("other-tc", "output") },
+		]);
+
+		expect(result.matches).toHaveLength(0);
+		expect(result.scannedRecords).toBe(0);
+	});
+
 	it("filters by short ref", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");

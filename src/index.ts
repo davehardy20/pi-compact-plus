@@ -19,10 +19,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type {
-	ExtensionAPI,
-	SessionMessageEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 import { runCustomCompaction } from "./compact.js";
@@ -42,6 +39,7 @@ import {
 	loadTelemetryWithDiagnostics,
 	saveTelemetryWithDiagnostics,
 } from "./persist.js";
+import { isAssistantMessage, isSessionMessageEntry } from "./pi-messages.js";
 import {
 	buildCheckpointData,
 	buildStatusSnapshot,
@@ -220,7 +218,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 				if (sub === "flush") {
 					const branchEntries = ctx.sessionManager
 						.getBranch()
-						.filter((e): e is SessionMessageEntry => e.type === "message");
+						.filter(isSessionMessageEntry);
 					const result = await manualFlushPendingBatches({
 						state: state.toolOutputPruning,
 						settings: pruningSettings,
@@ -279,7 +277,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 
 			const cmdEntries = ctx.sessionManager.getBranch();
 			const cmdMessages = cmdEntries
-				.filter((e): e is SessionMessageEntry => e.type === "message")
+				.filter(isSessionMessageEntry)
 				.map((e) => e.message);
 			const cmdFocus = extractCurrentFocus(cmdMessages);
 
@@ -300,7 +298,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 			const note = args.trim() || undefined;
 			const entries = ctx.sessionManager.getBranch();
 			const messages = entries
-				.filter((e): e is SessionMessageEntry => e.type === "message")
+				.filter(isSessionMessageEntry)
 				.map((e) => e.message);
 			const snapshot = extractSessionSnapshot(messages);
 			const data = buildCheckpointData(note, snapshot);
@@ -376,7 +374,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		// intentionally reports unknown usage until the next assistant response.
 		const entries = ctx.sessionManager.getBranch();
 		const messages = entries
-			.filter((e): e is SessionMessageEntry => e.type === "message")
+			.filter(isSessionMessageEntry)
 			.map((e) => e.message);
 		let estimated = 0;
 		for (const msg of messages) {
@@ -426,7 +424,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 
 		const autoEntries = ctx.sessionManager.getBranch();
 		const autoMessages = autoEntries
-			.filter((e): e is SessionMessageEntry => e.type === "message")
+			.filter(isSessionMessageEntry)
 			.map((e) => e.message);
 		const autoFocus = extractCurrentFocus(autoMessages);
 
@@ -508,7 +506,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		) {
 			const branchEntries = ctx.sessionManager
 				.getBranch()
-				.filter((e): e is SessionMessageEntry => e.type === "message");
+				.filter(isSessionMessageEntry);
 			await flushPendingBatches(
 				state.toolOutputPruning,
 				pruningSettings,
@@ -555,7 +553,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 			: `manual /compact-plus ${mode}`;
 		const previousSummaryPresent = event.preparation.messagesToSummarize.some(
 			(m) =>
-				m.role === "assistant" &&
+				isAssistantMessage(m) &&
 				extractTextContent(m).includes("Compaction Summary"),
 		);
 
@@ -720,7 +718,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 	pi.on("session_before_tree", async (event, _ctx) => {
 		const entries = event.preparation.entriesToSummarize;
 		const messages = entries
-			.filter((e): e is SessionMessageEntry => e.type === "message")
+			.filter(isSessionMessageEntry)
 			.map((e) => e.message);
 		const focus =
 			messages.length > 0 ? extractCurrentFocus(messages) : undefined;
@@ -739,7 +737,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		if (isToolOutputPruningEnabled(pruningSettings)) {
 			const branchEntries = ctx.sessionManager
 				.getBranch()
-				.filter((e): e is SessionMessageEntry => e.type === "message");
+				.filter(isSessionMessageEntry);
 			const entryIds = new Set(branchEntries.map((e) => e.id));
 			state.toolOutputPruning.reconcileWithBranch(entryIds);
 		}
@@ -757,7 +755,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		const pruningSettings = resolveCompactPlusSettings();
 		const branchEntries = ctx.sessionManager
 			.getBranch()
-			.filter((e): e is SessionMessageEntry => e.type === "message");
+			.filter(isSessionMessageEntry);
 
 		// Apply tool-output pruning first
 		const pruningResult = applyToolOutputPruning(

@@ -1,5 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	getAssistantToolCallBlocks,
+	getToolCallId,
+	isAssistantMessage,
+	isToolResultMessage,
+} from "../pi-messages.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
 import {
 	type CaptureBatchResult,
@@ -49,7 +55,7 @@ export function shouldFlushOnMessageEnd(
 export function isFinalAssistantMessageForToolPrune(
 	message: AgentMessage,
 ): boolean {
-	if (message.role !== "assistant") return false;
+	if (!isAssistantMessage(message)) return false;
 
 	const stopReason = (message as { stopReason?: string }).stopReason;
 	if (
@@ -63,12 +69,7 @@ export function isFinalAssistantMessageForToolPrune(
 
 	const content = (message as { content?: unknown }).content;
 	if (!Array.isArray(content)) return true;
-	return !content.some(
-		(block) =>
-			typeof block === "object" &&
-			block !== null &&
-			(block as { type?: string }).type === "toolCall",
-	);
+	return getAssistantToolCallBlocks(message).length === 0;
 }
 
 /**
@@ -88,10 +89,7 @@ export function buildSummarizerInputs(
 	for (const record of pendingRecords) {
 		const toolResult = branchEntries.find((e) => {
 			const msg = e.message;
-			return (
-				msg.role === "toolResult" &&
-				(msg as { toolCallId?: string }).toolCallId === record.toolCallId
-			);
+			return isToolResultMessage(msg) && getToolCallId(msg) === record.toolCallId;
 		})?.message;
 
 		if (!toolResult) {

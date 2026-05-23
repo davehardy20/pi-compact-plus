@@ -1,11 +1,12 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type {
-	SessionMessageEntry,
-	ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
+import { getTextContentBlocks, isSessionMessageEntry } from "../pi-messages.js";
 import { QUERY_TOOL_OUTPUT_TOOL_NAME } from "../types.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
+import {
+	branchEntryMatchesToolOutputRecord,
+	type ToolOutputBranchEntry,
+} from "./pruner.js";
 import type { ToolOutputPruningState } from "./state.js";
 import {
 	MAX_QUERY_RESULT_CHARS,
@@ -88,37 +89,24 @@ function appendWithinBudget(
 
 function getBranchEntryText(
 	record: { entryId: string | null; toolCallId: string },
-	branchEntries: Array<{ id: string; message: AgentMessage }>,
+	branchEntries: ToolOutputBranchEntry[],
 	limit: number,
 ): { text: string; truncated: boolean } | null {
 	if (limit <= 0) return null;
-	const entry = branchEntries.find((e) => {
-		const msg = e.message;
-		return (
-			e.id === record.entryId &&
-			msg.role === "toolResult" &&
-			(msg as { toolCallId?: string }).toolCallId === record.toolCallId
-		);
-	});
+	const entry = branchEntries.find((entry) =>
+		branchEntryMatchesToolOutputRecord(entry, record),
+	);
 	if (!entry) return null;
 
 	let remaining = limit;
 	let text = "";
 	let truncated = false;
-	const content = (entry.message as { content?: unknown }).content;
-	if (!Array.isArray(content)) return { text, truncated };
+	const textBlocks = getTextContentBlocks(
+		(entry.message as { content?: unknown }).content,
+	);
 
-	for (const block of content) {
-		if (
-			typeof block !== "object" ||
-			block === null ||
-			(block as { type?: string }).type !== "text" ||
-			typeof (block as { text?: string }).text !== "string"
-		) {
-			continue;
-		}
-
-		const blockText = (block as { text: string }).text;
+	for (const block of textBlocks) {
+		const blockText = block.text;
 		if (blockText.length > remaining) {
 			text += blockText.slice(0, remaining);
 			truncated = true;
@@ -145,7 +133,7 @@ export function queryToolOutput(
 	params: QueryToolOutputParams,
 	state: ToolOutputPruningState,
 	settings: ToolOutputPruningSettings,
-	branchEntries: Array<{ id: string; message: AgentMessage }>,
+	branchEntries: ToolOutputBranchEntry[],
 ): QueryToolOutputResult {
 	const limit = Math.max(1, Math.min(MAX_LIMIT, params.limit ?? DEFAULT_LIMIT));
 	const maxChars = Math.min(
@@ -153,10 +141,11 @@ export function queryToolOutput(
 		MAX_QUERY_RESULT_CHARS,
 	);
 
-	// Only current-branch records
-	const branchEntryIds = new Set(branchEntries.map((e) => e.id));
-	let candidates = state.finalizedRecords.filter(
-		(r) => r.entryId !== null && branchEntryIds.has(r.entryId),
+	// Only current-branch tool result records with matching entry id and tool call id.
+	let candidates = state.finalizedRecords.filter((record) =>
+		branchEntries.some((entry) =>
+			branchEntryMatchesToolOutputRecord(entry, record),
+		),
 	);
 
 	// Exact-match filters
@@ -358,8 +347,8 @@ export function createQueryToolDefinition(
 
 			const branchEntries = ctx.sessionManager
 				.getBranch()
-				.filter((e): e is SessionMessageEntry => e.type === "message")
-				.map((e) => ({ id: e.id, message: e.message }));
+				.filter(isSessionMessageEntry)
+				.map((e) => ({ type: e.type, id: e.id, message: e.message }));
 
 			const result = queryToolOutput(
 				params,

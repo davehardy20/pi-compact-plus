@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { getToolCallId, isToolResultMessage } from "../pi-messages.js";
 import type { ToolOutputPruningState } from "./state.js";
 import type { PendingToolOutputBatch, ToolOutputRecord } from "./types.js";
 
@@ -24,11 +25,8 @@ export function findEntryIdForToolCallId(
 ): string | null {
 	for (const entry of branchEntries) {
 		const msg = entry.message;
-		if (msg.role === "toolResult") {
-			const id = (msg as { toolCallId?: string }).toolCallId;
-			if (id === toolCallId) {
-				return entry.id;
-			}
+		if (isToolResultMessage(msg) && getToolCallId(msg) === toolCallId) {
+			return entry.id;
 		}
 	}
 	return null;
