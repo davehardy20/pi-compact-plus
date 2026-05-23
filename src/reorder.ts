@@ -1,4 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	createUserTextMessage,
+	extractUserOrAssistantText,
+} from "./pi-messages.js";
 
 /**
  * Position-aware context reordering to mitigate "lost in the middle" degradation.
@@ -233,10 +237,7 @@ export function buildFocusEchoBlock(echo: FocusEcho): string {
  * Uses role "user" with a clear marker so it's distinguishable.
  */
 export function createEchoMessage(echo: FocusEcho): AgentMessage {
-	return {
-		role: "user",
-		content: [{ type: "text", text: buildFocusEchoBlock(echo) }],
-	} as AgentMessage;
+	return createUserTextMessage(buildFocusEchoBlock(echo));
 }
 
 export function buildPersistedFocusEcho(summaryText: string): string | null {
@@ -288,10 +289,7 @@ export function reorderForPositioning(
 		return undefined;
 	}
 
-	const echoMessage = {
-		role: "user",
-		content: [{ type: "text", text: echoText }],
-	} as AgentMessage;
+	const echoMessage = createUserTextMessage(echoText);
 
 	// Inject before the last user message for recency positioning
 	const lastUserIndex = findLastUserMessageIndex(messages);
@@ -305,22 +303,7 @@ export function reorderForPositioning(
 // ── Internal helpers ────────────────────────────────────────────────
 
 function extractSimpleText(msg: AgentMessage): string {
-	if (msg.role === "assistant") {
-		return msg.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("\n");
-	}
-	if (msg.role === "user") {
-		if (typeof msg.content === "string") return msg.content;
-		if (Array.isArray(msg.content)) {
-			return msg.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
-		}
-	}
-	return "";
+	return extractUserOrAssistantText(msg, "\n");
 }
 
 function stripFencedBlocks(text: string): string {

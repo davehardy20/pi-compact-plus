@@ -147,6 +147,16 @@ describe("isFinalAssistantMessageForToolPrune", () => {
 		).toBe(false);
 	});
 
+	it("returns false for idless assistant tool-call blocks", () => {
+		expect(
+			isFinalAssistantMessageForToolPrune({
+				role: "assistant",
+				content: [{ type: "toolCall", name: "bash" }],
+				stopReason: "stop",
+			} as unknown as AgentMessage),
+		).toBe(false);
+	});
+
 	it("returns false for error or aborted assistant responses", () => {
 		expect(
 			isFinalAssistantMessageForToolPrune({

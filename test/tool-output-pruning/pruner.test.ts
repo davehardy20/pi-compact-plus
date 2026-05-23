@@ -165,17 +165,20 @@ describe("applyToolOutputPruning", () => {
 			ENABLED_SETTINGS,
 		);
 
-		expect(result).toBeDefined();
-		expect(result!.prunedCount).toBe(1);
-		expect(result!.messages).toHaveLength(2);
+		if (!result) {
+			throw new Error("expected pruning result");
+		}
+
+		expect(result.prunedCount).toBe(1);
+		expect(result.messages).toHaveLength(2);
 
 		const prunedText = (
-			result!.messages[0] as { content: Array<{ type: string; text: string }> }
+			result.messages[0] as { content: Array<{ type: string; text: string }> }
 		).content[0].text;
 		expect(prunedText).toContain("summary one");
 
 		const untouchedText = (
-			result!.messages[1] as { content: Array<{ type: string; text: string }> }
+			result.messages[1] as { content: Array<{ type: string; text: string }> }
 		).content[0].text;
 		expect(untouchedText).toBe("output two");
 	});
@@ -191,6 +194,34 @@ describe("applyToolOutputPruning", () => {
 		const result = applyToolOutputPruning(
 			messages,
 			branchEntries,
+			state,
+			ENABLED_SETTINGS,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.finalizedRecords).toHaveLength(0);
+	});
+
+	it("does not stub when the same entryId has a mismatched role or toolCallId", () => {
+		const msg1 = makeToolResultMessage("tc1", "output one");
+		const msg2 = makeToolResultMessage("tc2", "output two");
+		state.finalizedRecords.push(
+			makeRecord("tc1", "t1", "e1", "summary one"),
+			makeRecord("tc2", "t2", "e2", "summary two"),
+		);
+
+		const result = applyToolOutputPruning(
+			[msg1, msg2],
+			[
+				{
+					id: "e1",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "not a tool result" }],
+					} as unknown as AgentMessage,
+				},
+				{ id: "e2", message: makeToolResultMessage("other-tc", "output") },
+			],
 			state,
 			ENABLED_SETTINGS,
 		);
