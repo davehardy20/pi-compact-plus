@@ -61,22 +61,12 @@ import {
 } from "./reorder.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 import { CompactionState } from "./state.js";
-import {
-	buildPruningStatusDetail,
-	formatPruningStatusLines,
-	manualFlushPendingBatches,
-} from "./tool-output-pruning/commands.js";
-import {
-	captureTurnEndBatch,
-	flushPendingBatches,
-	isFinalAssistantMessageForToolPrune,
-	shouldFlushOnMessageEnd,
-} from "./tool-output-pruning/lifecycle.js";
+import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";
+import { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
 import {
 	formatToolOutputPruningStatusLine,
 	isToolOutputPruningEnabled,
 } from "./tool-output-pruning/policy.js";
-import { applyToolOutputPruning } from "./tool-output-pruning/pruner.js";
 import { createQueryToolDefinition } from "./tool-output-pruning/query-tool.js";
 import {
 	CHECKPOINT_CANDIDATE_PERCENT,
@@ -146,6 +136,10 @@ function getPackageMetadata(): PackageMetadata {
 // ── State ────────────────────────────────────────────────────────────
 
 const state = new CompactionState();
+const toolOutputPruning = new ToolOutputPruningCoordinator({
+	state: state.toolOutputPruning,
+	getSettings: resolveCompactPlusSettings,
+});
 
 async function persistTelemetrySnapshot(): Promise<void> {
 	const result = await saveTelemetryWithDiagnostics({
@@ -203,29 +197,16 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 			// Handle tool-prune subcommands
 			if (trimmed.startsWith("tool-prune ")) {
 				const sub = trimmed.slice("tool-prune ".length).trim();
-				const pruningSettings = resolveCompactPlusSettings();
 
 				if (sub === "status") {
-					const detail = buildPruningStatusDetail({
-						state: state.toolOutputPruning,
-						settings: pruningSettings,
-					});
+					const detail = toolOutputPruning.buildStatusDetail();
 					const lines = formatPruningStatusLines(detail);
 					ctx.ui.notify(lines.join("\n"), "info");
 					return;
 				}
 
 				if (sub === "flush") {
-					const branchEntries = ctx.sessionManager
-						.getBranch()
-						.filter(isSessionMessageEntry);
-					const result = await manualFlushPendingBatches({
-						state: state.toolOutputPruning,
-						settings: pruningSettings,
-						ctx,
-						branchEntries,
-						pi,
-					});
+					const result = await toolOutputPruning.manualFlush(ctx, pi);
 					ctx.ui.notify(result.message, result.ok ? "info" : "warning");
 					return;
 				}
@@ -462,24 +443,17 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 	// ── agent_start: reset pending tool-output captures ───────────────
 
 	pi.on("agent_start", async (_event, _ctx) => {
-		state.toolOutputPruning.resetPending();
+		toolOutputPruning.onAgentStart();
 	});
 
 	// ── turn_end: capture eligible tool results into pending batches ───
 
 	pi.on("turn_end", async (event, ctx) => {
-		const pruningSettings = resolveCompactPlusSettings();
-		if (isToolOutputPruningEnabled(pruningSettings)) {
-			// toolResults from TurnEndEvent are ToolResultMessage[] which extend AgentMessage
-			captureTurnEndBatch(
-				event.message,
-				event.toolResults as AgentMessage[],
-				event.turnIndex,
-				Date.now(),
-				pruningSettings,
-				state.toolOutputPruning,
-			);
-		}
+		toolOutputPruning.onTurnEnd({
+			message: event.message,
+			toolResults: event.toolResults as AgentMessage[],
+			turnIndex: event.turnIndex,
+		});
 		await maybeAutoCompact(ctx, "turn_end", event.turnIndex);
 	});
 
@@ -494,27 +468,9 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		>;
 
 		// Flush pending tool-output batches for a completed assistant response
-		const pruningSettings = resolveCompactPlusSettings();
-		if (
-			isFinalAssistantMessageForToolPrune(event.message) &&
-			isToolOutputPruningEnabled(pruningSettings) &&
-			shouldFlushOnMessageEnd(
-				state.toolOutputPruning,
-				pruningSettings,
-				state.isCompacting,
-			)
-		) {
-			const branchEntries = ctx.sessionManager
-				.getBranch()
-				.filter(isSessionMessageEntry);
-			await flushPendingBatches(
-				state.toolOutputPruning,
-				pruningSettings,
-				ctx,
-				branchEntries,
-				pi,
-			);
-		}
+		await toolOutputPruning.onMessageEnd(event, ctx, pi, {
+			isCompacting: state.isCompacting,
+		});
 
 		// Only auto-compact on assistant messages that have valid usage
 		if (!assistant.usage) return;
@@ -732,37 +688,21 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 	// ── session_tree: reconcile finalized records with new branch ─────
 
 	pi.on("session_tree", async (_event, ctx) => {
-		state.toolOutputPruning.resetPending();
-		const pruningSettings = resolveCompactPlusSettings();
-		if (isToolOutputPruningEnabled(pruningSettings)) {
-			const branchEntries = ctx.sessionManager
-				.getBranch()
-				.filter(isSessionMessageEntry);
-			const entryIds = new Set(branchEntries.map((e) => e.id));
-			state.toolOutputPruning.reconcileWithBranch(entryIds);
-		}
+		toolOutputPruning.onSessionTree(ctx);
 	});
 
 	// ── session_shutdown: clear runtime tool-output state ────────────────
 
 	pi.on("session_shutdown", async (_event, _ctx) => {
-		state.toolOutputPruning.reset();
+		toolOutputPruning.onSessionShutdown();
 	});
 
 	// ── Position-aware reordering (focus echo) + tool-output pruning ──
 
 	pi.on("context", async (event, ctx) => {
-		const pruningSettings = resolveCompactPlusSettings();
-		const branchEntries = ctx.sessionManager
-			.getBranch()
-			.filter(isSessionMessageEntry);
-
-		// Apply tool-output pruning first
-		const pruningResult = applyToolOutputPruning(
+		const pruningResult = toolOutputPruning.transformContext(
 			event.messages,
-			branchEntries,
-			state.toolOutputPruning,
-			pruningSettings,
+			ctx,
 		);
 		const messagesAfterPruning = pruningResult?.messages ?? event.messages;
 
