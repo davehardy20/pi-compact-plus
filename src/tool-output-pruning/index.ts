@@ -21,6 +21,10 @@ export {
 	type PruningStatusDetail,
 } from "./commands.js";
 export {
+	ToolOutputPruningCoordinator,
+	type ToolOutputPruningCoordinatorDependencies,
+} from "./coordinator.js";
+export {
 	findEntryIdForToolCallId,
 	type IndexedBatch,
 	indexToolResultsFromBranch,
@@ -45,9 +49,9 @@ export {
 	createQueryToolDefinition,
 	type QueryToolDefinitionDependencies,
 	type QueryToolOutputInput,
-	queryToolOutput,
 	queryToolOutputSchema,
 } from "./query-tool.js";
+export { queryToolOutput } from "./recovery.js";
 export { ToolOutputPruningState } from "./state.js";
 export {
 	buildSummarizerPrompt,
