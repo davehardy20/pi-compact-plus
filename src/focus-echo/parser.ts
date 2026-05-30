@@ -6,60 +6,23 @@ import {
 	MAX_DEPENDENCY_STEPS,
 	MAX_ECHO_LINE_LENGTH,
 } from "./model.js";
-
-const ISSUE_BOILERPLATE_PATTERNS = [
-	/^(?:fix|work on|resolve)\s+seeds issue\s+[A-Za-z0-9-]+(?:\s+in\s+\S+)?\s+by\s+/i,
-	/^implement\s+(?:seeds issue\s+)?[A-Za-z0-9-]+(?:\s+in\s+\S+)?\s+by\s+/i,
-	/^continue\s+[A-Za-z0-9-]+(?:\s+in\s+\S+)?\s+by\s+/i,
-	/^continue\s+[A-Za-z0-9-]+(?:\s+in\s+\S+)?\s+using\s+.+?(?::|;\s+)/i,
-];
-const LEADING_GERUND_REPLACEMENTS = new Map<string, string>([
-	["cleaning", "Clean"],
-	["refining", "Refine"],
-	["tightening", "Tighten"],
-	["verifying", "Verify"],
-	["inspecting", "Inspect"],
-	["adding", "Add"],
-	["removing", "Remove"],
-	["deduping", "Dedupe"],
-	["deduplicating", "Deduplicate"],
-]);
-const DEPENDENCY_PRIORITY_PATTERNS = [
-	/focus echo/i,
-	/lastinjectedecho/i,
-	/persist/i,
-	/summary/i,
-	/compactionentry\.summary/i,
-	/session_compact/i,
-	/compact-plus status/i,
-	/status/i,
-];
-const ACTIVE_FILE_SECTION_LABELS = new Set([
-	"files read that still matter",
-	"files modified",
-	"likely next files to inspect/edit",
-]);
-const PATH_DISPLAY_ANCHORS = [
-	"src",
-	"test",
-	"docs",
-	"dist",
-	"agent",
-	"skills",
-	"examples",
-	".pi",
-	".mulch",
-];
-const ROOT_FILE_NAMES = new Set([
-	"package.json",
-	"package-lock.json",
-	"README.md",
-	"LICENSE",
-	"tsconfig.json",
-	"tsconfig.build.json",
-	"vitest.config.ts",
-	"DEV-RELEASE-PLAYBOOK.md",
-]);
+import {
+	ACTIVE_FILE_CANDIDATE_PATTERN,
+	ACTIVE_FILE_GROUP_PRIORITY,
+	ACTIVE_FILE_SECTION_LABELS,
+	applyTextReplacementRules,
+	BLOCKER_NORMALIZATION_RULES,
+	DEPENDENCY_NORMALIZATION_RULES,
+	DEPENDENCY_PRIORITY_PATTERNS,
+	ISSUE_BOILERPLATE_PATTERNS,
+	LEADING_GERUND_REPLACEMENTS,
+	NEXT_STEP_NORMALIZATION_RULES,
+	OBJECTIVE_NORMALIZATION_RULES,
+	OBJECTIVE_PRE_COLON_RULES,
+	OBJECTIVE_SOURCE_OF_TRUTH_RULES,
+	PATH_DISPLAY_ANCHORS,
+	ROOT_FILE_NAMES,
+} from "./normalization-rules.js";
 
 /**
  * Extract high-signal fields from a structured compaction summary.
@@ -189,13 +152,7 @@ function extractActiveFiles(text: string, heading: string): string[] {
 		groupedFiles.set(currentGroup, groupItems);
 	}
 
-	const prioritizedGroups = [
-		"files modified",
-		"likely next files to inspect/edit",
-		"files read that still matter",
-		"default",
-	];
-	const orderedItems = prioritizedGroups.flatMap(
+	const orderedItems = ACTIVE_FILE_GROUP_PRIORITY.flatMap(
 		(group) => groupedFiles.get(group) ?? [],
 	);
 	const uniqueItems = Array.from(new Set(orderedItems));
@@ -285,189 +242,7 @@ function normalizeBlockerItem(line: string): string | null {
 	}
 
 	let cleaned = normalizeInlineSummaryText(line);
-	cleaned = cleaned.replace(/^examples seen live include\s+/i, "");
-	cleaned = cleaned.replace(
-		/^current live output proves persistence works, but\s+/i,
-		"",
-	);
-	cleaned = cleaned.replace(/^need a follow-up implementation pass.*$/i, "");
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?latest (?:direct )?live last focus echo (?:(?:is|was)(?: still)? )?too noisy.*$/i,
-		"",
-	);
-	cleaned = cleaned.replace(/^need to validate that the new\s+/i, "validate ");
-	cleaned = cleaned.replace(
-		/^(?:fresh|newly pasted|newest pasted) live\s+\/compact-plus status output\s+shows?\s+noisy persisted echo content(?:\s+despite\s+[^.]+)?(?:\s+.*)?$/i,
-		"Live /compact-plus status shows noisy persisted echo content",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?latest pasted live\s+.*compact\+ status shows a noisy\/stale persisted last focus echo.*$/i,
-		"Live /compact-plus status shows noisy persisted echo content",
-	);
-	cleaned = cleaned.replace(
-		/^(?:fresh\s+)?live\s+(?:last\s+)?focus echo output leaks the newest\s*\/\s*post-compaction summary shape wording in objective, blockers, and(?:\s+next step|…).*$/i,
-		"Objective, Blockers, and Next step still leak post-compaction wording",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?latest pasted live\s+(?:last\s+)?focus echo is noisy.*$/i,
-		"Live /compact-plus status shows noisy persisted echo content",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newly pasted live\s+(?:last\s+)?focus echo is noisy.*$/i,
-		"Live /compact-plus status shows noisy persisted echo content",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?live\s+(?:last\s+)?focus echo needs cleanup around\s+objective, blockers, dependency chain, and next step.*$/i,
-		"Live /compact-plus status shows noisy persisted echo content",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newest pasted live\s+(?:last\s+)?focus echo shows noise in\s+objective, blockers, dependency chain, and next step.*$/i,
-		"Live /compact-plus status shows noisy persisted echo content",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newest pasted live\s+(?:last\s+)?focus echo has a new unnormalized objective prefix:.*$/i,
-		"Objective includes live source-of-truth prefix",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?new(?:ly|est) pasted live\s+(?:last\s+)?focus echo shows an unnormalized objective prefix beginning\s+use the latest pasted live foc(?:us)? echo.*$/i,
-		"Objective includes live source-of-truth prefix",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?new(?:ly|est) pasted live\s+(?:last\s+)?focus echo shows another unnormalized objective prefix beginning.*$/i,
-		"Objective includes live source-of-truth prefix",
-	);
-	cleaned = cleaned.replace(
-		/^latest live objective starts with\s+tighten persisted focus-?echo normalization(?:\s+in\s+\S+)?\s+for the new(?:ly|est) pasted(?:\s+live\s+focus\s+echo(?:\s*\/\s*post-compaction summary)?\s+shape|\s+l…).*$/i,
-		"Objective includes pasted-live wording",
-	);
-	cleaned = cleaned.replace(
-		/^latest live objective starts with\s+finali[sz]e the persisted focus-?echo normalization fixes(?:\s+in\s+\S+)?\s+for the new(?:ly|est) pasted(?:\s+live\s+focus\s+echo(?:\s*\/\s*post-compaction summary)?\s+shape|\s+l…).*$/i,
-		"Objective includes pasted-live wording",
-	);
-	cleaned = cleaned.replace(
-		/^live objective begins:\s+use the self-improvement workflow to finali[sz]e the persisted focus-?echo normalization fixes.*$/i,
-		"Objective includes self-improvement-workflow wording",
-	);
-	cleaned = cleaned.replace(
-		/^blockers include noisy\/stale live wording.*$/i,
-		"Blockers retains noisy/stale live wording",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?latest live output reports noisy\/stale blockers wording and umbrella cleanup text around objective, blockers, dependency chain, and next step.*$/i,
-		"Objective, Blockers, Dependency chain, and Next step need cleanup",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newest pasted live blockers contain noisy\/stale umbrella cleanup text around objective, blockers, dependency chain,.*$/i,
-		"Objective, Blockers, Dependency chain, and Next step need cleanup",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newest live blockers contain stale\/noisy wording, including.*$/i,
-		"Blockers retains noisy/stale live wording",
-	);
-	cleaned = cleaned.replace(
-		/^latest live blockers include variants(?: like| from the newest live summary wording family).*$/i,
-		"Blockers retains noisy/stale live wording",
-	);
-	cleaned = cleaned.replace(
-		/^live blockers include stale\/noisy items such as.*$/i,
-		"Blockers retains noisy/stale live wording",
-	);
-	cleaned = cleaned.replace(
-		/^final live verification is missing because the latest pasted .*compact\+ status shows.*$/i,
-		"Final live custom-path verification is still pending",
-	);
-	cleaned = cleaned.replace(
-		/^because the custom compact\+ summary path did not run, the new normalization logic has not yet been proven against fresh.*$/i,
-		"Final live custom-path verification is still pending",
-	);
-	cleaned = cleaned.replace(
-		/^mulch expertise is empty \(no expertise recorded yet\.\) and should remain unrecorded until live custom-path success.*$/i,
-		"Wait to record Mulch until live custom-path success",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?active normalization hotspot remains the regex cleanup flow in src\/reorder\.ts, especially the section beginning.*$/i,
-		"Regex cleanup flow in src/reorder.ts remains the hotspot",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newest live next step is too verbose.*$/i,
-		"Next step needs shortening",
-	);
-	cleaned = cleaned.replace(
-		/^cleanup needed around objective, blockers, dependency chain, and next step.*$/i,
-		"Objective, Blockers, Dependency chain, and Next step need cleanup",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?newest changes have not been validated in this snippet with a post-edit vitest run.*$/i,
-		"Latest changes are not yet validated",
-	);
-	cleaned = cleaned.replace(
-		/^(?:need to confirm whether|(?:it\s+)needs confirmation whether) stale active files entries are(?: actually)? leaking into the persisted echo\/status flow.*$/i,
-		"Confirm stale Active files leakage",
-	);
-	cleaned = cleaned.replace(
-		/^dependency-chain cleanup for the newest live echo may need pruning\/shortening beyond.*$/i,
-		"Dependency chain still needs pruning",
-	);
-	cleaned = cleaned.replace(
-		/^(?:the\s+)?latest regex edits for that shape are not yet validated.*$/i,
-		"Latest regex edits are not yet validated",
-	);
-	cleaned = cleaned.replace(
-		/^need regression coverage in test\/index\.test\.ts for the newest pasted live echo\s*\/\s*post-compaction summary shape.*$/i,
-		"Add regression coverage for the newest live echo shape",
-	);
-	cleaned = cleaned.replace(
-		/^test\/index\.test\.ts needs a regression for this newest pasted live objective-prefix shape.*$/i,
-		"Add regression coverage for the newest live-source-of-truth echo shape",
-	);
-	cleaned = cleaned.replace(
-		/^test\/index\.test\.ts needs regression coverage for this newest pasted live objective-prefix\s*\/\s*post-compaction summary shape.*$/i,
-		"Add regression coverage for the newest live-source-of-truth echo shape",
-	);
-	cleaned = cleaned.replace(
-		/^test expectations are now out of sync with the new path-preference behavior that removes package\.json when path items exist.*$/i,
-		"Update test expectations for path-preference active files",
-	);
-	cleaned = cleaned.replace(
-		/^dependency chain and next step remain overly verbose\/truncated.*$/i,
-		"Dependency chain and Next step need shortening",
-	);
-	cleaned = cleaned.replace(
-		/^objective is verbose\/truncated:\s+.*$/i,
-		"Objective needs shortening",
-	);
-	cleaned = cleaned.replace(
-		/^blockers? leaks? stale\/literal text:\s+.*$/i,
-		"Blockers retains stale/literal text",
-	);
-	cleaned = cleaned.replace(
-		/^blockers?.*stale validation\/dedupe noise.*$/i,
-		"Blockers retains stale validation/dedupe noise",
-	);
-	cleaned = cleaned.replace(
-		/^next step (?:still )?(?:renders?|includes?) literal command text:\s+.*$/i,
-		"Next step still includes literal command text",
-	);
-	cleaned = cleaned.replace(
-		/\s+actually improves live\s+\/compact-plus status output\.?$/i,
-		" against live /compact-plus status output",
-	);
-	cleaned = cleaned.replace(
-		/^focus files status output\s+needs deduping.*$/i,
-		"Focus files line needs deduping",
-	);
-	cleaned = cleaned.replace(
-		/^focus files status output\s+still needs deduping.*$/i,
-		"Focus files line needs deduping",
-	);
-	cleaned = cleaned.replace(
-		/\blive\s+\/compact-plus status\s+is\s+/i,
-		"/compact-plus status is ",
-	);
-	cleaned = cleaned.replace(/\bstill\s+/i, "");
-	cleaned = cleaned.replace(/^src\/\S+\s+has now been updated to\s+.*$/i, "");
-	cleaned = cleaned.replace(/[.;]+$/g, "");
-	cleaned = cleaned.replace(/\s+with$/i, "");
+	cleaned = applyTextReplacementRules(cleaned, BLOCKER_NORMALIZATION_RULES);
 	if (!cleaned || /^no\b/i.test(cleaned)) {
 		return null;
 	}
@@ -499,22 +274,7 @@ function normalizeDecisionItem(line: string): string | null {
 
 function normalizeDependencyItem(line: string): string | null {
 	let cleaned = normalizeInlineSummaryText(line);
-	cleaned = cleaned.replace(/^custom compaction summary in\s+/i, "");
-	cleaned = cleaned.replace(/^global pi settings in\s+/i, "");
-	cleaned = cleaned.replace(/^remaining\s+/i, "");
-	cleaned = cleaned.replace(
-		/\bpersisted last focus echo\b/i,
-		"persisted focus echo",
-	);
-	cleaned = cleaned.replace(
-		/^buildPersistedFocusEcho\(summaryText\)\s*\/\s*parseFocusEcho\(\)\s+in\s+src\/reorder\.ts(?:\s+normalize summary fields)?$/i,
-		"buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts",
-	);
-	cleaned = cleaned.replace(
-		/^summary-normalization helpers including\s+.*$/i,
-		"summary-normalization helpers in src/reorder.ts",
-	);
-	cleaned = cleaned.replace(/\sand\/or\s/gi, " or ");
+	cleaned = applyTextReplacementRules(cleaned, DEPENDENCY_NORMALIZATION_RULES);
 	if (!cleaned) {
 		return null;
 	}
@@ -532,9 +292,7 @@ function normalizeActiveFileItem(line: string): string | null {
 	}
 
 	const unwrapped = cleaned.replace(/^([`'"])(.*)\1$/, "$2");
-	const candidateMatch = unwrapped.match(
-		/^((?:\.\/|[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)/,
-	);
+	const candidateMatch = unwrapped.match(ACTIVE_FILE_CANDIDATE_PATTERN);
 	const candidate = candidateMatch?.[1] ?? unwrapped;
 	if (!looksLikeFileReference(candidate)) {
 		return null;
@@ -576,12 +334,7 @@ function summarizeEmbeddedEchoFieldAsBlocker(line: string): string | null {
 
 function normalizeObjectiveText(value: string): string {
 	let cleaned = stripIssueBoilerplate(normalizeInlineSummaryText(value)).trim();
-	cleaned = cleaned.replace(/\bthe working v(\d+\.\d+\.\d+)\b/i, "v$1");
-	cleaned = cleaned.replace(
-		/\bpersisted last focus echo\b/i,
-		"persisted focus echo",
-	);
-	cleaned = cleaned.replace(/\blast focus echo\b/i, "focus echo");
+	cleaned = applyTextReplacementRules(cleaned, OBJECTIVE_PRE_COLON_RULES);
 	const colonSplit = cleaned.match(/^(.*?):\s+(.*)$/);
 	if (
 		colonSplit &&
@@ -589,218 +342,15 @@ function normalizeObjectiveText(value: string): string {
 	) {
 		cleaned = colonSplit[2];
 	}
-	cleaned = cleaned.replace(/^further\s+/i, "");
-	cleaned = cleaned.replace(
-		/^us(?:e|ing) the newly pasted(?: post-compaction)?\s+\/compact-plus status (?:snapshot|output)(?:\s+and\s+latest pasted focus echo)?\s+as the source of truth(?:\s+to\s+)?(?:further\s+)?/i,
-		"",
-	);
-	cleaned = cleaned.replace(
-		/^us(?:e|ing) the latest live\s+\/compact-plus status (?:snapshot|output)\s+as the source of truth(?:\s+to\s+)?(?:further\s+)?/i,
-		"",
-	);
-	cleaned = cleaned.replace(
-		/^us(?:e|ing) the latest live\s+\/compact-plus status\s*\/\s*focus echo shape\s+as the source of truth(?:\s+in\s+\S+)?(?:\s+to\s+)?(?:further\s+)?/i,
-		"",
-	);
-	cleaned = cleaned.replace(
-		/^us(?:e|ing) the latest pasted live focus echo\s*\/\s*\/compact-plus status output\s+as the source of truth(?:\s+in\s+\S+)?(?:\s+to\s+)?(?:further\s+)?/i,
-		"",
-	);
-	cleaned = cleaned.replace(
-		/^us(?:e|ing) the newly pasted(?: live)?\s+focus echo as the current live source of truth(?:\s+to\s+)?(?:further\s+)?/i,
-		"",
-	);
+	cleaned = applyTextReplacementRules(cleaned, OBJECTIVE_SOURCE_OF_TRUTH_RULES);
 	cleaned = stripIssueBoilerplate(cleaned).trim();
-	cleaned = cleaned.replace(
-		/^continue\s+[A-Za-z0-9-]+(?:\s+in\s+\S+)?(?:,\s*|\s+by\s+|\s+)/i,
-		"",
-	);
-	cleaned = cleaned.replace(/^in\s+[A-Za-z0-9_.-]+\s+to\s+/i, "");
-	cleaned = cleaned.replace(
-		/^continue\s+[A-Za-z0-9-]+(?:\s+in\s+\S+)?(?:,\s*|\s+by\s+|\s+)/i,
-		"",
-	);
-	cleaned = cleaned.replace(
-		/,\s+especially objective, blockers, dependency chain, and(?: the literal)? next step\.?$/i,
-		"",
-	);
-	cleaned = cleaned.replace(/^to\s+/i, "");
-	cleaned = cleaned.replace(
-		/^\s*focus files dedupe is fixed, but\s+the persisted focus echo needs cleanup for\s+/i,
-		"clean up persisted focus echo: ",
-	);
-	cleaned = cleaned.replace(/^\s*focus files dedupe is fixed, but\s+/i, "");
-	cleaned = cleaned.replace(
-		/\bstill needs cleanup for\b/i,
-		"needs cleanup for",
-	);
-	cleaned = cleaned.replace(
-		/^\s*the persisted focus echo needs cleanup for\s+/i,
-		"clean up persisted focus echo: ",
-	);
-	cleaned = cleaned.replace(
-		/^\s*persisted focus echo needs cleanup for\s+/i,
-		"clean up persisted focus echo: ",
-	);
-	cleaned = cleaned.replace(/;\s+src\/\S+.*$/i, "");
-	cleaned = cleaned.replace(
-		/\bpersisted focus-echo output\b/i,
-		"persisted focus echo",
-	);
-	cleaned = cleaned.replace(/\bby shortening\b/i, ": shorten");
-	cleaned = cleaned.replace(/\bcompressing\b/gi, "compress");
-	cleaned = cleaned.replace(/\bpruning\b/gi, "prune");
-	cleaned = cleaned.replace(/\bdeduping\b/gi, "dedupe");
-	cleaned = cleaned.replace(/\bpossibly\s+/gi, "");
-	cleaned = cleaned.replace(/\bthe separate status\b/gi, "status");
-	cleaned = cleaned.replace(/,\s+and dedupe status Focus files line/i, "");
-	cleaned = cleaned.replace(
-		/\bwhile preserving the already-working\b/i,
-		"while preserving",
-	);
-	cleaned = cleaned.replace(
-		/\bfocus-echo persistence behavior\b/i,
-		"persistence",
-	);
-	cleaned = cleaned.replace(/,\s+while preserving/gi, " while preserving");
-	cleaned = cleaned.replace(
-		/,?\s+using the (?:(?:fresh|latest)|freshly captured) live status (?:snapshot|output)(?: as the source of truth)?(?:,?\s+then\s+.+?|\s+so\s+.+?|\s+and then re-verifying\s+.+?)?\.?$/i,
-		"",
-	);
-	cleaned = cleaned.replace(
-		/^(?:further\s+)?refining persisted focus echo normalization so\s+\/compact-plus status renders cleaner\s+objective, blockers, dependency chain, and next step text.*$/i,
-		"refine persisted focus echo normalization for /compact-plus status",
-	);
-	cleaned = cleaned.replace(
-		/^evaluate the newly pasted live .*compact\+ status after compaction and finish the persisted focus-?echo normalization work.*$/i,
-		"Tighten persisted focus echo normalization for /compact-plus status",
-	);
-	cleaned = cleaned.replace(
-		/^verify the self-improvement-workflow-derived persisted focus-?echo normalization live on a successful custom compact\+ co.*$/i,
-		"Tighten persisted focus echo normalization for /compact-plus status",
-	);
-	cleaned = cleaned.replace(
-		/^tighten persisted focus-?echo normalization(?:\s+in\s+\S+)?\s+for the new(?:ly|est) pasted live focus echo(?:\s*\/\s*post-compaction summary)? shape so\s+\/compact-plus status.*$/i,
-		"Tighten persisted focus echo normalization for /compact-plus status",
-	);
-	cleaned = cleaned.replace(
-		/^finali[sz]e the persisted focus-?echo normalization fixes(?:\s+in\s+\S+)?\s+for the new(?:ly|est) pasted live focus echo(?:\s*\/\s*post-c.*)?$/i,
-		"Tighten persisted focus echo normalization for /compact-plus status",
-	);
-	cleaned = cleaned.replace(
-		/^use the self-improvement workflow to finali[sz]e the persisted focus-?echo normalization fixes(?:\s+in\s+\S+)?(?:,\s*specifically)?\s+for the new(?:ly|est) pasted live\s+(?:last\s+)?focus echo(?:\s*\/\s*post-compaction summary)? shape so\s+\/compact-plus status.*$/i,
-		"Tighten persisted focus echo normalization for /compact-plus status",
-	);
-	cleaned = cleaned.replace(
-		/^tighten persisted focus echo\s*:\s*shorten objective, compress blockers, prune dependency chain\b/i,
-		"Tighten persisted focus echo",
-	);
+	cleaned = applyTextReplacementRules(cleaned, OBJECTIVE_NORMALIZATION_RULES);
 	return truncateLine(rewriteLeadingGerund(cleaned));
 }
 
 function normalizeNextStepText(value: string): string {
 	let cleaned = stripIssueBoilerplate(normalizeInlineSummaryText(value));
-	cleaned = cleaned.replace(
-		/^inspect(?:ing)?\s+[^ ]+\s+and\s+refin(?:e|ing)\s+/i,
-		"refine ",
-	);
-	cleaned = cleaned.replace(/^continue in\s+\S+\s+to\s+/i, "");
-	cleaned = cleaned.replace(/^continue with\s+/i, "");
-	cleaned = cleaned.replace(
-		/^refine\s+\S+\s+using the latest live\s+\/compact-plus status output so\s+objective\b.*$/i,
-		"use live /compact-plus status output to refine Objective, Blockers, Dependency chain, and Next step.",
-	);
-	cleaned = cleaned.replace(
-		/^refine\s+src\/reorder\.ts\s+around\s+buildPersistedFocusEcho\(summaryText\)\s+using the captured live\s+(?:last\s+)?focus echo,\s+specifically\b.*$/i,
-		"refine buildPersistedFocusEcho(summaryText) normalization in src/reorder.ts against the captured live focus echo.",
-	);
-	cleaned = cleaned.replace(
-		/^refine\s+src\/reorder\.ts\s+again\s+using the newly pasted live\s+(?:last\s+)?focus echo,\s+targeting\s+the\s+still-noisy\s+objective,\s+blockers,?.*$/i,
-		"refine src/reorder.ts using the newly pasted live focus echo to clean Objective and Blockers.",
-	);
-	cleaned = cleaned.replace(
-		/^reproduce the new(?:ly|est) pasted live\s+(?:last\s+)?focus echo exactly in test\/index\.test\.ts.*buildPersistedFocusEcho\(summaryText\).*(?:objective|blockers).*$/i,
-		"reproduce the live focus echo in test/index.test.ts and refine buildPersistedFocusEcho(summaryText).",
-	);
-	cleaned = cleaned.replace(
-		/^re-run\s+vitest run test\/index\.test\.ts,\s+tsc --noemit,\s+and\s+biome check src\/reorder\.ts test\/index\.test\.ts\s+against the newest.*$/i,
-		"re-run targeted validation after the newest echo-normalization edits.",
-	);
-	cleaned = cleaned.replace(
-		/^inspect the actual buildPersistedFocusEcho\(summary\) output from the failing\s+normalizes newly pasted post-compaction live snapshots\s+case.*$/i,
-		"inspect buildPersistedFocusEcho(summary) output for the failing live-snapshot regression.",
-	);
-	cleaned = cleaned.replace(
-		/^compare the newly pasted live\s+(?:last\s+)?focus echo against current buildPersistedFocusEcho\(summary\)\s*\/\s*parseFocusEcho\(\)\s+behaviou?r.*$/i,
-		"compare the live focus echo against buildPersistedFocusEcho(summary)/parseFocusEcho() behavior.",
-	);
-	cleaned = cleaned.replace(
-		/^reconcile the \d+ failing vitest expectations in test\/index\.test\.ts with the new src\/reorder\.ts behavior.*$/i,
-		"update test/index.test.ts expectations for current src/reorder.ts behavior.",
-	);
-	cleaned = cleaned.replace(
-		/^add\/update test\/index\.test\.ts regression coverage for the newest pasted live\s+(?:last\s+)?focus echo\s*\/\s*post-compaction summary shape.*$/i,
-		"add regression coverage in test/index.test.ts for the newest live echo shape.",
-	);
-	cleaned = cleaned.replace(
-		/^add\/update test\/index\.test\.ts with a regression for the newest pasted live\s+(?:last\s+)?focus echo shape beginning use the latest live\s+\/compact-plus status output as the source of truth.*$/i,
-		"add regression coverage in test/index.test.ts for the newest live-source-of-truth echo shape.",
-	);
-	cleaned = cleaned.replace(
-		/^add a focused regression in test\/index\.test\.ts for the just-pasted live\s+(?:last\s+)?focus echo(?: shape)? whose objective starts(?: with)?.*$/i,
-		"add regression coverage in test/index.test.ts for the newest live-source-of-truth echo shape.",
-	);
-	cleaned = cleaned.replace(
-		/^add a focused regression in test\/index\.test\.ts for the new(?:ly|est) live\s+(?:last\s+)?focus echo\s*\/\s*post-compaction summary shape whose objective(?: still carries| starts(?: with)?)?.*$/i,
-		"add regression coverage in test/index.test.ts for the newest live-source-of-truth echo shape.",
-	);
-	cleaned = cleaned.replace(
-		/^use the self-improvement workflow to finali[sz]e this task, starting with the relevant workflow\/playbook context in\s+\S+.*$/i,
-		"use the self-improvement workflow to finalize the remaining echo-normalization fixes.",
-	);
-	cleaned = cleaned.replace(
-		/^switch fully into the self-improvement workflow for\s+[A-Za-z0-9-]+,\s+using the newly added siw trigger guidance as.*$/i,
-		"use the self-improvement workflow to finalize the remaining echo-normalization fixes.",
-	);
-	cleaned = cleaned.replace(
-		/^use the just-pasted live .*compact\+ status\s*\/\s*last focus echo as the newest source of truth and isolate the still-leaki.*$/i,
-		"use live /compact-plus status output to isolate the remaining echo leaks.",
-	);
-	cleaned = cleaned.replace(
-		/^retry \/compact-plus standard until the pasted status shows.*$/i,
-		"retry /compact-plus standard until custom path produces a clean Last focus echo.",
-	);
-	cleaned = cleaned.replace(
-		/^add a focused regression in test\/index\.test\.ts for the new(?:ly|est) live\s+(?:last\s+)?focus echo\s*\/\s*post-compaction summary shape.*$/i,
-		"add regression coverage in test/index.test.ts for the newest live echo shape.",
-	);
-	cleaned = cleaned.replace(
-		/^run targeted vitest coverage for test\/index\.test\.ts, especially the new normalizes latest live-status snapshot source-of-truth summaries case.*$/i,
-		"run targeted vitest coverage for test/index.test.ts.",
-	);
-	cleaned = cleaned.replace(/^validate the new\s+/i, "validate ");
-	cleaned = cleaned.replace(/^further\s+/i, "");
-	cleaned = cleaned.replace(
-		/^shorten live persisted-focus echo objective,\s+/i,
-		"shorten Objective, ",
-	);
-	cleaned = cleaned.replace(
-		/^shorten live persisted-echo objective,\s+/i,
-		"shorten Objective, ",
-	);
-	cleaned = cleaned.replace(
-		/\bagainst \/compact-plus status output\b/i,
-		"against live /compact-plus status output",
-	);
-	cleaned = cleaned.replace(/\s+to confirm\b.*$/i, "");
-	cleaned = cleaned.replace(
-		/\busing the actual\s+\/compact-plus status output as the target\.?$/i,
-		"using live /compact-plus status output.",
-	);
-	cleaned = cleaned.replace(
-		/\busing live \/compact-plus status output\.$/i,
-		"from live /compact-plus status.",
-	);
+	cleaned = applyTextReplacementRules(cleaned, NEXT_STEP_NORMALIZATION_RULES);
 	return truncateLine(rewriteLeadingGerund(cleaned));
 }
 
