@@ -24,6 +24,13 @@ export interface PruningStatusDetail {
 	lastPrunedCount: number;
 	lastSummaryStatus: string | null;
 	lastSummaryTime: number | null;
+	lastReconstructionStatus: string | null;
+	lastReconstructionTime: number | null;
+	lastReconstructionError: string | null;
+	lastReconstructionScannedEntries: number;
+	lastReconstructionScannedBytes: number;
+	lastReconstructionSkippedEntries: number;
+	lastReconstructedCount: number;
 	excludedTools: string[];
 	protectedExcludedTools: string[];
 	includedTools: string[];
@@ -58,6 +65,13 @@ export function buildPruningStatusDetail(
 		lastPrunedCount: state.lastPrunedCount,
 		lastSummaryStatus: state.lastSummaryStatus,
 		lastSummaryTime: state.lastSummaryTime,
+		lastReconstructionStatus: state.lastReconstructionStatus,
+		lastReconstructionTime: state.lastReconstructionTime,
+		lastReconstructionError: state.lastReconstructionError,
+		lastReconstructionScannedEntries: state.lastReconstructionScannedEntries,
+		lastReconstructionScannedBytes: state.lastReconstructionScannedBytes,
+		lastReconstructionSkippedEntries: state.lastReconstructionSkippedEntries,
+		lastReconstructedCount: state.lastReconstructedCount,
 		excludedTools: settings.toolOutputPruneExcludedTools,
 		protectedExcludedTools: [...PROTECTED_EXCLUDED_TOOLS],
 		includedTools: settings.toolOutputPruneIncludedTools,
@@ -99,6 +113,17 @@ export function formatPruningStatusLines(
 	lines.push(
 		`  Last summary: ${detail.lastSummaryStatus ?? "none"}${detail.lastSummaryTime ? ` (${Math.round((Date.now() - detail.lastSummaryTime) / 1000)}s ago)` : ""}`,
 	);
+	if (detail.lastReconstructionStatus) {
+		lines.push(
+			`  Last metadata reconstruction: ${detail.lastReconstructionStatus}${detail.lastReconstructionTime ? ` (${Math.round((Date.now() - detail.lastReconstructionTime) / 1000)}s ago)` : ""}`,
+		);
+		lines.push(
+			`  Reconstructed records: ${detail.lastReconstructedCount}; scanned ${detail.lastReconstructionScannedEntries} entr${detail.lastReconstructionScannedEntries === 1 ? "y" : "ies"} / ${detail.lastReconstructionScannedBytes} bytes; skipped legacy entries: ${detail.lastReconstructionSkippedEntries}`,
+		);
+		if (detail.lastReconstructionError) {
+			lines.push(`  Reconstruction note: ${detail.lastReconstructionError}`);
+		}
+	}
 	lines.push(`  Min chars to prune: ${detail.minChars}`);
 	lines.push(`  Max summary chars: ${detail.maxSummaryChars}`);
 	lines.push(`  Max query chars: ${detail.maxQueryChars}`);
@@ -205,5 +230,8 @@ export function buildPruningOneLineStatus(
 	];
 	if (state.isFlushing) parts.push("flushing");
 	if (state.lastSummaryStatus) parts.push(`last=${state.lastSummaryStatus}`);
+	if (state.lastReconstructionStatus) {
+		parts.push(`reconstruct=${state.lastReconstructionStatus}`);
+	}
 	return parts.join(" ");
 }

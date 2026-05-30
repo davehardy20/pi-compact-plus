@@ -1,3 +1,4 @@
+import type { ToolOutputMetadataReconstructionResult } from "./metadata.js";
 import {
 	MAX_FINALIZED_RECORDS,
 	MAX_PENDING_BATCHES,
@@ -21,6 +22,13 @@ export class ToolOutputPruningState {
 	lastSummaryStatus: "ok" | "error" | null = null;
 	lastSummaryTime: number | null = null;
 	lastPrunedCount = 0;
+	lastReconstructionStatus: "ok" | "skipped" | "error" | null = null;
+	lastReconstructionTime: number | null = null;
+	lastReconstructionError: string | null = null;
+	lastReconstructionScannedEntries = 0;
+	lastReconstructionScannedBytes = 0;
+	lastReconstructionSkippedEntries = 0;
+	lastReconstructedCount = 0;
 	shortRefCounter = 0;
 
 	/** Reset all state to initial values. */
@@ -32,6 +40,13 @@ export class ToolOutputPruningState {
 		this.lastSummaryStatus = null;
 		this.lastSummaryTime = null;
 		this.lastPrunedCount = 0;
+		this.lastReconstructionStatus = null;
+		this.lastReconstructionTime = null;
+		this.lastReconstructionError = null;
+		this.lastReconstructionScannedEntries = 0;
+		this.lastReconstructionScannedBytes = 0;
+		this.lastReconstructionSkippedEntries = 0;
+		this.lastReconstructedCount = 0;
 		this.shortRefCounter = 0;
 	}
 
@@ -107,6 +122,20 @@ export class ToolOutputPruningState {
 		return `t${this.shortRefCounter}`;
 	}
 
+	/** Advance short-ref allocation past restored finalized records. */
+	advanceShortRefCounterFromRecords(records: ToolOutputRecord[]): void {
+		let maxRefNumber = this.shortRefCounter;
+		for (const record of records) {
+			const match = /^t(\d+)$/.exec(record.shortRef);
+			if (!match) continue;
+			const parsed = Number.parseInt(match[1], 10);
+			if (Number.isSafeInteger(parsed) && parsed > maxRefNumber) {
+				maxRefNumber = parsed;
+			}
+		}
+		this.shortRefCounter = maxRefNumber;
+	}
+
 	/** Look up a finalized record by short ref. */
 	getRecordByRef(ref: string): ToolOutputRecord | undefined {
 		return this.finalizedRecords.find((r) => r.shortRef === ref);
@@ -122,6 +151,36 @@ export class ToolOutputPruningState {
 		return this.finalizedRecords.find((r) => r.entryId === entryId);
 	}
 
+	/** Record safe, bounded reconstruction diagnostics. */
+	recordReconstructionResult(
+		result: ToolOutputMetadataReconstructionResult,
+	): void {
+		this.lastReconstructionStatus = result.ok
+			? result.records.length > 0
+				? "ok"
+				: "skipped"
+			: "error";
+		this.lastReconstructionTime = Date.now();
+		this.lastReconstructionError = result.ok
+			? null
+			: (result.error ?? "metadata reconstruction failed").slice(0, 160);
+		this.lastReconstructionScannedEntries = result.scannedEntries;
+		this.lastReconstructionScannedBytes = result.scannedBytes;
+		this.lastReconstructionSkippedEntries = result.skippedEntries;
+		this.lastReconstructedCount = result.ok ? result.records.length : 0;
+	}
+
+	/** Clear reconstruction diagnostics when pruning is disabled or state resets. */
+	clearReconstructionResult(): void {
+		this.lastReconstructionStatus = null;
+		this.lastReconstructionTime = null;
+		this.lastReconstructionError = null;
+		this.lastReconstructionScannedEntries = 0;
+		this.lastReconstructionScannedBytes = 0;
+		this.lastReconstructionSkippedEntries = 0;
+		this.lastReconstructedCount = 0;
+	}
+
 	/** Return a snapshot for testing/inspection. */
 	snapshot(): ToolOutputPruningStateSnapshot {
 		return {
@@ -132,6 +191,13 @@ export class ToolOutputPruningState {
 			lastSummaryStatus: this.lastSummaryStatus,
 			lastSummaryTime: this.lastSummaryTime,
 			lastPrunedCount: this.lastPrunedCount,
+			lastReconstructionStatus: this.lastReconstructionStatus,
+			lastReconstructionTime: this.lastReconstructionTime,
+			lastReconstructionError: this.lastReconstructionError,
+			lastReconstructionScannedEntries: this.lastReconstructionScannedEntries,
+			lastReconstructionScannedBytes: this.lastReconstructionScannedBytes,
+			lastReconstructionSkippedEntries: this.lastReconstructionSkippedEntries,
+			lastReconstructedCount: this.lastReconstructedCount,
 			shortRefCounter: this.shortRefCounter,
 		};
 	}

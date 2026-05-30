@@ -70,6 +70,8 @@ export interface PendingToolOutputBatch {
 	recordIds: string[];
 }
 
+export type ToolOutputReconstructionStatus = "ok" | "skipped" | "error" | null;
+
 export interface ToolOutputPruningStateSnapshot {
 	pendingBatches: PendingToolOutputBatch[];
 	pendingRecords: ToolOutputRecord[];
@@ -78,6 +80,13 @@ export interface ToolOutputPruningStateSnapshot {
 	lastSummaryStatus: "ok" | "error" | null;
 	lastSummaryTime: number | null;
 	lastPrunedCount: number;
+	lastReconstructionStatus: ToolOutputReconstructionStatus;
+	lastReconstructionTime: number | null;
+	lastReconstructionError: string | null;
+	lastReconstructionScannedEntries: number;
+	lastReconstructionScannedBytes: number;
+	lastReconstructionSkippedEntries: number;
+	lastReconstructedCount: number;
 	shortRefCounter: number;
 }
 

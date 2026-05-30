@@ -1,6 +1,6 @@
 import { getTextContentBlocks } from "../pi-messages.js";
 import {
-	branchEntryMatchesToolOutputRecord,
+	branchEntrySafelyMatchesToolOutputRecord,
 	type ToolOutputBranchEntry,
 } from "./pruner.js";
 import type { ToolOutputPruningState } from "./state.js";
@@ -53,13 +53,14 @@ function appendWithinBudget(
 }
 
 function getBranchEntryText(
-	record: { entryId: string | null; toolCallId: string },
+	record: { entryId: string | null; toolCallId: string; toolName: string },
 	branchEntries: ToolOutputBranchEntry[],
+	settings: ToolOutputPruningSettings,
 	limit: number,
 ): { text: string; truncated: boolean } | null {
 	if (limit <= 0) return null;
 	const entry = branchEntries.find((entry) =>
-		branchEntryMatchesToolOutputRecord(entry, record),
+		branchEntrySafelyMatchesToolOutputRecord(entry, record, settings),
 	);
 	if (!entry) return null;
 
@@ -106,10 +107,11 @@ export function queryToolOutput(
 		MAX_QUERY_RESULT_CHARS,
 	);
 
-	// Only current-branch tool result records with matching entry id and tool call id.
+	// Only current-branch tool result records with matching entry id, tool call id,
+	// tool name, and safe text-only shape.
 	let candidates = state.finalizedRecords.filter((record) =>
 		branchEntries.some((entry) =>
-			branchEntryMatchesToolOutputRecord(entry, record),
+			branchEntrySafelyMatchesToolOutputRecord(entry, record, settings),
 		),
 	);
 
@@ -149,6 +151,7 @@ export function queryToolOutput(
 			const branchText = getBranchEntryText(
 				r,
 				branchEntries,
+				settings,
 				Math.min(MAX_QUERY_SCAN_CHARS_PER_RECORD, remainingScanChars),
 			);
 			if (!branchText) return false;
@@ -179,7 +182,7 @@ export function queryToolOutput(
 			);
 			const originalText =
 				branchTextByRecordId.get(record.recordId) ??
-				getBranchEntryText(record, branchEntries, perRecordLimit);
+				getBranchEntryText(record, branchEntries, settings, perRecordLimit);
 			if (originalText) {
 				if (remainingContentChars <= 0) {
 					content = "";

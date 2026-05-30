@@ -17,11 +17,12 @@ import {
 	isFinalAssistantMessageForToolPrune,
 	shouldFlushOnMessageEnd,
 } from "./lifecycle.js";
+import { reconstructToolOutputRecordsFromBranch } from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
 import {
 	type ApplyPruningResult,
 	applyToolOutputPruning,
-	branchEntryMatchesToolOutputRecord,
+	branchEntrySafelyMatchesToolOutputRecord,
 	type ToolOutputBranchEntry,
 } from "./pruner.js";
 import { queryToolOutput } from "./recovery.js";
@@ -119,16 +120,34 @@ export class ToolOutputPruningCoordinator {
 
 	onSessionTree(ctx: BranchProviderContext): void {
 		this.state.resetPending();
-		if (!isToolOutputPruningEnabled(this.getSettings())) {
+		const settings = this.getSettings();
+		if (!isToolOutputPruningEnabled(settings)) {
+			this.state.finalizedRecords = [];
+			this.state.clearReconstructionResult();
 			return;
 		}
 
-		const branchEntries = this.getBranchEntries(ctx);
+		const branch = ctx.sessionManager.getBranch();
+		const branchEntries = this.getBranchEntriesFromBranch(branch);
 		this.state.finalizedRecords = this.state.finalizedRecords.filter((record) =>
 			branchEntries.some((entry) =>
-				branchEntryMatchesToolOutputRecord(entry, record),
+				branchEntrySafelyMatchesToolOutputRecord(entry, record, settings),
 			),
 		);
+		if (this.state.finalizedRecords.length === 0) {
+			const result = reconstructToolOutputRecordsFromBranch(
+				branch,
+				branchEntries,
+				settings,
+			);
+			this.state.recordReconstructionResult(result);
+			if (result.ok) {
+				this.state.finalizedRecords = result.records;
+				this.state.advanceShortRefCounterFromRecords(result.records);
+			} else {
+				this.state.finalizedRecords = [];
+			}
+		}
 	}
 
 	onSessionShutdown(): void {
@@ -189,13 +208,16 @@ export class ToolOutputPruningCoordinator {
 	private getBranchEntries(
 		ctx: BranchProviderContext,
 	): ToolOutputBranchEntry[] {
-		return ctx.sessionManager
-			.getBranch()
-			.filter(isSessionMessageEntry)
-			.map((entry) => ({
-				type: entry.type,
-				id: entry.id,
-				message: entry.message,
-			}));
+		return this.getBranchEntriesFromBranch(ctx.sessionManager.getBranch());
+	}
+
+	private getBranchEntriesFromBranch(
+		branch: SessionEntry[],
+	): ToolOutputBranchEntry[] {
+		return branch.filter(isSessionMessageEntry).map((entry) => ({
+			type: entry.type,
+			id: entry.id,
+			message: entry.message,
+		}));
 	}
 }

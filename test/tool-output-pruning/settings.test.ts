@@ -16,12 +16,15 @@ describe("tool-output pruning settings", () => {
 	});
 
 	it("can be enabled via env", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING: "true",
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE: "agent-message",
-			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY: "llm",
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY: "stub",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING: "true",
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE: "agent-message",
+				COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY: "llm",
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY: "stub",
+			},
+			{},
+		);
 		expect(settings.experimentalToolOutputPruning).toBe(true);
 		expect(settings.toolOutputPruningMode).toBe("agent-message");
 		expect(settings.toolOutputSummaryStrategy).toBe("llm");
@@ -60,15 +63,18 @@ describe("tool-output pruning settings", () => {
 	});
 
 	it("falls back safely for invalid env values", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING: "maybe",
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE: "every-turn",
-			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY: "deterministic",
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY: "truncate",
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS: "abc",
-			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS: "-10",
-			COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS: "0",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING: "maybe",
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE: "every-turn",
+				COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY: "deterministic",
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY: "truncate",
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS: "abc",
+				COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS: "-10",
+				COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS: "0",
+			},
+			{},
+		);
 		expect(settings.experimentalToolOutputPruning).toBe(false);
 		expect(settings.toolOutputPruningMode).toBe("off");
 		expect(settings.toolOutputSummaryStrategy).toBe("llm");
@@ -113,9 +119,12 @@ describe("tool-output pruning settings", () => {
 	});
 
 	it("delete mode is parsed but does not affect default stub selection", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY: "delete",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY: "delete",
+			},
+			{},
+		);
 		expect(settings.toolOutputPruneStrategy).toBe("delete");
 	});
 
@@ -130,9 +139,12 @@ describe("tool-output pruning settings", () => {
 	});
 
 	it("env comma list sets excluded tools", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS: "bash,read,edit",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS: "bash,read,edit",
+			},
+			{},
+		);
 		expect(settings.toolOutputPruneExcludedTools).toEqual([
 			"bash",
 			"read",
@@ -141,9 +153,12 @@ describe("tool-output pruning settings", () => {
 	});
 
 	it("env comma list sets included tools", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS: "bash,web_search",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS: "bash,web_search",
+			},
+			{},
+		);
 		expect(settings.toolOutputPruneIncludedTools).toEqual([
 			"bash",
 			"web_search",
@@ -151,22 +166,28 @@ describe("tool-output pruning settings", () => {
 	});
 
 	it("clamps min char settings to safe ranges", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS: "10",
-			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS: "50",
-			COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS: "50",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS: "10",
+				COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS: "50",
+				COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS: "50",
+			},
+			{},
+		);
 		expect(settings.toolOutputPruneMinChars).toBe(100);
 		expect(settings.toolOutputSummaryMaxChars).toBe(100);
 		expect(settings.toolOutputQueryMaxChars).toBe(100);
 	});
 
 	it("clamps max char settings to safe ranges", () => {
-		const settings = resolveCompactPlusSettings({
-			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS: "100000",
-			COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS: "50000",
-			COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS: "500000",
-		});
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS: "100000",
+				COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS: "50000",
+				COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS: "500000",
+			},
+			{},
+		);
 		expect(settings.toolOutputPruneMinChars).toBe(50000);
 		expect(settings.toolOutputSummaryMaxChars).toBe(10000);
 		expect(settings.toolOutputQueryMaxChars).toBe(100000);

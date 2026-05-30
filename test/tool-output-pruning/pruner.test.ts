@@ -147,7 +147,7 @@ describe("applyToolOutputPruning", () => {
 		).toBeUndefined();
 	});
 
-	it("stubs matching tool results by toolCallId", () => {
+	it("stubs matching tool results by branch identity", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
 		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
@@ -221,6 +221,46 @@ describe("applyToolOutputPruning", () => {
 					} as unknown as AgentMessage,
 				},
 				{ id: "e2", message: makeToolResultMessage("other-tc", "output") },
+			],
+			state,
+			ENABLED_SETTINGS,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.finalizedRecords).toHaveLength(0);
+	});
+
+	it("fails closed when a context fallback match is ambiguous", () => {
+		const branchMessage = makeToolResultMessage("tc1", "branch output");
+		const contextMessage1 = makeToolResultMessage("tc1", "context output one");
+		const contextMessage2 = makeToolResultMessage("tc1", "context output two");
+		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+
+		const result = applyToolOutputPruning(
+			[contextMessage1, contextMessage2],
+			[{ id: "e1", message: branchMessage }],
+			state,
+			ENABLED_SETTINGS,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.finalizedRecords).toHaveLength(1);
+	});
+
+	it("drops finalized records when toolName no longer matches branch", () => {
+		const msg = makeToolResultMessage("tc1", "output one");
+		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+
+		const result = applyToolOutputPruning(
+			[msg],
+			[
+				{
+					id: "e1",
+					message: {
+						...(msg as object),
+						toolName: "python",
+					} as AgentMessage,
+				},
 			],
 			state,
 			ENABLED_SETTINGS,

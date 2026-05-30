@@ -7,12 +7,14 @@ vi.mock("@earendil-works/pi-ai", () => ({
 
 import { completeSimple } from "@earendil-works/pi-ai";
 import { ToolOutputPruningCoordinator } from "../../src/tool-output-pruning/coordinator.js";
+import { buildToolPruneSummaryData } from "../../src/tool-output-pruning/metadata.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
 import type {
 	PendingToolOutputBatch,
 	ToolOutputPruningSettings,
 	ToolOutputRecord,
 } from "../../src/tool-output-pruning/types.js";
+import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../../src/types.js";
 
 const ENABLED_SETTINGS: ToolOutputPruningSettings = {
 	experimentalToolOutputPruning: true,
@@ -108,7 +110,13 @@ function makeCtx(messages: AgentMessage[] = []) {
 }
 
 function makeCtxFromEntries(
-	entries: Array<{ type: string; id: string; message?: AgentMessage }>,
+	entries: Array<{
+		type: string;
+		id: string;
+		message?: AgentMessage;
+		customType?: string;
+		data?: unknown;
+	}>,
 ) {
 	return {
 		sessionManager: {
@@ -243,6 +251,152 @@ describe("ToolOutputPruningCoordinator", () => {
 		);
 
 		expect(state.finalizedRecords).toHaveLength(0);
+	});
+
+	it("reconstructs finalized records from current-branch metadata on session tree", () => {
+		const toolResult = makeToolResultMessage("tc1", "original output");
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		const record = makeRecord("tc1", "t1", "entry-1");
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+
+		coordinator.onSessionTree(
+			makeCtxFromEntries([
+				{ type: "message", id: "entry-1", message: toolResult },
+				{
+					type: "custom",
+					id: "summary-1",
+					customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+					data: summaryData,
+				},
+			]),
+		);
+
+		expect(state.finalizedRecords).toHaveLength(1);
+		expect(state.finalizedRecords[0]?.toolCallId).toBe("tc1");
+		expect(state.finalizedRecords[0]?.fallbackSnippets).toBeNull();
+		expect(state.lastReconstructionStatus).toBe("ok");
+		expect(state.lastReconstructedCount).toBe(1);
+	});
+
+	it("advances short refs after reconstruction to avoid duplicate refs", () => {
+		const toolResult = makeToolResultMessage("tc1", "original output");
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+			now: () => 1234,
+		});
+		const record = makeRecord("tc1", "t3", "entry-1");
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+
+		coordinator.onSessionTree(
+			makeCtxFromEntries([
+				{ type: "message", id: "entry-1", message: toolResult },
+				{
+					type: "custom",
+					id: "summary-1",
+					customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+					data: summaryData,
+				},
+			]),
+		);
+		const capture = coordinator.onTurnEnd({
+			message: makeAssistantMessage("toolUse"),
+			toolResults: [makeToolResultMessage("tc2")],
+			turnIndex: 2,
+		});
+
+		expect(capture?.records[0]?.shortRef).toBe("t4");
+	});
+
+	it("does not reconstruct or expose records when pruning is disabled", () => {
+		const toolResult = makeToolResultMessage("tc1", "original output");
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => DISABLED_SETTINGS,
+		});
+		const record = makeRecord("tc1", "t1", "entry-1");
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+
+		coordinator.onSessionTree(
+			makeCtxFromEntries([
+				{ type: "message", id: "entry-1", message: toolResult },
+				{
+					type: "custom",
+					id: "summary-1",
+					customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+					data: summaryData,
+				},
+			]),
+		);
+
+		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.lastReconstructionStatus).toBeNull();
+		expect(
+			coordinator.transformContext([toolResult], makeCtx([toolResult])),
+		).toBe(undefined);
+		expect(() => coordinator.query({}, makeCtx([toolResult]))).toThrow(
+			"inactive because tool-output pruning is not enabled",
+		);
+	});
+
+	it("fails metadata reconstruction atomically for stale branches", () => {
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		const record = makeRecord("tc1", "t1", "entry-1");
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+
+		coordinator.onSessionTree(
+			makeCtxFromEntries([
+				{
+					type: "message",
+					id: "other-entry",
+					message: makeToolResultMessage("tc1", "original output"),
+				},
+				{
+					type: "custom",
+					id: "summary-1",
+					customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+					data: summaryData,
+				},
+			]),
+		);
+
+		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.lastReconstructionStatus).toBe("error");
+		expect(state.lastReconstructionError).toContain("current branch");
 	});
 
 	it("stubs current-branch tool results during context transforms", () => {

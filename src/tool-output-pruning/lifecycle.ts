@@ -13,6 +13,7 @@ import {
 	extractToolResultText,
 } from "./capture.js";
 import { type IndexedBatch, indexToolResultsFromBranch } from "./indexer.js";
+import { buildToolPruneSummaryData } from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
 import type { ToolOutputPruningState } from "./state.js";
 import { summarizeBatch } from "./summarizer.js";
@@ -89,7 +90,9 @@ export function buildSummarizerInputs(
 	for (const record of pendingRecords) {
 		const toolResult = branchEntries.find((e) => {
 			const msg = e.message;
-			return isToolResultMessage(msg) && getToolCallId(msg) === record.toolCallId;
+			return (
+				isToolResultMessage(msg) && getToolCallId(msg) === record.toolCallId
+			);
 		})?.message;
 
 		if (!toolResult) {
@@ -188,18 +191,29 @@ export async function flushPendingBatches(
 			})
 			.filter((ib) => ib.records.length > 0);
 
+		const indexedRecordIds = new Set(
+			indexedBatches.flatMap((indexed) =>
+				indexed.records.map((record) => record.recordId),
+			),
+		);
 		indexToolResultsFromBranch(branchEntries, indexedBatches, state);
+		const finalizedRecordsForMetadata = state.finalizedRecords.filter(
+			(record) => indexedRecordIds.has(record.recordId),
+		);
 
-		// Append a compact summary entry for observability/recovery
-		const refLines = state.finalizedRecords
-			.map((r) => `${r.shortRef}: ${r.toolName}`)
-			.join("\n");
-		pi.appendEntry(TOOL_PRUNE_SUMMARY_CUSTOM_TYPE, {
-			timestamp: Date.now(),
-			refs: refLines,
-			summaryChars: result.totalChars,
-			recordCount: state.finalizedRecords.length,
-		});
+		// Append a compact summary entry for observability/recovery. The legacy
+		// top-level fields are preserved for status/history compatibility; bounded
+		// metadata is included separately for branch-safe reconstruction.
+		pi.appendEntry(
+			TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+			buildToolPruneSummaryData({
+				allRecords: state.finalizedRecords,
+				metadataRecords: finalizedRecordsForMetadata,
+				settings,
+				summaryChars: result.totalChars,
+				timestamp: Date.now(),
+			}),
+		);
 
 		state.lastSummaryStatus = "ok";
 		state.lastSummaryTime = Date.now();

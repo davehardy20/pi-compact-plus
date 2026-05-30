@@ -69,7 +69,9 @@ When enabled, Compact+:
 2. Summarizes them with an LLM call after the final assistant message.
 3. Replaces the original text content with compact recovery stubs in future
    model context.
-4. Preserves recovery through a built-in query tool
+4. Persists bounded metadata-only summary entries for branch-safe recovery
+   reconstruction after reloads.
+5. Preserves recovery through a built-in query tool
    (`compact_plus_query_tool_output`).
 
 **Safety defaults:**
@@ -86,11 +88,17 @@ When enabled, Compact+:
 - Original `toolResult` messages are preserved in the session branch. Pruning
   only affects future context snapshots by stubbing content, not deleting
   messages.
-- Capture, pending/finalized state, summarizer inputs, query scanning, and
-  query output are bounded with hard internal limits so long sessions degrade
-  by trimming/skipping instead of growing without bound.
+- Durable pruning metadata never stores original tool output. It stores bounded
+  record ids, entry ids, tool call ids, tool names, summaries, argument
+  previews, and counters needed to reconstruct the runtime index safely.
+- Capture, pending/finalized state, metadata reconstruction, summarizer inputs,
+  query scanning, and query output are bounded with hard internal limits so long
+  sessions degrade by trimming/skipping instead of growing without bound.
 - Summarization is atomic: a flushed batch is indexed/pruned only when every
   pending record has a non-empty summary tied to its short ref.
+- Metadata reconstruction is atomic: malformed active-version metadata,
+  over-limit payloads, duplicates, excluded tools, stale branch entries, or
+  mismatched `entryId`/`toolCallId`/tool-name pairs reconstruct no records.
 
 **Attribution and reuse:** Batch capture, LLM semantic summarization, short
 refs, branch-aware indexing, and recovery-query behavior were adapted from
@@ -205,10 +213,20 @@ threshold profile.
 
 ### Tool-output pruning recovery
 
-V1 appends `compact-plus-tool-prune-summary` entries for summary visibility and
-observability. The runtime index and stats are kept in extension state and
-reconciled against the active branch; separate append-only index/stats entries
-are intentionally deferred until persistence is implemented and tested.
+V1 appends `compact-plus-tool-prune-summary` entries for summary visibility,
+observability, and metadata-only reconstruction. Legacy top-level fields
+(`timestamp`, `refs`, `summaryChars`, `recordCount`) remain for status/history
+compatibility. Newer entries also include a nested schema-versioned metadata
+payload that is used only after it is validated against the current active
+branch.
+
+On reload or branch-tree updates, Compact+ reconstructs finalized pruning
+records only when pruning is effectively enabled and metadata matches current
+branch tool-result entries by `entryId`, `toolCallId`, tool name, tool-result
+role, and text-only content. Older summary entries without metadata are skipped
+safely. Active-version metadata that is malformed, oversized, duplicated,
+excluded by protected/user policy, or stale fails closed and reconstructs no
+records.
 
 Compact+ always registers a recovery query tool so recovery stubs can point to
 an available tool, but execution remains inactive and throws unless pruning is
@@ -222,7 +240,9 @@ Use this tool to recover original output by short ref or search terms. Query
 results are bounded by record count, scanned record count, per-record original
 text scan chars, total original text scan chars, and max returned chars. Full
 content recovery requires `includeContent=true` and is limited by
-`toolOutputQueryMaxChars` plus hard internal scan/result-size caps.
+`toolOutputQueryMaxChars` plus hard internal scan/result-size caps. Even after
+metadata reconstruction, original content is read only from the current branch's
+existing tool-result messages; it is not read from persisted metadata.
 
 **Caveats:**
 
@@ -231,7 +251,9 @@ content recovery requires `includeContent=true` and is limited by
   relying on exact text, line numbers, diagnostics, or hashes.
 - Stubbed content is labeled as historical data, not instructions, to reduce
   prompt-injection risk from captured tool output.
-- Branch navigation (e.g., switching to a different session branch) removes stale index records automatically.
+- Branch navigation (e.g., switching to a different session branch) removes
+  stale index records automatically. Metadata from stale branches is rejected
+  during reconstruction.
 - Sub-agents currently run with `--no-extensions` and do not inherit pruning behavior.
 
 ## Troubleshooting
@@ -265,6 +287,8 @@ Run `/compact-plus tool-prune status` for detailed pruning state:
 - pending batch/record counts
 - whether a flush is in progress
 - last summary status and time
+- last metadata reconstruction status, scanned counts, skipped legacy entries,
+  and a bounded non-sensitive error note when reconstruction fails
 - protected exclusions plus user excluded/included tools
 - summarizer model and thinking level
 
