@@ -18,26 +18,20 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
-import { runCustomCompaction } from "./compact.js";
-import {
-	type CompactionExecutionPath,
-	resolveCompactionRuntimeCompatibility,
-} from "./compatibility.js";
+import { CompactionCoordinator } from "./compaction-coordinator.js";
 import { registerCompactPlusStatusCommand } from "./extension-status.js";
 import {
 	classifyMessages,
 	extractCurrentFocus,
 	extractDependencyChain,
 	extractSessionSnapshot,
-	extractTextContent,
 } from "./focus.js";
-import { executeCompaction } from "./lifecycle.js";
 import { createPackageMetadataResolver } from "./package-metadata.js";
 import {
 	loadTelemetryWithDiagnostics,
 	saveTelemetryWithDiagnostics,
 } from "./persist.js";
-import { isAssistantMessage, isSessionMessageEntry } from "./pi-messages.js";
+import { isSessionMessageEntry } from "./pi-messages.js";
 import {
 	buildCheckpointData,
 	buildStatusSnapshot,
@@ -52,11 +46,7 @@ import {
 	buildCurrentFocusBlock,
 	buildSummaryInstructions,
 } from "./prompts.js";
-import {
-	buildPersistedFocusEcho,
-	hasAdversarialPatterns,
-	reorderForPositioning,
-} from "./reorder.js";
+import { hasAdversarialPatterns, reorderForPositioning } from "./reorder.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 import { CompactionState } from "./state.js";
 import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";
@@ -71,13 +61,11 @@ import {
 	CHECKPOINT_CUSTOM_TYPE,
 	CONTINUATION_PROMPT,
 	COOLDOWN_MS,
-	type CompactionTelemetry,
 	type EffectiveUsage,
 	HARD_THRESHOLD_PERCENT,
 	REGROWTH_TOKENS,
 	STANDARD_THRESHOLD_PERCENT,
 	type SummaryInstructionOptions,
-	type TriggerSource,
 } from "./types.js";
 
 export {
@@ -108,30 +96,16 @@ async function persistTelemetrySnapshot(): Promise<void> {
 	state.recordTelemetryPersistenceIssue(result.issue);
 }
 
-function parseTelemetryTimestamp(value: unknown): number {
-	if (typeof value === "number" && Number.isFinite(value)) {
-		return value;
-	}
-	if (typeof value === "string") {
-		const parsed = Date.parse(value);
-		if (Number.isFinite(parsed)) {
-			return parsed;
-		}
-	}
-	return Date.now();
-}
-
-function coerceStringArray(value: unknown): string[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const strings = value.filter(
-		(item): item is string => typeof item === "string",
-	);
-	return strings.length > 0 ? strings : undefined;
-}
-
 // ── Extension ────────────────────────────────────────────────────────
 
 export default function compactPlusExtension(pi: ExtensionAPI) {
+	const compactionCoordinator = new CompactionCoordinator({
+		state,
+		pi,
+		getEffectiveUsage,
+		persistTelemetrySnapshot,
+	});
+
 	// ── Register recovery query tool (inactive unless pruning enabled) ─
 
 	pi.registerTool(
@@ -202,29 +176,8 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			if (state.isCompacting) {
-				ctx.ui.notify("📦 A compaction is already in progress.", "warning");
-				return;
-			}
-
-			const mode =
-				trimmed === "hard" ? ("hard" as const) : ("standard" as const);
-			state.lastTriggerAuto = false;
-
-			const cmdEntries = ctx.sessionManager.getBranch();
-			const cmdMessages = cmdEntries
-				.filter(isSessionMessageEntry)
-				.map((e) => e.message);
-			const cmdFocus = extractCurrentFocus(cmdMessages);
-
-			ctx.ui.notify(
-				`📦 Compact+ ${mode} compaction triggered manually.`,
-				"info",
-			);
-
-			executeCompaction(mode, cmdFocus, state, ctx, pi, {
-				persist: persistTelemetrySnapshot,
-			});
+			const mode = trimmed === "hard" ? "hard" : "standard";
+			await compactionCoordinator.handleManualCommand(mode, ctx);
 		},
 	});
 
@@ -306,56 +259,6 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		};
 	}
 
-	async function maybeAutoCompact(
-		ctx: Parameters<Parameters<ExtensionAPI["on"]>[1]>[1],
-		triggerSource: string,
-		turnIndex?: number,
-	) {
-		const usage = getEffectiveUsage(ctx);
-		const model = ctx.model;
-		if (!usage || !model) return;
-
-		if (usage.percent === null || usage.tokens === null) return;
-
-		const mode = getModeFromUsage(usage.percent);
-		if (!mode || mode === "checkpoint") return;
-
-		const now = Date.now();
-		if (state.isOnCooldown(COOLDOWN_MS)) return;
-
-		if (state.isRegrowthBelowThreshold(usage.tokens, REGROWTH_TOKENS)) return;
-
-		if (state.isCompacting) return;
-
-		// Prevent competing with an in-flight tool-output pruning flush
-		if (state.toolOutputPruning.isFlushing) return;
-
-		// Prevent double-triggering within the same turn
-		if (state.isSameTurn(turnIndex)) return;
-
-		state.selectedMode = mode;
-		state.isCompacting = true;
-		state.lastCompactTime = now;
-		state.lastTriggerAuto = true;
-		if (turnIndex !== undefined) state.lastCompactTurnIndex = turnIndex;
-
-		const autoEntries = ctx.sessionManager.getBranch();
-		const autoMessages = autoEntries
-			.filter(isSessionMessageEntry)
-			.map((e) => e.message);
-		const autoFocus = extractCurrentFocus(autoMessages);
-
-		ctx.ui.notify(
-			`📦 Compact+ auto-compaction triggered at ${usage.percent.toFixed(0)}% (${usage.tokens.toLocaleString()} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode} (${triggerSource})`,
-			"info",
-		);
-
-		executeCompaction(mode, autoFocus, state, ctx, pi, {
-			sendContinuation: true,
-			persist: persistTelemetrySnapshot,
-		});
-	}
-
 	// ── session_start: load persisted telemetry ───────────────────────
 
 	pi.on("session_start", async (_event, _ctx) => {
@@ -390,7 +293,11 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 			toolResults: event.toolResults as AgentMessage[],
 			turnIndex: event.turnIndex,
 		});
-		await maybeAutoCompact(ctx, "turn_end", event.turnIndex);
+		await compactionCoordinator.maybeAutoCompact(
+			ctx,
+			"turn_end",
+			event.turnIndex,
+		);
 	});
 
 	// ── message_end: auto-compact + flush pending tool-output batches ─
@@ -410,199 +317,17 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 
 		// Only auto-compact on assistant messages that have valid usage
 		if (!assistant.usage) return;
-		await maybeAutoCompact(ctx, "message_end");
+		await compactionCoordinator.maybeAutoCompact(ctx, "message_end");
 	});
 
 	// ── session_before_compact ─────────────────────────────────────────
 
 	pi.on("session_before_compact", async (event, ctx) => {
-		const mode = state.selectedMode;
-
-		if (!mode) {
-			return;
-		}
-
-		const focusMessages = event.preparation.isSplitTurn
-			? [
-					...event.preparation.messagesToSummarize,
-					...event.preparation.turnPrefixMessages,
-				]
-			: event.preparation.messagesToSummarize;
-		const focus = extractCurrentFocus(focusMessages);
-		const usage = getEffectiveUsage(ctx);
-		const compatibility = resolveCompactionRuntimeCompatibility({
-			event,
-			branchEntries: event.branchEntries,
-		});
-
-		const triggerSource: TriggerSource = state.lastTriggerAuto
-			? event.preparation.isSplitTurn
-				? "message_end"
-				: "turn_end"
-			: "command";
-		const triggerReason = state.lastTriggerAuto
-			? "auto at threshold"
-			: `manual /compact-plus ${mode}`;
-		const previousSummaryPresent = event.preparation.messagesToSummarize.some(
-			(m) =>
-				isAssistantMessage(m) &&
-				extractTextContent(m).includes("Compaction Summary"),
-		);
-
-		const telemetryBase: CompactionTelemetry = {
-			mode: mode === "standard" || mode === "hard" ? mode : "standard",
-			triggerSource,
-			triggerReason,
-			timestamp: Date.now(),
-			focusTags: focus.activeFiles.map((f) => f.split("/").pop() ?? f),
-			previousSummaryPresent,
-			splitTurn: event.preparation.isSplitTurn,
-			usageSource: usage?.source ?? "unknown",
-			messagesSummarizedCount: event.preparation.messagesToSummarize.length,
-			usagePercentAtTrigger: usage?.percent ?? undefined,
-			usageTokensAtTrigger: usage?.tokens ?? undefined,
-			executionPath: compatibility.executionPath,
-			fromExtension: compatibility.executionPath === "custom",
-			thinkingLevel: compatibility.thinkingLevel ?? null,
-			compatibilityReason: compatibility.reason,
-		};
-
-		if (compatibility.executionPath === "native-fallback") {
-			state.pendingCompaction = {
-				...telemetryBase,
-				executionPath: "native-fallback",
-				fromExtension: false,
-				fallbackReason: compatibility.reason ?? undefined,
-			};
-			state.lastFallbackReason = compatibility.reason;
-			await persistTelemetrySnapshot();
-
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					"Compact+ is deferring to native Pi compaction to preserve stream-aware routing.",
-					"warning",
-				);
-			}
-
-			return undefined;
-		}
-
-		const attempt = await runCustomCompaction(
-			event.preparation,
-			mode,
-			ctx,
-			compatibility,
-			event.signal,
-		);
-
-		if (attempt.result) {
-			state.pendingCompaction = {
-				...telemetryBase,
-				classifiedCounts: attempt.classifiedCounts,
-				fallbackReason: attempt.fallbackReason ?? undefined,
-			};
-			state.lastFallbackReason = attempt.fallbackReason;
-			await persistTelemetrySnapshot();
-
-			return {
-				compaction: {
-					...attempt.result,
-					details: {
-						...(typeof attempt.result.details === "object" &&
-						attempt.result.details !== null
-							? attempt.result.details
-							: {}),
-						mode,
-						triggerReason,
-						auto: state.lastTriggerAuto,
-						timestamp: telemetryBase.timestamp,
-						focusTags: telemetryBase.focusTags,
-						executionPath: telemetryBase.executionPath,
-						thinkingLevel: telemetryBase.thinkingLevel,
-						compatibilityReason: telemetryBase.compatibilityReason,
-					},
-				},
-			};
-		}
-
-		state.lastFallbackReason =
-			attempt.fallbackReason ?? "custom summarization unavailable";
-		state.pendingCompaction = {
-			...telemetryBase,
-			executionPath: "native-fallback",
-			fromExtension: false,
-			fallbackReason: state.lastFallbackReason,
-			compatibilityReason:
-				telemetryBase.compatibilityReason ?? state.lastFallbackReason,
-		};
-		await persistTelemetrySnapshot();
-
-		if (ctx.hasUI) {
-			ctx.ui.notify(
-				"Compact+ custom summarization unavailable; falling back to default compaction.",
-				"warning",
-			);
-		}
-
-		return undefined;
+		return compactionCoordinator.onSessionBeforeCompact(event, ctx);
 	});
 
-	pi.on("session_compact", async (event, _ctx) => {
-		const pending = state.pendingCompaction;
-		if (!pending) {
-			return;
-		}
-
-		const details =
-			typeof event.compactionEntry.details === "object" &&
-			event.compactionEntry.details !== null
-				? (event.compactionEntry.details as Record<string, unknown>)
-				: {};
-		const executionPath: CompactionExecutionPath = event.fromExtension
-			? pending.executionPath
-			: "native-fallback";
-		const fallbackReason =
-			typeof details.fallbackReason === "string"
-				? details.fallbackReason
-				: pending.fallbackReason;
-
-		state.lastCompaction = {
-			...pending,
-			mode: details.mode === "hard" ? "hard" : pending.mode,
-			triggerReason:
-				typeof details.triggerReason === "string"
-					? details.triggerReason
-					: pending.triggerReason,
-			timestamp: parseTelemetryTimestamp(
-				details.timestamp ?? event.compactionEntry.timestamp,
-			),
-			focusTags: coerceStringArray(details.focusTags) ?? pending.focusTags,
-			executionPath,
-			fromExtension: event.fromExtension,
-			fallbackReason,
-			thinkingLevel:
-				typeof details.thinkingLevel === "string"
-					? details.thinkingLevel
-					: (pending.thinkingLevel ?? null),
-			compatibilityReason:
-				typeof details.compatibilityReason === "string"
-					? details.compatibilityReason
-					: (pending.compatibilityReason ?? null),
-		};
-		state.lastFallbackReason = fallbackReason ?? null;
-		state.lastCompactTime = state.lastCompaction.timestamp;
-		state.lastInjectedEcho =
-			executionPath === "custom" &&
-			typeof event.compactionEntry.summary === "string"
-				? buildPersistedFocusEcho(event.compactionEntry.summary)
-				: null;
-		state.echoInjected = false;
-		state.clearPendingCompaction();
-		const postUsage = _ctx.getContextUsage();
-		if (postUsage && typeof postUsage.tokens === "number") {
-			state.lastCompactTokens = postUsage.tokens;
-		}
-		await persistTelemetrySnapshot();
+	pi.on("session_compact", async (event, ctx) => {
+		await compactionCoordinator.onSessionCompact(event, ctx);
 	});
 
 	// ── session_before_tree ────────────────────────────────────────────
@@ -665,8 +390,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 	// ── model_select reset ─────────────────────────────────────────────
 
 	pi.on("model_select", async (event, _ctx) => {
-		const key = modelKey(event.model);
-		if (key) state.resetOnModelChange(key);
+		compactionCoordinator.onModelSelect(event);
 	});
 }
 
