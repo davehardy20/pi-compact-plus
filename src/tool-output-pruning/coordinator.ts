@@ -95,6 +95,10 @@ export class ToolOutputPruningCoordinator {
 		);
 	}
 
+	hasPendingFlush(): boolean {
+		return this.state.pendingBatches.length > 0;
+	}
+
 	async onMessageEnd(
 		event: MessageEndPruningEvent,
 		ctx: ExtensionContext,

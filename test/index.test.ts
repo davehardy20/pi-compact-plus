@@ -402,6 +402,171 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 	});
 
+	it("resets stale runtime state at session_start when no telemetry is restored", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const compactPlusCommand = pi.commands.get("compact-plus");
+		const modelSelectHandler = pi.events.get("model_select")?.[0];
+		const sessionStartHandler = pi.events.get("session_start")?.[0];
+		expect(compactPlusCommand).toBeDefined();
+		expect(modelSelectHandler).toBeDefined();
+		expect(sessionStartHandler).toBeDefined();
+		if (!compactPlusCommand || !modelSelectHandler || !sessionStartHandler) {
+			throw new Error("required handlers not registered");
+		}
+
+		const pruningState = __test__.getToolOutputPruningState();
+		pruningState.pendingBatches.push({
+			batchId: "batch-stale",
+			turnIndex: 1,
+			timestamp: Date.now(),
+			recordIds: ["record-stale"],
+		});
+		pruningState.finalizedRecords.push({
+			recordId: "record-stale",
+			entryId: "entry-stale",
+			toolCallId: "tc-stale",
+			toolName: "bash",
+			timestamp: Date.now(),
+			chars: 100,
+			isError: false,
+			summary: "stale summary",
+			shortRef: "t1",
+			argsPreview: null,
+			fallbackSnippets: null,
+		});
+
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		await compactPlusCommand.handler("", ctx);
+		await modelSelectHandler(
+			{ model: { provider: "test", id: "stale-model" } },
+			ctx,
+		);
+
+		expect(__test__.getIsCompacting()).toBe(true);
+		expect(__test__.getSelectedMode()).toBe("standard");
+		expect(__test__.getLastModelKey()).toBe("test/stale-model");
+		expect(pruningState.pendingBatches).toHaveLength(1);
+
+		await sessionStartHandler({}, ctx);
+
+		expect(__test__.getIsCompacting()).toBe(false);
+		expect(__test__.getSelectedMode()).toBeNull();
+		expect(__test__.getLastModelKey()).toBeNull();
+		expect(pruningState.pendingBatches).toHaveLength(0);
+		expect(pruningState.finalizedRecords).toHaveLength(0);
+	});
+
+	it("defers turn_end auto-compaction until pending tool-output batches flush", async () => {
+		const prevEnv: Record<string, string | undefined> = {
+			COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING:
+				process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING,
+			COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE,
+			COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS:
+				process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS,
+		};
+		process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING = "true";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE = "agent-message";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS = "1";
+
+		try {
+			const pi = createMockPi();
+			compactPlusExtension(pi as never);
+			__test__.resetState();
+
+			const turnEndHandler = pi.events.get("turn_end")?.[0];
+			const messageEndHandler = pi.events.get("message_end")?.[0];
+			expect(turnEndHandler).toBeDefined();
+			expect(messageEndHandler).toBeDefined();
+			if (!turnEndHandler || !messageEndHandler) {
+				throw new Error("required handlers not registered");
+			}
+
+			vi.mocked(completeSimple).mockResolvedValueOnce({
+				role: "assistant",
+				content: [{ type: "text", text: "## t1\nSummarized tool output." }],
+				api: "openai-completions",
+				provider: "openai",
+				model: "gpt-4",
+				usage: {
+					input: 10,
+					output: 5,
+					totalTokens: 15,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			} as never);
+
+			const toolResult = {
+				role: "toolResult",
+				toolCallId: "tc1",
+				toolName: "bash",
+				content: [{ type: "text", text: "large output ".repeat(20) }],
+				isError: false,
+			} as TestAgentMessage;
+			const ctx = createMockCtx({
+				contextWindow: 100000,
+				contextUsage: { tokens: 80000, percent: 80 },
+				messages: [toolResult],
+			});
+
+			await turnEndHandler(
+				{
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "tool call complete" }],
+					},
+					toolResults: [toolResult],
+					turnIndex: 7,
+				},
+				ctx,
+			);
+
+			expect(__test__.getToolOutputPruningState().pendingBatches).toHaveLength(
+				1,
+			);
+			expect(ctx.compact).not.toHaveBeenCalled();
+
+			await messageEndHandler(
+				{
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+						stopReason: "stop",
+						usage: { input: 10, output: 5, totalTokens: 15 },
+					},
+				},
+				ctx,
+			);
+
+			expect(__test__.getToolOutputPruningState().pendingBatches).toHaveLength(
+				0,
+			);
+			expect(pi.appendEntry).toHaveBeenCalled();
+			expect(ctx.compact).toHaveBeenCalledTimes(1);
+		} finally {
+			for (const [key, value] of Object.entries(prevEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
+	});
+
 	it("uses the public streamSimple adapter when Pi does not expose streamFn", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
