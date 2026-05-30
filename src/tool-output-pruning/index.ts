@@ -37,12 +37,32 @@ export {
 	shouldFlushOnMessageEnd,
 } from "./lifecycle.js";
 export {
+	buildToolPruneSummaryData,
+	MAX_RECONSTRUCTED_ARGS_PREVIEW_CHARS,
+	MAX_RECONSTRUCTED_CHARS_VALUE,
+	MAX_RECONSTRUCTED_ID_CHARS,
+	MAX_RECONSTRUCTED_SHORT_REF_CHARS,
+	MAX_RECONSTRUCTED_SUMMARY_CHARS,
+	MAX_RECONSTRUCTED_TOOL_NAME_CHARS,
+	MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES,
+	MAX_RECONSTRUCTION_SCAN_BYTES,
+	MAX_RECONSTRUCTION_SCAN_ENTRIES,
+	reconstructToolOutputRecordsFromBranch,
+	TOOL_PRUNE_METADATA_SCHEMA_VERSION,
+	TOOL_PRUNE_METADATA_SOURCE,
+	type ToolOutputMetadataReconstructionResult,
+	type ToolOutputRecordMetadata,
+	type ToolPrunePersistedMetadata,
+	type ToolPruneSummaryData,
+} from "./metadata.js";
+export {
 	formatToolOutputPruningStatusLine,
 	isToolOutputPruningEnabled,
 } from "./policy.js";
 export {
 	type ApplyPruningResult,
 	applyToolOutputPruning,
+	branchEntrySafelyMatchesToolOutputRecord,
 	buildPrunedToolResult,
 } from "./pruner.js";
 export {

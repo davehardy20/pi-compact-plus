@@ -394,6 +394,25 @@ describe("flushPendingBatches", () => {
 		expect(state.lastSummaryStatus).toBe("ok");
 		expect(state.lastSummaryTime).not.toBeNull();
 		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		const appendCall = pi.appendEntry.mock.calls[0];
+		expect(appendCall?.[0]).toBe("compact-plus-tool-prune-summary");
+		expect(appendCall?.[1]).toMatchObject({
+			recordCount: 1,
+			refs: "t1: bash",
+			metadata: {
+				recordCount: 1,
+				records: [
+					{
+						recordId: "r1",
+						entryId: "e1",
+						toolCallId: "tc1",
+						toolName: "bash",
+						fallbackSnippets: null,
+					},
+				],
+			},
+		});
+		expect(JSON.stringify(appendCall?.[1])).not.toContain("original");
 		expect(state.isFlushing).toBe(false);
 	});
 
