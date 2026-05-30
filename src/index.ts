@@ -14,10 +14,6 @@
  *   /checkpoint [note]     — persist a checkpoint without compacting
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
@@ -27,6 +23,7 @@ import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
+import { registerCompactPlusStatusCommand } from "./extension-status.js";
 import {
 	classifyMessages,
 	extractCurrentFocus,
@@ -35,6 +32,7 @@ import {
 	extractTextContent,
 } from "./focus.js";
 import { executeCompaction } from "./lifecycle.js";
+import { createPackageMetadataResolver } from "./package-metadata.js";
 import {
 	loadTelemetryWithDiagnostics,
 	saveTelemetryWithDiagnostics,
@@ -89,52 +87,9 @@ export {
 	type SummaryInstructionOptions,
 };
 
-// ── Package metadata ────────────────────────────────────────────────
-
-interface PackageMetadata {
-	name: string;
-	version: string;
-	packageRoot: string;
-	sourcePath: string;
-}
-
-const sourcePath = fileURLToPath(import.meta.url);
-const packageRoot = path.resolve(path.dirname(sourcePath), "..");
-let cachedPackageMetadata: PackageMetadata | null = null;
-
-function getPackageMetadata(): PackageMetadata {
-	if (cachedPackageMetadata) {
-		return cachedPackageMetadata;
-	}
-
-	let name = "pi-compact-plus";
-	let version = "0.1.0";
-
-	try {
-		const packageJsonPath = path.join(packageRoot, "package.json");
-		const packageJson = JSON.parse(
-			fs.readFileSync(packageJsonPath, "utf8"),
-		) as {
-			name?: string;
-			version?: string;
-		};
-		name = packageJson.name ?? name;
-		version = packageJson.version ?? version;
-	} catch {
-		// Best-effort metadata only.
-	}
-
-	cachedPackageMetadata = {
-		name,
-		version,
-		packageRoot,
-		sourcePath,
-	};
-	return cachedPackageMetadata;
-}
-
 // ── State ────────────────────────────────────────────────────────────
 
+const getPackageMetadata = createPackageMetadataResolver(import.meta.url);
 const state = new CompactionState();
 const toolOutputPruning = new ToolOutputPruningCoordinator({
 	state: state.toolOutputPruning,
@@ -288,12 +243,18 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("compact-plus-status", {
-		description: "Show Compact+ package status and debug info",
-		handler: async (_args, _ctx) => {
-			const metadata = getPackageMetadata();
+	registerCompactPlusStatusCommand(pi, {
+		getMetadata: getPackageMetadata,
+		getStatusState: () => ({
+			isCompacting: state.isCompacting,
+			selectedMode: state.selectedMode,
+			lastCompactTime: state.lastCompactTime,
+			echoInjected: state.echoInjected,
+			lastModelKey: state.lastModelKey,
+		}),
+		getPruningLine: () => {
 			const pruningSettings = resolveCompactPlusSettings();
-			const pruningLine = formatToolOutputPruningStatusLine({
+			return formatToolOutputPruningStatusLine({
 				enabled: isToolOutputPruningEnabled(pruningSettings),
 				mode: pruningSettings.toolOutputPruningMode,
 				strategy: pruningSettings.toolOutputPruneStrategy,
@@ -301,31 +262,6 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 				lastPrunedCount: state.toolOutputPruning.lastPrunedCount,
 				lastSummaryStatus: state.toolOutputPruning.lastSummaryStatus,
 				lastSummaryTime: state.toolOutputPruning.lastSummaryTime,
-			});
-			pi.sendMessage({
-				customType: "compact-plus-status",
-				content: [
-					`${metadata.name} v${metadata.version}`,
-					`source: ${metadata.sourcePath}`,
-					`packageRoot: ${metadata.packageRoot}`,
-					`compacting: ${state.isCompacting}`,
-					`selectedMode: ${state.selectedMode ?? "none"}`,
-					`lastCompactTime: ${state.lastCompactTime ? new Date(state.lastCompactTime).toISOString() : "never"}`,
-					`echoInjected: ${state.echoInjected}`,
-					`lastModelKey: ${state.lastModelKey ?? "none"}`,
-					pruningLine,
-				].join("\n"),
-				details: {
-					packageName: metadata.name,
-					version: metadata.version,
-					sourcePath: metadata.sourcePath,
-					packageRoot: metadata.packageRoot,
-					isCompacting: state.isCompacting,
-					selectedMode: state.selectedMode,
-					lastCompactTime: state.lastCompactTime,
-					echoInjected: state.echoInjected,
-				},
-				display: true,
 			});
 		},
 	});
