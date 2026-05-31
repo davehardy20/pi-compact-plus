@@ -303,6 +303,17 @@ describe("isEligibleToolResult", () => {
 			),
 		).toBe(true);
 	});
+
+	it("rejects missing toolCallId/toolName to fail closed", () => {
+		const msg = {
+			role: "toolResult" as const,
+			content: [{ type: "text" as const, text: "x".repeat(3000) }],
+			isError: false,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+
+		expect(isEligibleToolResult(msg, DEFAULT_SETTINGS)).toBe(false);
+	});
 });
 
 describe("buildArgsPreview", () => {
@@ -494,6 +505,27 @@ describe("captureBatch", () => {
 		expect(record.timestamp).toBe(5000);
 		expect(record.entryId).toBeNull();
 		expect(record.summary).toBeNull();
+	});
+
+	it("skips missing toolCallId/toolName instead of creating empty-identity records", () => {
+		const assistant = makeAssistantMessage();
+		const result = captureBatch(
+			assistant,
+			[
+				{
+					role: "toolResult" as const,
+					content: [{ type: "text" as const, text: "x".repeat(3000) }],
+					isError: false,
+					timestamp: Date.now(),
+				} as unknown as AgentMessage,
+			],
+			1,
+			1234,
+			DEFAULT_SETTINGS,
+			state,
+		);
+
+		expect(result).toBeNull();
 	});
 
 	it("populates argsPreview and fallbackSnippets when available", () => {

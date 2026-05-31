@@ -1,10 +1,9 @@
-import { getToolName } from "../pi-messages.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
-import { isExcludedTool, isTextOnlyToolResult } from "./capture.js";
 import {
-	branchEntryMatchesToolOutputRecord,
+	isExcludedTool,
+	recordMatchesBranchEntry,
 	type ToolOutputBranchEntry,
-} from "./pruner.js";
+} from "./record-identity.js";
 import {
 	MAX_FINALIZED_RECORDS,
 	type ToolOutputPruningSettings,
@@ -392,17 +391,11 @@ function validateMetadataRecord(
 		fallbackSnippets: null,
 	};
 	const matchingEntry = branchEntryById.get(entryId);
-	if (
-		!matchingEntry ||
-		!branchEntryMatchesToolOutputRecord(matchingEntry, record)
-	) {
+	if (!matchingEntry) {
 		return { error: "metadata record does not match current branch" };
 	}
-	if (getToolName(matchingEntry.message) !== toolName) {
-		return { error: "metadata record tool name does not match current branch" };
-	}
-	if (!isTextOnlyToolResult(matchingEntry.message)) {
-		return { error: "metadata record branch tool result is not text-only" };
+	if (!recordMatchesBranchEntry(matchingEntry, record, settings)) {
+		return { error: "metadata record does not match current branch" };
 	}
 
 	return { record };

@@ -6,9 +6,9 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { PROTECTED_EXCLUDED_TOOLS } from "./capture.js";
 import { type FlushResult, flushPendingBatches } from "./lifecycle.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
+import { PROTECTED_EXCLUDED_TOOLS } from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import type { ToolOutputPruningSettings } from "./types.js";
 

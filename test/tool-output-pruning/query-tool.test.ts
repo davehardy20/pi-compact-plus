@@ -103,6 +103,54 @@ describe("queryToolOutput", () => {
 		expect(result.scannedRecords).toBe(0);
 	});
 
+	it("excludes non-message branch entries and current-branch toolName mismatches", () => {
+		state.finalizedRecords.push(
+			makeRecord("tc1", "t1", "e1", "summary one", "bash"),
+			makeRecord("tc2", "t2", "e2", "summary two", "bash"),
+		);
+
+		const result = queryToolOutput({}, state, ENABLED_SETTINGS, [
+			{
+				type: "custom",
+				id: "e1",
+				message: makeToolResultMessage("tc1", "output", "bash"),
+			},
+			{ id: "e2", message: makeToolResultMessage("tc2", "output", "python") },
+		]);
+
+		expect(result.matches).toHaveLength(0);
+		expect(result.scannedRecords).toBe(0);
+	});
+
+	it("excludes non-text, excluded, and include-list-missing current-branch records", () => {
+		state.finalizedRecords.push(
+			makeRecord("tc1", "t1", "e1", "summary one", "bash"),
+			makeRecord("tc2", "t2", "e2", "summary two", "read"),
+			makeRecord("tc3", "t3", "e3", "summary three", "grep"),
+		);
+
+		const result = queryToolOutput(
+			{},
+			state,
+			{ ...ENABLED_SETTINGS, toolOutputPruneIncludedTools: ["python"] },
+			[
+				{
+					id: "e1",
+					message: makeToolResult({
+						toolCallId: "tc1",
+						toolName: "bash",
+						image: true,
+					}),
+				},
+				{ id: "e2", message: makeToolResultMessage("tc2", "output", "read") },
+				{ id: "e3", message: makeToolResultMessage("tc3", "output", "grep") },
+			],
+		);
+
+		expect(result.matches).toHaveLength(0);
+		expect(result.scannedRecords).toBe(0);
+	});
+
 	it("filters by short ref", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
@@ -331,6 +379,38 @@ describe("queryToolOutput", () => {
 		const contentLen = result.matches[0]?.content?.length ?? 0;
 		expect(contentLen).toBeLessThanOrEqual(
 			ENABLED_SETTINGS.toolOutputQueryMaxChars,
+		);
+	});
+
+	it("extracts current-branch text across text blocks and bounds the recovered content", () => {
+		const settings = {
+			...ENABLED_SETTINGS,
+			toolOutputQueryMaxChars: 180,
+		};
+		const msg = {
+			role: "toolResult" as const,
+			toolCallId: "tc-blocks",
+			toolName: "bash",
+			content: [
+				{ type: "text" as const, text: "first block\n" },
+				{ type: "text" as const, text: "second block ".repeat(50) },
+			],
+			isError: false,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+		state.finalizedRecords.push(
+			makeRecord("tc-blocks", "tb", "e-blocks", "summary", "bash", 700),
+		);
+
+		const result = queryToolOutput({ includeContent: true }, state, settings, [
+			{ id: "e-blocks", message: msg },
+		]);
+
+		expect(result.matches).toHaveLength(1);
+		expect(result.matches[0]?.content).toContain("first block\nsecond block");
+		expect(result.matches[0]?.contentTruncated).toBe(true);
+		expect(result.matches[0]?.content?.length ?? 0).toBeLessThanOrEqual(
+			settings.toolOutputQueryMaxChars,
 		);
 	});
 
