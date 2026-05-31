@@ -19,12 +19,11 @@ import {
 } from "./lifecycle.js";
 import { reconstructToolOutputRecordsFromBranch } from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
+import { type ApplyPruningResult, applyToolOutputPruning } from "./pruner.js";
 import {
-	type ApplyPruningResult,
-	applyToolOutputPruning,
-	branchEntrySafelyMatchesToolOutputRecord,
+	recordMatchesBranchEntry,
 	type ToolOutputBranchEntry,
-} from "./pruner.js";
+} from "./record-identity.js";
 import { queryToolOutput } from "./recovery.js";
 import type { ToolOutputPruningState } from "./state.js";
 import type {
@@ -135,7 +134,7 @@ export class ToolOutputPruningCoordinator {
 		const branchEntries = this.getBranchEntriesFromBranch(branch);
 		this.state.finalizedRecords = this.state.finalizedRecords.filter((record) =>
 			branchEntries.some((entry) =>
-				branchEntrySafelyMatchesToolOutputRecord(entry, record, settings),
+				recordMatchesBranchEntry(entry, record, settings),
 			),
 		);
 		if (this.state.finalizedRecords.length === 0) {

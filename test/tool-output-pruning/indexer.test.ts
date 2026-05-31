@@ -1,14 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-	findEntryIdForToolCallId,
-	indexToolResultsFromBranch,
-} from "../../src/tool-output-pruning/indexer.js";
+import { indexToolResultsFromBranch } from "../../src/tool-output-pruning/indexer.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
 import type {
 	PendingToolOutputBatch,
 	ToolOutputRecord,
 } from "../../src/tool-output-pruning/types.js";
+import { ENABLED_TOOL_OUTPUT_PRUNING_SETTINGS as DEFAULT_SETTINGS } from "../fixtures/tool-output-pruning.js";
 
 function makeBranchEntry(
 	id: string,
@@ -17,12 +15,20 @@ function makeBranchEntry(
 	return { id, message: message as AgentMessage };
 }
 
-function makeToolResultMessage(toolCallId: string): AgentMessage {
+function makeToolResultMessage(
+	toolCallId: string,
+	options: { toolName?: string; mixed?: boolean } = {},
+): AgentMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
-		toolName: "bash",
-		content: [{ type: "text", text: "out" }],
+		toolName: options.toolName ?? "bash",
+		content: options.mixed
+			? [
+					{ type: "text", text: "out" },
+					{ type: "image", source: { type: "base64", data: "abc" } },
+				]
+			: [{ type: "text", text: "out" }],
 		isError: false,
 		timestamp: Date.now(),
 	} as unknown as AgentMessage;
@@ -43,38 +49,6 @@ function makeRecord(toolCallId: string, recordId: string): ToolOutputRecord {
 		fallbackSnippets: null,
 	};
 }
-
-describe("findEntryIdForToolCallId", () => {
-	it("finds entry id for a matching toolCallId", () => {
-		const entries = [
-			makeBranchEntry("e1", makeToolResultMessage("tc1")),
-			makeBranchEntry("e2", makeToolResultMessage("tc2")),
-		];
-		expect(findEntryIdForToolCallId(entries, "tc1")).toBe("e1");
-		expect(findEntryIdForToolCallId(entries, "tc2")).toBe("e2");
-	});
-
-	it("returns null when no match exists", () => {
-		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
-		expect(findEntryIdForToolCallId(entries, "tc99")).toBeNull();
-	});
-
-	it("ignores non-toolResult entries", () => {
-		const entries = [
-			makeBranchEntry("e1", {
-				role: "user",
-				content: "hello",
-				timestamp: Date.now(),
-			}),
-			makeBranchEntry("e2", makeToolResultMessage("tc1")),
-		];
-		expect(findEntryIdForToolCallId(entries, "tc1")).toBe("e2");
-	});
-
-	it("returns null for empty branch", () => {
-		expect(findEntryIdForToolCallId([], "tc1")).toBeNull();
-	});
-});
 
 describe("indexToolResultsFromBranch", () => {
 	let state: ToolOutputPruningState;
@@ -103,6 +77,7 @@ describe("indexToolResultsFromBranch", () => {
 				},
 			],
 			state,
+			DEFAULT_SETTINGS,
 		);
 
 		expect(state.finalizedRecords).toHaveLength(1);
@@ -130,10 +105,48 @@ describe("indexToolResultsFromBranch", () => {
 				},
 			],
 			state,
+			DEFAULT_SETTINGS,
 		);
 
 		expect(state.finalizedRecords).toHaveLength(1);
 		expect(state.finalizedRecords[0].recordId).toBe("r1");
+	});
+
+	it("uses the identity seam when resolving branch entries", () => {
+		const entries = [
+			makeBranchEntry(
+				"wrong-tool",
+				makeToolResultMessage("tc1", { toolName: "python" }),
+			),
+			makeBranchEntry("mixed", makeToolResultMessage("tc1", { mixed: true })),
+			makeBranchEntry(
+				"read",
+				makeToolResultMessage("tc1", { toolName: "read" }),
+			),
+			makeBranchEntry("match", makeToolResultMessage("tc1")),
+		];
+		const records = [makeRecord("tc1", "r1")];
+
+		indexToolResultsFromBranch(
+			entries,
+			[
+				{
+					batch: {
+						batchId: "b1",
+						turnIndex: 0,
+						timestamp: 1000,
+						recordIds: ["r1"],
+					},
+					records,
+					summaries: new Map<string, string>(),
+				},
+			],
+			state,
+			DEFAULT_SETTINGS,
+		);
+
+		expect(state.finalizedRecords).toHaveLength(1);
+		expect(state.finalizedRecords[0].entryId).toBe("match");
 	});
 
 	it("does not duplicate finalized records", () => {
@@ -156,6 +169,7 @@ describe("indexToolResultsFromBranch", () => {
 				},
 			],
 			state,
+			DEFAULT_SETTINGS,
 		);
 		indexToolResultsFromBranch(
 			entries,
@@ -172,6 +186,7 @@ describe("indexToolResultsFromBranch", () => {
 				},
 			],
 			state,
+			DEFAULT_SETTINGS,
 		);
 
 		expect(state.finalizedRecords).toHaveLength(1);
@@ -202,6 +217,7 @@ describe("indexToolResultsFromBranch", () => {
 				},
 			],
 			state,
+			DEFAULT_SETTINGS,
 		);
 
 		expect(state.pendingBatches).toHaveLength(1);
@@ -228,6 +244,7 @@ describe("indexToolResultsFromBranch", () => {
 				},
 			],
 			state,
+			DEFAULT_SETTINGS,
 		);
 
 		expect(state.finalizedRecords[0].summary).toBeNull();
@@ -259,7 +276,12 @@ describe("indexToolResultsFromBranch", () => {
 			summaries: new Map<string, string>([["r2", "sum2"]]),
 		};
 
-		indexToolResultsFromBranch(entries, [batch1, batch2], state);
+		indexToolResultsFromBranch(
+			entries,
+			[batch1, batch2],
+			state,
+			DEFAULT_SETTINGS,
+		);
 
 		expect(state.finalizedRecords).toHaveLength(2);
 		expect(state.finalizedRecords[0].summary).toBe("sum1");

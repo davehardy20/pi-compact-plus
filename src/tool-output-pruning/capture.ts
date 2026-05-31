@@ -1,13 +1,13 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { getDetails, getToolCallId } from "../pi-messages.js";
 import {
-	extractMessageText,
-	getDetails,
-	getIsError,
-	getToolCallId,
-	getToolName,
-	isTextOnlyMessageContent,
-} from "../pi-messages.js";
-import { QUERY_TOOL_OUTPUT_TOOL_NAME } from "../types.js";
+	extractToolResultText,
+	getPrunableToolResult,
+	isCompactPlusInternalTool,
+	isExcludedTool,
+	isTextOnlyToolResult,
+	PROTECTED_EXCLUDED_TOOLS,
+} from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import {
 	MAX_RECORDS_PER_BATCH,
@@ -16,16 +16,13 @@ import {
 	type ToolOutputRecord,
 } from "./types.js";
 
-/**
- * Protected tool exclusions that cannot be overridden by user settings.
- * These tools are critical for exact-output workflows and must never be pruned.
- */
-export const PROTECTED_EXCLUDED_TOOLS: readonly string[] = [
-	"read",
-	"read_hashed",
-	"hashline_edit",
-	QUERY_TOOL_OUTPUT_TOOL_NAME,
-];
+export {
+	extractToolResultText,
+	isCompactPlusInternalTool,
+	isExcludedTool,
+	isTextOnlyToolResult,
+	PROTECTED_EXCLUDED_TOOLS,
+} from "./record-identity.js";
 
 export interface CaptureBatchResult {
 	batch: PendingToolOutputBatch;
@@ -36,79 +33,16 @@ const FALLBACK_SNIPPETS_MAX_CHARS = 400;
 const ARGS_PREVIEW_MAX_CHARS = 200;
 
 /**
- * Extract plain text from a toolResult message content array.
- * Returns empty string for non-toolResult or non-text content.
- */
-export function extractToolResultText(message: AgentMessage): string {
-	if (message.role !== "toolResult") return "";
-	return extractMessageText(message, "");
-}
-
-/**
- * Determine whether a toolResult message contains only text blocks.
- * Returns false for image, binary, mixed, or empty content.
- */
-export function isTextOnlyToolResult(message: AgentMessage): boolean {
-	if (message.role !== "toolResult") return false;
-	return isTextOnlyMessageContent(message);
-}
-
-/**
- * Detect whether a tool name belongs to Compact+ internal tooling.
- * Prevents recursive indexing of Compact+ query, summary, index, or stats.
- */
-export function isCompactPlusInternalTool(toolName: string): boolean {
-	return (
-		toolName === QUERY_TOOL_OUTPUT_TOOL_NAME ||
-		toolName.startsWith("compact_plus")
-	);
-}
-
-/**
- * Check whether a tool name is excluded from pruning.
- * Checks protected exclusions (non-overridable), internal tools, and
- * user-configured exclusions.
- */
-export function isExcludedTool(
-	toolName: string,
-	settings: ToolOutputPruningSettings,
-): boolean {
-	if (PROTECTED_EXCLUDED_TOOLS.includes(toolName)) return true;
-	if (isCompactPlusInternalTool(toolName)) return true;
-	if (settings.toolOutputPruneExcludedTools.includes(toolName)) return true;
-	return false;
-}
-
-/**
  * Check whether a toolResult message is eligible for pruning capture.
  *
- * Eligibility rules:
- * - Must be a toolResult with text-only content
- * - Must not be from a Compact+ internal tool
- * - Must not be in the protected or user-configured excluded-tools list
- * - If included-tools is non-empty, must be in that list
- * - Total text length must meet the minimum threshold
+ * Eligibility rules are owned by the shared record identity seam; this wrapper
+ * preserves the existing capture module API.
  */
 export function isEligibleToolResult(
 	message: AgentMessage,
 	settings: ToolOutputPruningSettings,
 ): boolean {
-	if (message.role !== "toolResult") return false;
-
-	const toolName = getToolName(message) ?? "";
-	if (isExcludedTool(toolName, settings)) return false;
-	if (
-		settings.toolOutputPruneIncludedTools.length > 0 &&
-		!settings.toolOutputPruneIncludedTools.includes(toolName)
-	) {
-		return false;
-	}
-	if (!isTextOnlyToolResult(message)) return false;
-
-	const text = extractToolResultText(message);
-	if (text.length < settings.toolOutputPruneMinChars) return false;
-
-	return true;
+	return getPrunableToolResult(message, settings) !== null;
 }
 
 /**
@@ -171,9 +105,9 @@ export function captureBatch(
 ): CaptureBatchResult | null {
 	if (assistantMessage.role !== "assistant") return null;
 
-	let eligibleResults = toolResults.filter((tr) =>
-		isEligibleToolResult(tr, settings),
-	);
+	let eligibleResults = toolResults
+		.map((tr) => getPrunableToolResult(tr, settings))
+		.filter((result) => result !== null);
 	if (eligibleResults.length === 0) return null;
 	if (eligibleResults.length > MAX_RECORDS_PER_BATCH) {
 		eligibleResults = eligibleResults.slice(0, MAX_RECORDS_PER_BATCH);
@@ -184,10 +118,7 @@ export function captureBatch(
 	const recordIds: string[] = [];
 
 	for (const result of eligibleResults) {
-		const toolCallId = getToolCallId(result) ?? "";
-		const toolName = getToolName(result) ?? "";
-		const text = extractToolResultText(result);
-		const isError = getIsError(result);
+		const { message, toolCallId, toolName, text, chars, isError } = result;
 
 		const recordId = `rec-${toolCallId}-${timestamp}`;
 		const shortRef = state.generateShortRef();
@@ -198,11 +129,11 @@ export function captureBatch(
 			toolCallId,
 			toolName,
 			timestamp,
-			chars: text.length,
+			chars,
 			isError,
 			summary: null,
 			shortRef,
-			argsPreview: buildArgsPreview(result),
+			argsPreview: buildArgsPreview(message),
 			fallbackSnippets: buildFallbackSnippets(text),
 		};
 

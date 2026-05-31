@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	applyToolOutputPruning,
+	branchEntrySafelyMatchesToolOutputRecord,
 	buildPrunedToolResult,
 } from "../../src/tool-output-pruning/pruner.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
@@ -91,6 +92,79 @@ describe("buildPrunedToolResult", () => {
 			message as { content: Array<{ type: string; text: string }> }
 		).content;
 		expect(content[0].text).toBe("original output");
+	});
+});
+
+describe("branch entry record identity matching", () => {
+	it("safe matching also rejects toolName mismatches, non-text content, and exclusions", () => {
+		const message = makeToolResultMessage("tc1", "output");
+		const record = makeRecord("tc1", "t1", "e1", "summary one");
+
+		expect(
+			branchEntrySafelyMatchesToolOutputRecord(
+				{ id: "e1", message },
+				record,
+				ENABLED_SETTINGS,
+			),
+		).toBe(true);
+		expect(
+			branchEntrySafelyMatchesToolOutputRecord(
+				{
+					id: "e1",
+					message: {
+						...(message as object),
+						toolName: "python",
+					} as AgentMessage,
+				},
+				record,
+				ENABLED_SETTINGS,
+			),
+		).toBe(false);
+		expect(
+			branchEntrySafelyMatchesToolOutputRecord(
+				{
+					id: "e1",
+					message: makeToolResult({
+						toolCallId: "tc1",
+						toolName: "bash",
+						image: true,
+					}),
+				},
+				record,
+				ENABLED_SETTINGS,
+			),
+		).toBe(false);
+		expect(
+			branchEntrySafelyMatchesToolOutputRecord(
+				{
+					id: "e1",
+					message: makeToolResult({
+						toolCallId: "tc1",
+						toolName: "read",
+						text: "output",
+					}),
+				},
+				{ ...record, toolName: "read" },
+				ENABLED_SETTINGS,
+			),
+		).toBe(false);
+	});
+
+	it("safe matching honors a non-empty include list", () => {
+		const message = makeToolResultMessage("tc1", "output");
+		const record = makeRecord("tc1", "t1", "e1", "summary one");
+		const settings = {
+			...ENABLED_SETTINGS,
+			toolOutputPruneIncludedTools: ["python"],
+		};
+
+		expect(
+			branchEntrySafelyMatchesToolOutputRecord(
+				{ id: "e1", message },
+				record,
+				settings,
+			),
+		).toBe(false);
 	});
 });
 

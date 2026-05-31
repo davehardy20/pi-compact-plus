@@ -2,19 +2,17 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	getAssistantToolCallBlocks,
-	getToolCallId,
 	isAssistantMessage,
-	isToolResultMessage,
 } from "../pi-messages.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
-import {
-	type CaptureBatchResult,
-	captureBatch,
-	extractToolResultText,
-} from "./capture.js";
+import { type CaptureBatchResult, captureBatch } from "./capture.js";
 import { type IndexedBatch, indexToolResultsFromBranch } from "./indexer.js";
 import { buildToolPruneSummaryData } from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
+import {
+	extractToolResultText,
+	recordMatchesBranchEntry,
+} from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import { summarizeBatch } from "./summarizer.js";
 import type { ToolOutputPruningSettings, ToolOutputRecord } from "./types.js";
@@ -83,23 +81,24 @@ export function isFinalAssistantMessageForToolPrune(
  */
 export function buildSummarizerInputs(
 	pendingRecords: ToolOutputRecord[],
-	branchEntries: Array<{ id: string; message: AgentMessage }>,
+	branchEntries: Array<{ type?: unknown; id: string; message: AgentMessage }>,
+	settings: ToolOutputPruningSettings,
 ): import("./summarizer.js").SummarizerInput[] | null {
 	const inputs: import("./summarizer.js").SummarizerInput[] = [];
 
 	for (const record of pendingRecords) {
-		const toolResult = branchEntries.find((e) => {
-			const msg = e.message;
-			return (
-				isToolResultMessage(msg) && getToolCallId(msg) === record.toolCallId
-			);
-		})?.message;
-
-		if (!toolResult) {
+		const branchEntry = branchEntries.find((entry) =>
+			recordMatchesBranchEntry(
+				entry,
+				{ ...record, entryId: entry.id },
+				settings,
+			),
+		);
+		if (!branchEntry) {
 			return null;
 		}
 
-		const text = extractToolResultText(toolResult);
+		const text = extractToolResultText(branchEntry.message);
 		inputs.push({
 			recordId: record.recordId,
 			shortRef: record.shortRef,
@@ -146,7 +145,11 @@ export async function flushPendingBatches(
 	const finalizedRecordsBefore = state.finalizedRecords.slice();
 
 	try {
-		const inputs = buildSummarizerInputs(state.pendingRecords, branchEntries);
+		const inputs = buildSummarizerInputs(
+			state.pendingRecords,
+			branchEntries,
+			settings,
+		);
 
 		if (inputs === null) {
 			// Atomicity violation: not all pending records are resolvable or within limits
@@ -196,7 +199,7 @@ export async function flushPendingBatches(
 				indexed.records.map((record) => record.recordId),
 			),
 		);
-		indexToolResultsFromBranch(branchEntries, indexedBatches, state);
+		indexToolResultsFromBranch(branchEntries, indexedBatches, state, settings);
 		const finalizedRecordsForMetadata = state.finalizedRecords.filter(
 			(record) => indexedRecordIds.has(record.recordId),
 		);

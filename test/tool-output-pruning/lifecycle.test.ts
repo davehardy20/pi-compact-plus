@@ -682,7 +682,11 @@ describe("buildSummarizerInputs atomic resolution", () => {
 				}),
 			);
 		}
-		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
+		const inputs = buildSummarizerInputs(
+			pendingRecords,
+			branchEntries,
+			ENABLED_SETTINGS,
+		);
 		expect(inputs).toBeNull();
 	});
 
@@ -707,7 +711,11 @@ describe("buildSummarizerInputs atomic resolution", () => {
 			},
 			// tc2 is missing
 		];
-		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
+		const inputs = buildSummarizerInputs(
+			pendingRecords,
+			branchEntries,
+			ENABLED_SETTINGS,
+		);
 		expect(inputs).toBeNull();
 	});
 
@@ -723,7 +731,11 @@ describe("buildSummarizerInputs atomic resolution", () => {
 				}),
 			},
 		];
-		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
+		const inputs = buildSummarizerInputs(
+			pendingRecords,
+			branchEntries,
+			ENABLED_SETTINGS,
+		);
 		expect(inputs).toEqual([expect.objectContaining({ recordId: "r1" })]);
 	});
 });

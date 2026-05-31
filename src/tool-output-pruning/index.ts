@@ -24,11 +24,7 @@ export {
 	ToolOutputPruningCoordinator,
 	type ToolOutputPruningCoordinatorDependencies,
 } from "./coordinator.js";
-export {
-	findEntryIdForToolCallId,
-	type IndexedBatch,
-	indexToolResultsFromBranch,
-} from "./indexer.js";
+export { type IndexedBatch, indexToolResultsFromBranch } from "./indexer.js";
 export {
 	captureTurnEndBatch,
 	type FlushResult,
@@ -62,7 +58,6 @@ export {
 export {
 	type ApplyPruningResult,
 	applyToolOutputPruning,
-	branchEntrySafelyMatchesToolOutputRecord,
 	buildPrunedToolResult,
 } from "./pruner.js";
 export {

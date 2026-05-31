@@ -126,6 +126,9 @@ describe("buildToolPruneSummaryData", () => {
 			MAX_RECONSTRUCTED_ARGS_PREVIEW_CHARS,
 		);
 		expect(persisted?.fallbackSnippets).toBeNull();
+		expect(JSON.stringify(data)).not.toContain(
+			"original output snippets must not persist",
+		);
 	});
 
 	it("rejects overlong required identity strings before append", () => {
@@ -285,7 +288,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 		);
 		expect(wrongTool.ok).toBe(false);
 		expect(wrongTool.records).toHaveLength(0);
-		expect(wrongTool.error).toContain("tool name");
+		expect(wrongTool.error).toContain("current branch");
 	});
 
 	it("fails atomically for protected excluded tools and include-list misses", () => {
@@ -318,7 +321,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 
 		expect(result.ok).toBe(false);
 		expect(result.records).toHaveLength(0);
-		expect(result.error).toContain("text-only");
+		expect(result.error).toContain("current branch");
 	});
 
 	it("fails atomically for duplicate record identities", () => {
