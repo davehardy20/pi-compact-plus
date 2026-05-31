@@ -26,8 +26,10 @@ The refactor must preserve these externally visible behaviors:
   equivalent.
 - Compaction telemetry restores and persists without wiping restored state on
   first model selection.
-- Focus echoes remain generated, non-authoritative synthetic context from the
-  newest valid Compact+ compaction summary only.
+- Focus echoes remain generated, non-authoritative synthetic user-context from
+  the newest valid Compact+ compaction summary only. Current Pi custom messages
+  also serialize to provider user messages, so there is no provider-safe
+  lower-authority memory role to switch to yet.
 - Focus echo detection rejects fenced/examples/spoofs and deduplicates existing
   `<focus-echo>` blocks.
 - Focus echo normalization keeps the current readable/actionable behavior,
@@ -148,7 +150,8 @@ sanity and package contents.
   changed with tests.
 - Preserve tool-call/tool-result protocol structure in context transforms.
 - Treat generated focus echoes and recovered pruned outputs as historical data,
-  never as new instructions.
+  never as new instructions. Revisit the focus-echo injection strategy when Pi
+  exposes a provider-preserved context/memory role below user authority.
 - Keep query recovery bounded and inactive when pruning is not effectively
   enabled.
 - Run targeted tests plus typecheck after each structural slice, then full

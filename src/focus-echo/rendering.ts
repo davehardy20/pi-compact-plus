@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
-import { createUserTextMessage } from "../pi-messages.js";
+import { createFocusEchoContextMessage } from "./context-injection.js";
 import { FOCUS_ECHO_MARKER, type FocusEcho } from "./model.js";
 import { parseFocusEcho } from "./parser.js";
 import { sanitizeEchoField } from "./sanitization.js";
@@ -9,8 +9,9 @@ import { sanitizeEchoField } from "./sanitization.js";
  * Build a compact echo block to inject at the recency position.
  *
  * The echo is generated memory from a prior compaction summary. Because Pi
- * currently receives the echo as a synthetic user message for compatibility,
- * every echo must explicitly mark its provenance and deny instruction authority.
+ * currently has no provider-safe lower-authority memory role for context hook
+ * injection, every echo must explicitly mark its provenance and deny
+ * instruction authority.
  */
 export function buildFocusEchoBlock(echo: FocusEcho): string {
 	const lines: string[] = [
@@ -51,11 +52,10 @@ export function buildFocusEchoBlock(echo: FocusEcho): string {
 }
 
 /**
- * Create a synthetic user message containing the focus echo.
- * Uses role "user" with a clear marker so it's distinguishable.
+ * Create a focus-echo context message using the current compatibility strategy.
  */
 export function createEchoMessage(echo: FocusEcho): AgentMessage {
-	return createUserTextMessage(buildFocusEchoBlock(echo));
+	return createFocusEchoContextMessage(buildFocusEchoBlock(echo));
 }
 
 export function buildPersistedFocusEcho(summaryText: string): string | null {

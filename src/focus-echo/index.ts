@@ -1,3 +1,7 @@
+export {
+	createFocusEchoContextMessage,
+	FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY,
+} from "./context-injection.js";
 export { detectCompactionSummary } from "./detection.js";
 export type { FocusEcho } from "./model.js";
 export { parseFocusEcho } from "./parser.js";
