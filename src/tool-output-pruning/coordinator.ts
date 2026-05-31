@@ -1,9 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type {
-	ExtensionContext,
-	SessionEntry,
-} from "@earendil-works/pi-coding-agent";
-import { isSessionMessageEntry } from "../pi-messages.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	createCurrentSessionBranchView,
+	type SessionBranchEntryLike,
+} from "../session-branch-view.js";
 import type { CaptureBatchResult } from "./capture.js";
 import {
 	buildPruningStatusDetail,
@@ -20,10 +20,7 @@ import {
 import { reconstructToolOutputRecordsFromBranch } from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
 import { type ApplyPruningResult, applyToolOutputPruning } from "./pruner.js";
-import {
-	recordMatchesBranchEntry,
-	type ToolOutputBranchEntry,
-} from "./record-identity.js";
+import { recordMatchesBranchEntry } from "./record-identity.js";
 import { queryToolOutput } from "./recovery.js";
 import type { ToolOutputPruningState } from "./state.js";
 import type {
@@ -54,7 +51,7 @@ export interface MessageEndPruningOptions {
 
 export interface BranchProviderContext {
 	sessionManager: {
-		getBranch: () => SessionEntry[];
+		getBranch: () => readonly SessionBranchEntryLike[];
 	};
 }
 
@@ -112,11 +109,12 @@ export class ToolOutputPruningCoordinator {
 			return null;
 		}
 
+		const view = createCurrentSessionBranchView(ctx as BranchProviderContext);
 		return flushPendingBatches(
 			this.state,
 			settings,
 			ctx,
-			this.getBranchEntries(ctx as BranchProviderContext),
+			view.messageEntries(),
 			pi,
 		);
 	}
@@ -130,19 +128,15 @@ export class ToolOutputPruningCoordinator {
 			return;
 		}
 
-		const branch = ctx.sessionManager.getBranch();
-		const branchEntries = this.getBranchEntriesFromBranch(branch);
+		const view = createCurrentSessionBranchView(ctx);
+		const branchEntries = view.messageEntries();
 		this.state.finalizedRecords = this.state.finalizedRecords.filter((record) =>
 			branchEntries.some((entry) =>
 				recordMatchesBranchEntry(entry, record, settings),
 			),
 		);
 		if (this.state.finalizedRecords.length === 0) {
-			const result = reconstructToolOutputRecordsFromBranch(
-				branch,
-				branchEntries,
-				settings,
-			);
+			const result = reconstructToolOutputRecordsFromBranch(view, settings);
 			this.state.recordReconstructionResult(result);
 			if (result.ok) {
 				this.state.finalizedRecords = result.records;
@@ -161,9 +155,10 @@ export class ToolOutputPruningCoordinator {
 		messages: AgentMessage[],
 		ctx: BranchProviderContext,
 	): ApplyPruningResult | undefined {
+		const view = createCurrentSessionBranchView(ctx);
 		return applyToolOutputPruning(
 			messages,
-			this.getBranchEntries(ctx),
+			view.messageEntries(),
 			this.state,
 			this.getSettings(),
 		);
@@ -180,11 +175,12 @@ export class ToolOutputPruningCoordinator {
 		ctx: ExtensionContext,
 		pi: AppendEntryPort,
 	): Promise<FlushResult & { message: string }> {
+		const view = createCurrentSessionBranchView(ctx as BranchProviderContext);
 		return manualFlushPendingBatches({
 			state: this.state,
 			settings: this.getSettings(),
 			ctx,
-			branchEntries: this.getBranchEntries(ctx as BranchProviderContext),
+			branchEntries: view.messageEntries(),
 			pi,
 		});
 	}
@@ -200,27 +196,7 @@ export class ToolOutputPruningCoordinator {
 			);
 		}
 
-		return queryToolOutput(
-			params,
-			this.state,
-			settings,
-			this.getBranchEntries(ctx),
-		);
-	}
-
-	private getBranchEntries(
-		ctx: BranchProviderContext,
-	): ToolOutputBranchEntry[] {
-		return this.getBranchEntriesFromBranch(ctx.sessionManager.getBranch());
-	}
-
-	private getBranchEntriesFromBranch(
-		branch: SessionEntry[],
-	): ToolOutputBranchEntry[] {
-		return branch.filter(isSessionMessageEntry).map((entry) => ({
-			type: entry.type,
-			id: entry.id,
-			message: entry.message,
-		}));
+		const view = createCurrentSessionBranchView(ctx);
+		return queryToolOutput(params, this.state, settings, view.messageEntries());
 	}
 }

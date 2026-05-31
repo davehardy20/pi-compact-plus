@@ -12,6 +12,7 @@ import { isToolOutputPruningEnabled } from "./policy.js";
 import {
 	extractToolResultText,
 	recordMatchesBranchEntry,
+	type ToolOutputBranchEntry,
 } from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import { summarizeBatch } from "./summarizer.js";
@@ -81,7 +82,7 @@ export function isFinalAssistantMessageForToolPrune(
  */
 export function buildSummarizerInputs(
 	pendingRecords: ToolOutputRecord[],
-	branchEntries: Array<{ type?: unknown; id: string; message: AgentMessage }>,
+	branchEntries: ToolOutputBranchEntry[],
 	settings: ToolOutputPruningSettings,
 ): import("./summarizer.js").SummarizerInput[] | null {
 	const inputs: import("./summarizer.js").SummarizerInput[] = [];
@@ -127,7 +128,7 @@ export async function flushPendingBatches(
 	state: ToolOutputPruningState,
 	settings: ToolOutputPruningSettings,
 	ctx: ExtensionContext,
-	branchEntries: Array<{ id: string; message: AgentMessage }>,
+	branchEntries: ToolOutputBranchEntry[],
 	pi: { appendEntry: (customType: string, data?: unknown) => void },
 ): Promise<FlushResult> {
 	if (!isToolOutputPruningEnabled(settings)) {

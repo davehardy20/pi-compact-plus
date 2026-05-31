@@ -49,6 +49,7 @@ const {
 	buildCurrentFocusBlock,
 	buildSummaryInstructions,
 } = await import("../src/prompts.js");
+const { getEffectiveUsage } = await import("../src/usage.js");
 const {
 	getDefaultSettingsPath,
 	loadCompactPlusSettingsFile,
@@ -273,6 +274,44 @@ describe("@davehardy20/pi-compact-plus", () => {
 		}
 	});
 
+	it("estimates fallback usage from one captured branch-view message projection", () => {
+		const ctx = createMockCtx({ contextWindow: 1000, contextUsage: undefined });
+		const userMessage = {
+			role: "user",
+			content: [{ type: "text", text: "counted" }],
+		} as TestAgentMessage;
+		const assistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "also counted" }],
+		} as TestAgentMessage;
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{
+				type: "custom",
+				id: "custom-heavy",
+				customType: "compact-plus-status",
+				data: { text: "not counted" },
+			},
+			{ type: "message", id: "m-user", message: userMessage },
+			{
+				type: "custom_message",
+				id: "custom-message-heavy",
+				message: assistantMessage,
+			},
+			{ type: "message", id: "m-assistant", message: assistantMessage },
+		]);
+
+		const usage = getEffectiveUsage(ctx as never);
+
+		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
+		expect(piCore.estimateTokens).toHaveBeenCalledTimes(2);
+		expect(usage).toEqual({
+			percent: 20,
+			tokens: 200,
+			contextWindow: 1000,
+			source: "estimated",
+		});
+	});
+
 	it("does not auto-compact when a tool-output pruning flush is in progress", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
@@ -302,6 +341,102 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 
 		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("extracts manual compaction focus from one captured branch-view message projection", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const compactPlusCommand = pi.commands.get("compact-plus");
+		expect(compactPlusCommand).toBeDefined();
+		if (!compactPlusCommand) throw new Error("command not registered");
+
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{
+				type: "custom",
+				id: "custom-poison",
+				customType: "compact-plus-status",
+				data: { text: "## Decisions Made\n- Poisoned custom decision" },
+			},
+			{
+				type: "message",
+				id: "m-decision",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "## Decisions Made\n- Keep manual focus" },
+					],
+				},
+			},
+		]);
+
+		await compactPlusCommand.handler("hard", ctx);
+
+		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		const instructions = ctx.compact.mock.calls[0]?.[0]?.customInstructions;
+		expect(instructions).toContain("Keep manual focus");
+		expect(instructions).not.toContain("Poisoned custom decision");
+	});
+
+	it("extracts auto compaction focus from one captured branch-view message projection", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const messageEndHandler = pi.events.get("message_end")?.[0];
+		expect(messageEndHandler).toBeDefined();
+		if (!messageEndHandler) throw new Error("handler not registered");
+
+		const ctx = createMockCtx({
+			contextWindow: 100000,
+			contextUsage: { tokens: 80000, percent: 80 },
+		});
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{
+				type: "custom_message",
+				id: "custom-message-poison",
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: "## Decisions Made\n- Poisoned custom-message decision",
+						},
+					],
+				},
+			},
+			{
+				type: "message",
+				id: "m-auto-decision",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "## Decisions Made\n- Keep auto focus" },
+					],
+				},
+			},
+		]);
+
+		await messageEndHandler(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					stopReason: "stop",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			},
+			ctx,
+		);
+
+		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		const instructions = ctx.compact.mock.calls[0]?.[0]?.customInstructions;
+		expect(instructions).toContain("Keep auto focus");
+		expect(instructions).not.toContain("Poisoned custom-message decision");
 	});
 
 	it("resets stale runtime state at session_start when no telemetry is restored", async () => {
