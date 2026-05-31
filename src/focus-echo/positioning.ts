@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
-import { createUserTextMessage } from "../pi-messages.js";
+import { createFocusEchoContextMessage } from "./context-injection.js";
 import { detectCompactionSummary, extractSimpleText } from "./detection.js";
 import { FOCUS_ECHO_MARKER } from "./model.js";
 import { buildPersistedFocusEcho } from "./rendering.js";
@@ -39,7 +39,7 @@ export function reorderForPositioning(
 		return undefined;
 	}
 
-	const echoMessage = createUserTextMessage(echoText);
+	const echoMessage = createFocusEchoContextMessage(echoText);
 
 	// Inject before the last user message for recency positioning
 	const lastUserIndex = findLastUserMessageIndex(messages);

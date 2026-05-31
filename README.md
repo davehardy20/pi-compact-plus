@@ -56,6 +56,14 @@ After compaction, a compact "focus echo" is injected at the recency position
 The echo contains the objective, active files, blockers, decisions,
 dependency chain, and next step.
 
+Compact+ currently injects the echo as a synthetic user-context message because
+Pi extension custom messages serialize to provider `user` messages, and the
+`context` hook does not yet expose a provider-preserved lower-authority memory
+role. The echo is therefore explicitly framed as generated, non-authoritative
+memory and sanitized so it cannot masquerade as a fresh user request. Revisit
+this fallback if Pi exposes a context/memory role that remains below user,
+developer, and system authority across supported providers.
+
 ### Experimental tool-output pruning
 
 Compact+ includes an experimental, default-off tool-output pruning subsystem.

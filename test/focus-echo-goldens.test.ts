@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import {
 	buildPersistedFocusEcho,
+	createFocusEchoContextMessage,
 	detectCompactionSummary,
+	FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY,
 	reorderForPositioning,
 } from "../src/reorder.js";
 import {
@@ -60,6 +62,23 @@ describe("focus echo golden characterization", () => {
 
 		expect(detectCompactionSummary(messages)).toEqual({ found: false });
 		expect(reorderForPositioning(messages)).toBeUndefined();
+	});
+
+	it("documents that focus echo still uses synthetic-user compatibility fallback", () => {
+		expect(FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY).toMatchObject({
+			strategy: "synthetic-user-message",
+			lowerAuthorityRoleAvailable: false,
+		});
+		expect(FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY.reason).toContain(
+			"custom messages currently serialize to provider user messages",
+		);
+
+		const message = createFocusEchoContextMessage(
+			focusEchoGoldens[0].expectedEcho,
+		);
+		expect(message).toEqual(
+			textMessage("user", focusEchoGoldens[0].expectedEcho),
+		);
 	});
 
 	it("injects the focus echo before the latest user message", () => {
