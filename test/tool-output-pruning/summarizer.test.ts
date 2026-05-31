@@ -294,6 +294,38 @@ describe("summarizeBatch", () => {
 		}
 	});
 
+	it("returns failure when auth lookup rejects", async () => {
+		const ctx = makeMockContext(makeMockModel("m", "p"), {
+			getApiKeyAndHeaders: vi.fn(async () => {
+				throw new Error("vault unavailable");
+			}),
+		});
+		const result = await summarizeBatch(
+			[
+				{
+					recordId: "r1",
+					shortRef: "t1",
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "text",
+					isError: false,
+					argsPreview: null,
+				},
+			],
+			{
+				toolOutputSummaryMaxChars: 1600,
+				toolOutputSummarizerModel: "default",
+				toolOutputSummarizerThinking: "default",
+			} as Parameters<typeof summarizeBatch>[1],
+			ctx,
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("vault unavailable");
+			expect(result.aborted).toBe(false);
+		}
+	});
+
 	it("parses structured summaries from LLM response", async () => {
 		mockCompleteSimple.mockResolvedValueOnce({
 			role: "assistant",
@@ -559,9 +591,9 @@ describe("summarizeBatch", () => {
 
 		expect(result.ok).toBe(true);
 		if (result.ok) {
-			const summary = result.summaries.get("r1")!;
-			expect(summary.length).toBeLessThanOrEqual(101); // 100 + "…"
-			expect(summary.endsWith("…")).toBe(true);
+			const summary = result.summaries.get("r1");
+			expect(summary?.length).toBeLessThanOrEqual(100);
+			expect(summary?.endsWith("…")).toBe(true);
 		}
 	});
 
@@ -657,6 +689,53 @@ describe("summarizeBatch", () => {
 		if (!result.ok) {
 			expect(result.aborted).toBe(false);
 			expect(result.error).toContain("Rate limited");
+		}
+	});
+
+	it("returns failure for non-stop truncation stopReason", async () => {
+		mockCompleteSimple.mockResolvedValueOnce({
+			role: "assistant",
+			content: [{ type: "text", text: "## t1\nPartial summary." }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "gpt-4",
+			usage: {
+				input: 10,
+				output: 1,
+				totalTokens: 11,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "length",
+			timestamp: Date.now(),
+		} as never);
+
+		const ctx = makeMockContext(makeMockModel("m", "p"));
+		const result = await summarizeBatch(
+			[
+				{
+					recordId: "r1",
+					shortRef: "t1",
+					toolCallId: "tc1",
+					toolName: "bash",
+					text: "text",
+					isError: false,
+					argsPreview: null,
+				},
+			],
+			{
+				toolOutputSummaryMaxChars: 1600,
+				toolOutputSummarizerModel: "default",
+				toolOutputSummarizerThinking: "default",
+			} as Parameters<typeof summarizeBatch>[1],
+			ctx,
+		);
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.aborted).toBe(false);
+			expect(result.error).toContain("length");
 		}
 	});
 
@@ -900,8 +979,8 @@ describe("summarizeBatch", () => {
 			{ signal: controller.signal },
 		);
 
-		const callArgs = mockCompleteSimple.mock.calls[0]!;
-		expect(callArgs[2]!.signal).toBe(controller.signal);
+		const callArgs = mockCompleteSimple.mock.calls[0];
+		expect(callArgs?.[2]?.signal).toBe(controller.signal);
 	});
 
 	it("ignores unknown refs in LLM response", async () => {
@@ -997,19 +1076,21 @@ describe("summarizeBatch", () => {
 		);
 
 		const callArgs = mockCompleteSimple.mock.calls[0];
-		const context = callArgs[1] as {
-			systemPrompt?: string;
-			messages: Array<{
-				role: string;
-				content: Array<{ type: string; text: string }>;
-			}>;
-		};
-		expect(context.systemPrompt).toBe(SUMMARIZER_SYSTEM_PROMPT);
-		expect(context.messages).toHaveLength(1);
-		expect(context.messages[0]!.role).toBe("user");
-		expect(context.messages[0]!.content[0]!.type).toBe("text");
-		expect(context.messages[0]!.content[0]!.text).toContain(
-			SUMMARIZER_USER_PROMPT_PREFIX,
-		);
+		const context = callArgs?.[1] as
+			| {
+					systemPrompt?: string;
+					messages: Array<{
+						role: string;
+						content: Array<{ type: string; text: string }>;
+					}>;
+			  }
+			| undefined;
+		const message = context?.messages[0];
+		const content = message?.content[0];
+		expect(context?.systemPrompt).toBe(SUMMARIZER_SYSTEM_PROMPT);
+		expect(context?.messages).toHaveLength(1);
+		expect(message?.role).toBe("user");
+		expect(content?.type).toBe("text");
+		expect(content?.text).toContain(SUMMARIZER_USER_PROMPT_PREFIX);
 	});
 });

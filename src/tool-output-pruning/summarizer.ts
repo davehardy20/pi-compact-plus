@@ -10,6 +10,10 @@
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	type SummaryResponseParser,
+	structuredSummaryResponseParser,
+} from "./summary-response-parser.js";
 import type { ToolOutputPruningSettings } from "./types.js";
 
 export interface SummarizerInput {
@@ -32,6 +36,8 @@ export interface SummarizerInput {
 export interface SummarizeBatchOptions {
 	/** Abort signal for cancellation */
 	signal?: AbortSignal;
+	/** Parser override for tests or future structured-output adapters. */
+	parser?: SummaryResponseParser;
 }
 
 export interface SummarizeBatchSuccess {
@@ -58,13 +64,18 @@ export type SummarizeBatchResult =
 
 export const SUMMARIZER_SYSTEM_PROMPT = `You are a concise technical summarizer. Summarize tool outputs for a coding assistant's context window. Preserve key findings, file paths, error messages, and decisions. Omit noise, repetitive formatting, and overly verbose output.`;
 
-export const SUMMARIZER_USER_PROMPT_PREFIX = `Summarize each of the following tool outputs. Use the exact format below, with one heading per tool ref.
+export const SUMMARIZER_USER_PROMPT_PREFIX = `Summarize each of the following tool outputs. Prefer strict JSON using the exact schema below. If JSON is unavailable, use the markdown fallback with one heading per tool ref.
 
-Format:
+Preferred JSON schema:
+{"summaries":[{"recordId":"{recordId}","ref":"{ref}","summary":"concise summary paragraph"}]}
+
+Markdown fallback:
 ## {ref}
 {concise summary paragraph}
 
 Rules:
+- Return exactly one non-empty summary for every provided tool output.
+- Preserve each recordId/ref pair exactly; do not invent, omit, or duplicate refs.
 - Keep each summary under 4 sentences when possible.
 - Preserve exact file paths, function names, error messages, and key numeric results.
 - If a tool output is an error, note the error type and the actionable fix if apparent.
@@ -125,7 +136,7 @@ export function buildSummarizerPrompt(
 	const parts: string[] = [SUMMARIZER_USER_PROMPT_PREFIX, ""];
 
 	for (const input of inputs) {
-		const header = `--- Tool ${input.shortRef} | ${input.toolName} | callId=${input.toolCallId}${input.isError ? " | ERROR" : ""} ---`;
+		const header = `--- Tool ${input.shortRef} | recordId=${input.recordId} | ${input.toolName} | callId=${input.toolCallId}${input.isError ? " | ERROR" : ""} ---`;
 		let body = input.text;
 		if (body.length > maxCharsPerInput) {
 			body = `${body.slice(0, maxCharsPerInput)}\n…[truncated]`;
@@ -138,54 +149,6 @@ export function buildSummarizerPrompt(
 	}
 
 	return parts.join("\n");
-}
-
-function parseSummariesFromResponse(
-	responseText: string,
-	inputs: SummarizerInput[],
-	maxCharsPerSummary: number,
-): Map<string, string> {
-	const summaries = new Map<string, string>();
-	const refSet = new Set(inputs.map((i) => i.shortRef));
-
-	// Try to parse ## ref\n{summary} format
-	const headingRegex = /^##\s+(t\d+)\s*\n?/gm;
-	const sections: Array<{ ref: string; text: string }> = [];
-
-	let match = headingRegex.exec(responseText);
-	while (match !== null) {
-		const ref = match[1];
-		const start = match.index + match[0].length;
-		const nextMatch = headingRegex.exec(responseText);
-		const end = nextMatch ? nextMatch.index : responseText.length;
-		// Reset lastIndex so the next exec continues from the right place
-		headingRegex.lastIndex = start;
-		const text = responseText.slice(start, end).trim();
-		sections.push({ ref, text });
-		match = headingRegex.exec(responseText);
-	}
-
-	for (const section of sections) {
-		if (!refSet.has(section.ref)) continue;
-		const recordId =
-			inputs.find((i) => i.shortRef === section.ref)?.recordId ?? section.ref;
-		let summary = section.text;
-		if (summary.length > maxCharsPerSummary) {
-			summary = `${summary.slice(0, maxCharsPerSummary)}…`;
-		}
-		summaries.set(recordId, summary);
-	}
-
-	// Enforce all-record atomicity: every input must have a non-empty summary.
-	// Do not fall back to assigning the whole response to a single record.
-	for (const input of inputs) {
-		const summary = summaries.get(input.recordId);
-		if (!summary || summary.trim().length === 0) {
-			return new Map();
-		}
-	}
-
-	return summaries;
 }
 
 function resolveReasoning(
@@ -226,7 +189,12 @@ export async function summarizeBatch(
 	}
 
 	const registry = ctx.modelRegistry;
-	const auth = await registry.getApiKeyAndHeaders(model);
+	let auth: Awaited<ReturnType<typeof registry.getApiKeyAndHeaders>>;
+	try {
+		auth = await registry.getApiKeyAndHeaders(model);
+	} catch (err) {
+		return buildSummarizationExceptionFailure(err);
+	}
 	if (!auth.ok) {
 		return {
 			ok: false,
@@ -281,6 +249,14 @@ export async function summarizeBatch(
 			};
 		}
 
+		if (response.stopReason !== "stop") {
+			return {
+				ok: false,
+				error: `Summarization stopped before completion: ${response.stopReason}`,
+				aborted: false,
+			};
+		}
+
 		const responseText = response.content
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
@@ -294,20 +270,22 @@ export async function summarizeBatch(
 			};
 		}
 
-		const summaries = parseSummariesFromResponse(
+		const parser = options?.parser ?? structuredSummaryResponseParser;
+		const parseResult = parser.parse(
 			responseText,
 			inputs,
 			settings.toolOutputSummaryMaxChars,
 		);
 
-		if (summaries.size !== inputs.length) {
+		if (!parseResult.ok) {
 			return {
 				ok: false,
-				error: `Summarizer returned incomplete summaries: expected ${inputs.length}, got ${summaries.size}`,
+				error: `Summarizer returned incomplete summaries: ${parseResult.error}`,
 				aborted: false,
 			};
 		}
 
+		const summaries = parseResult.summaries;
 		let totalChars = 0;
 		for (const summary of summaries.values()) {
 			totalChars += summary.length;
@@ -323,14 +301,20 @@ export async function summarizeBatch(
 		}
 		return result;
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		const aborted =
-			err instanceof Error &&
-			(err.name === "AbortError" || message.includes("aborted"));
-		return {
-			ok: false,
-			error: `Summarization error: ${message}`,
-			aborted,
-		};
+		return buildSummarizationExceptionFailure(err);
 	}
+}
+
+function buildSummarizationExceptionFailure(
+	err: unknown,
+): SummarizeBatchFailure {
+	const message = err instanceof Error ? err.message : String(err);
+	const aborted =
+		err instanceof Error &&
+		(err.name === "AbortError" || message.includes("aborted"));
+	return {
+		ok: false,
+		error: `Summarization error: ${message}`,
+		aborted,
+	};
 }
