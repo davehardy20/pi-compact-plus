@@ -141,6 +141,7 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 		`  Source: ${status.usageSource}`,
 		`  Band: ${status.band}`,
 		`  Thresholds: checkpoint=${CHECKPOINT_CANDIDATE_PERCENT}% standard=${STANDARD_THRESHOLD_PERCENT}% hard=${HARD_THRESHOLD_PERCENT}% cooldown=${COOLDOWN_MS / 1000}s`,
+		"  Config reload: threshold/cooldown changes require /reload or restart",
 		`  Selected mode: ${status.selectedMode ?? "none"}`,
 		`  Cooldown: ${status.cooldownActive ? `${Math.ceil(status.cooldownRemainingMs / 1000)}s remaining` : "ready"}`,
 		`  Compacting: ${status.isCompacting ? "in progress" : "idle"}`,

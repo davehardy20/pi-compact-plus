@@ -98,6 +98,9 @@ export function formatPruningStatusLines(
 		lines.push(
 			`  To enable, set experimentalToolOutputPruning=true and mode=agent-message`,
 		);
+		lines.push(
+			"  Settings are checked when pruning commands/events run; /reload is safest after edits.",
+		);
 		return lines;
 	}
 
@@ -129,6 +132,9 @@ export function formatPruningStatusLines(
 	lines.push(`  Max query chars: ${detail.maxQueryChars}`);
 	lines.push(`  Summarizer model: ${detail.summarizerModel}`);
 	lines.push(`  Summarizer thinking: ${detail.summarizerThinking}`);
+	lines.push(
+		"  Settings source: checked when pruning commands/events run; /reload is safest after edits.",
+	);
 	lines.push(
 		`  Protected exclusions (non-overridable): ${detail.protectedExcludedTools.join(", ")}`,
 	);

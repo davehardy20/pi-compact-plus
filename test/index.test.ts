@@ -672,6 +672,12 @@ describe("@davehardy20/pi-compact-plus", () => {
 			),
 			"info",
 		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Config reload: threshold/cooldown changes require /reload or restart",
+			),
+			"info",
+		);
 	});
 
 	it("shows telemetry load persistence warnings in status", async () => {

@@ -34,17 +34,24 @@ echo
 
 echo "==> git status --short"
 GIT_STATUS="$(git status --short)"
+HAS_UNTRACKED="$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')"
 echo "${GIT_STATUS:-(clean)}"
 echo
 
 if [[ -n "$GIT_STATUS" ]]; then
   if [[ "$ALLOW_DIRTY" -eq 0 ]]; then
     echo "❌ Working tree is not clean. Commit, stash, or ignore changes before release." >&2
-    echo "   Use --allow-dirty to bypass this check (release.sh will stage tracked files only)." >&2
+    echo "   Use --allow-dirty to bypass this check for tracked changes only." >&2
     exit 1
-  else
-    echo "⚠️ Working tree has uncommitted changes (allowed via --allow-dirty)"
   fi
+
+  if [[ "$HAS_UNTRACKED" -gt 0 ]]; then
+    echo "❌ Working tree has untracked files." >&2
+    echo "   Untracked files can be accidentally included by npm pack. Clean or ignore them before release." >&2
+    exit 1
+  fi
+
+  echo "⚠️ Working tree has tracked uncommitted changes (allowed via --allow-dirty)"
 fi
 
 echo "==> Running verification"

@@ -43,8 +43,10 @@ function setupTempRepo(): string {
 
 	fs.writeFileSync(
 		path.join(dir, "package.json"),
-		`${JSON.stringify({ name: "test-pkg", version: "0.0.1", files: ["src"] }, null, 2)}\n`,
+		`${JSON.stringify({ name: "test-pkg", version: "0.0.1", files: ["src", "README.md", "LICENSE", "package.json"] }, null, 2)}\n`,
 	);
+	fs.writeFileSync(path.join(dir, "README.md"), "# test-pkg\n");
+	fs.writeFileSync(path.join(dir, "LICENSE"), "MIT\n");
 	fs.mkdirSync(path.join(dir, "src"));
 	fs.writeFileSync(path.join(dir, "src", "index.ts"), "export const x = 1;\n");
 	fs.mkdirSync(path.join(dir, "scripts"));
@@ -58,6 +60,10 @@ function setupTempRepo(): string {
 		path.join(rootScripts, "release.sh"),
 		path.join(dir, "scripts", "release.sh"),
 	);
+	fs.copyFileSync(
+		path.join(rootScripts, "check-package-contents.js"),
+		path.join(dir, "scripts", "check-package-contents.js"),
+	);
 
 	fs.writeFileSync(
 		path.join(dir, "scripts", "verify.sh"),
@@ -66,6 +72,7 @@ function setupTempRepo(): string {
 	fs.chmodSync(path.join(dir, "scripts", "verify.sh"), 0o755);
 	fs.chmodSync(path.join(dir, "scripts", "release-check.sh"), 0o755);
 	fs.chmodSync(path.join(dir, "scripts", "release.sh"), 0o755);
+	fs.chmodSync(path.join(dir, "scripts", "check-package-contents.js"), 0o755);
 
 	const binDir = path.join(dir, "bin");
 	fs.mkdirSync(binDir);
@@ -90,7 +97,23 @@ switch (cmd) {
     console.log("testuser");
     break;
   case "pack":
-    console.log("mock pack");
+    if (rest.includes("--json")) {
+      const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+      const included = new Set(["package.json"]);
+      function addEntry(entry) {
+        if (!fs.existsSync(entry)) return;
+        const stat = fs.statSync(entry);
+        if (stat.isDirectory()) {
+          for (const child of fs.readdirSync(entry).sort()) addEntry(entry + "/" + child);
+        } else {
+          included.add(entry);
+        }
+      }
+      for (const file of p.files || []) addEntry(file);
+      console.log(JSON.stringify([{ files: [...included].sort().map((path) => ({ path })) }]));
+    } else {
+      console.log("mock pack");
+    }
     break;
   case "version":
     const ver = bump();
@@ -208,6 +231,84 @@ describe("release-check.sh", () => {
 		expect(result.stdout).toContain("Release checks complete");
 	});
 
+	it("fails with --allow-dirty when untracked files exist", () => {
+		fs.writeFileSync(
+			path.join(dir, "src", "index.ts"),
+			"export const x = 2;\n",
+		);
+		fs.writeFileSync(path.join(dir, "src", "local-secret.ts"), "secret\n");
+		const result = exec(
+			["scripts/release-check.sh", "--allow-dirty"],
+			dir,
+			undefined,
+			{
+				PATH: getPathEnv(dir),
+			},
+		);
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr + result.stdout).toContain(
+			"Working tree has untracked files",
+		);
+	});
+
+	it("package content check accepts the release allow-list", () => {
+		const result = exec(
+			["-lc", "node scripts/check-package-contents.js"],
+			dir,
+			undefined,
+			{
+				PATH: getPathEnv(dir),
+			},
+		);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("Package contents look sane");
+	});
+
+	it("package content check rejects non-release files in package files", () => {
+		const packagePath = path.join(dir, "package.json");
+		const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+		pkg.files = ["src", "README.md", "LICENSE", "package.json", "scripts"];
+		fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+
+		const result = exec(
+			["-lc", "node scripts/check-package-contents.js"],
+			dir,
+			undefined,
+			{
+				PATH: getPathEnv(dir),
+			},
+		);
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr + result.stdout).toContain(
+			"Package includes non-release artifacts: scripts/check-package-contents.js",
+		);
+	});
+
+	it("package content check rejects untracked files under shipped directories", () => {
+		fs.writeFileSync(path.join(dir, "src", "local-secret.ts"), "secret\n");
+
+		const result = exec(
+			["-lc", "node scripts/check-package-contents.js"],
+			dir,
+			undefined,
+			{
+				PATH: getPathEnv(dir),
+			},
+		);
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr + result.stdout).toContain(
+			"Package includes files not tracked by git: src/local-secret.ts",
+		);
+	});
+
+	it("verify script includes package content checks", () => {
+		const verifyScript = fs.readFileSync(
+			path.join(process.cwd(), "scripts", "verify.sh"),
+			"utf8",
+		);
+		expect(verifyScript).toContain("node scripts/check-package-contents.js");
+	});
+
 	it("mentions dry run with --dry-run", () => {
 		const result = exec(
 			["scripts/release-check.sh", "--dry-run"],
@@ -272,16 +373,20 @@ describe("release.sh", () => {
 		);
 		expect(result.exitCode).not.toBe(0);
 		expect(result.stderr + result.stdout).toContain(
-			"Untracked files are never auto-committed",
+			"Working tree has untracked files",
 		);
 	});
 
-	it("with --allow-dirty commits only tracked modified files, not untracked", () => {
+	it("fails with --allow-dirty before commit when tracked and untracked files coexist", () => {
+		const headBefore = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: dir,
+			encoding: "utf-8",
+		}).trim();
 		fs.writeFileSync(
 			path.join(dir, "src", "index.ts"),
 			"export const x = 2;\n",
 		);
-		fs.writeFileSync(path.join(dir, "untracked.txt"), "hello\n");
+		fs.writeFileSync(path.join(dir, "src", "local-secret.ts"), "secret\n");
 
 		const result = exec(
 			["scripts/release.sh", "--allow-dirty", "patch", "tracked change"],
@@ -291,11 +396,15 @@ describe("release.sh", () => {
 		);
 
 		expect(result.exitCode).not.toBe(0);
-		// It will eventually fail on npm publish (no registry), but the commit should have happened.
-		const committed = commitFiles(dir, "HEAD~1");
-		expect(committed).toContain("src/index.ts");
-		expect(committed).not.toContain("untracked.txt");
-		expect(commitMessage(dir, "HEAD~1")).toContain("tracked change");
+		expect(result.stderr + result.stdout).toContain(
+			"Working tree has untracked files",
+		);
+		expect(
+			execFileSync("git", ["rev-parse", "HEAD"], {
+				cwd: dir,
+				encoding: "utf-8",
+			}).trim(),
+		).toBe(headBefore);
 	});
 
 	it("with --allow-dirty commits staged-only tracked changes", () => {
@@ -318,7 +427,7 @@ describe("release.sh", () => {
 		expect(commitMessage(dir, "HEAD~1")).toContain("staged change");
 	});
 
-	it("with --allow-dirty commits both staged and unstaged tracked changes, not untracked", () => {
+	it("with --allow-dirty commits both staged and unstaged tracked changes", () => {
 		fs.writeFileSync(
 			path.join(dir, "src", "other.ts"),
 			"export const y = 1;\n",
@@ -335,7 +444,6 @@ describe("release.sh", () => {
 			path.join(dir, "src", "other.ts"),
 			"export const y = 2;\n",
 		);
-		fs.writeFileSync(path.join(dir, "untracked.txt"), "hello\n");
 
 		const result = exec(
 			["scripts/release.sh", "--allow-dirty", "patch", "mixed change"],
@@ -348,7 +456,6 @@ describe("release.sh", () => {
 		const committed = commitFiles(dir, "HEAD~1");
 		expect(committed).toContain("src/index.ts");
 		expect(committed).toContain("src/other.ts");
-		expect(committed).not.toContain("untracked.txt");
 		expect(commitMessage(dir, "HEAD~1")).toContain("mixed change");
 	});
 

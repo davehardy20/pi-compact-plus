@@ -68,15 +68,22 @@ HAS_UNTRACKED="$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')"
 if [[ -n "$GIT_STATUS" ]]; then
   if [[ "$ALLOW_DIRTY" -eq 0 ]]; then
     echo "❌ Working tree is not clean. Commit or stash changes before release." >&2
-    echo "   Use --allow-dirty to stage tracked changes only (untracked files are ignored)." >&2
+    echo "   Use --allow-dirty to stage tracked changes only after cleaning untracked files." >&2
+    echo
+    echo "$GIT_STATUS"
+    exit 1
+  fi
+
+  if [[ "$HAS_UNTRACKED" -gt 0 ]]; then
+    echo "❌ Working tree has untracked files." >&2
+    echo "   Untracked files can be accidentally included by npm pack. Clean or ignore them before release." >&2
     echo
     echo "$GIT_STATUS"
     exit 1
   fi
 
   if [[ "$HAS_MODIFIED_TRACKED" -eq 0 ]]; then
-    echo "❌ Working tree has untracked files but no modified tracked files." >&2
-    echo "   Untracked files are never auto-committed. Clean or ignore them." >&2
+    echo "❌ Working tree has no modified tracked files to commit." >&2
     echo
     echo "$GIT_STATUS"
     exit 1
@@ -99,7 +106,7 @@ RC_ARGS=()
 
 if [[ -n "$GIT_STATUS" ]]; then
   echo
-  echo "==> Staging tracked modified files only (not untracked):"
+  echo "==> Staging tracked modified files only:"
   if [[ "$HAS_MODIFIED_STAGED" -gt 0 ]]; then
     echo "--- staged ---"
     git diff --cached --name-only
