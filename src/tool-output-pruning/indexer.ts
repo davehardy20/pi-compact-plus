@@ -1,5 +1,7 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { recordMatchesBranchEntry } from "./record-identity.js";
+import {
+	recordMatchesBranchEntry,
+	type ToolOutputBranchEntry,
+} from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import type {
 	PendingToolOutputBatch,
@@ -18,7 +20,7 @@ export interface IndexedBatch {
 }
 
 function findEntryIdForRecord(
-	branchEntries: Array<{ type?: unknown; id: string; message: AgentMessage }>,
+	branchEntries: ToolOutputBranchEntry[],
 	record: ToolOutputRecord,
 	settings: ToolOutputPruningSettings,
 ): string | null {
@@ -48,7 +50,7 @@ function findEntryIdForRecord(
  * Adapted from pi-context-prune (MIT-licensed prior art) into Compact+.
  */
 export function indexToolResultsFromBranch(
-	branchEntries: Array<{ type?: unknown; id: string; message: AgentMessage }>,
+	branchEntries: ToolOutputBranchEntry[],
 	indexedBatches: IndexedBatch[],
 	state: ToolOutputPruningState,
 	settings: ToolOutputPruningSettings,

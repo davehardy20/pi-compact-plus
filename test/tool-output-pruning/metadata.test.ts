@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createSessionBranchView } from "../../src/session-branch-view.js";
 import {
 	buildToolPruneSummaryData,
 	MAX_RECONSTRUCTED_ARGS_PREVIEW_CHARS,
@@ -95,10 +96,28 @@ function makePersistedData(
 	});
 }
 
+function makeView(
+	summaryEntries: unknown[],
+	branchEntries: ToolOutputBranchEntry[],
+) {
+	return createSessionBranchView([
+		...(branchEntries as Array<{
+			type: string;
+			id: string;
+			message: ToolOutputBranchEntry["message"];
+		}>),
+		...(summaryEntries as Array<{
+			type: string;
+			id: string;
+			customType?: string;
+			data?: unknown;
+		}>),
+	]);
+}
+
 function reconstruct(data: ToolPruneSummaryData, settings = SETTINGS) {
 	return reconstructToolOutputRecordsFromBranch(
-		[makeSummaryEntry(data)],
-		[makeToolResultEntry()],
+		makeView([makeSummaryEntry(data)], [makeToolResultEntry()]),
 		settings,
 	);
 }
@@ -232,15 +251,17 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 
 	it("skips legacy summary entries without metadata", () => {
 		const result = reconstructToolOutputRecordsFromBranch(
-			[
-				makeSummaryEntry({
-					timestamp: 1,
-					refs: "t1: bash",
-					summaryChars: 10,
-					recordCount: 1,
-				}),
-			],
-			[makeToolResultEntry()],
+			makeView(
+				[
+					makeSummaryEntry({
+						timestamp: 1,
+						refs: "t1: bash",
+						summaryChars: 10,
+						recordCount: 1,
+					}),
+				],
+				[makeToolResultEntry()],
+			),
 			SETTINGS,
 		);
 
@@ -262,8 +283,10 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 
 	it("fails atomically for stale branch entry ids", () => {
 		const result = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(makePersistedData())],
-			[makeToolResultEntry({ id: "other-entry" })],
+			makeView(
+				[makeSummaryEntry(makePersistedData())],
+				[makeToolResultEntry({ id: "other-entry" })],
+			),
 			SETTINGS,
 		);
 
@@ -274,16 +297,20 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 
 	it("fails atomically for toolCallId and toolName mismatches", () => {
 		const wrongCall = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(makePersistedData())],
-			[makeToolResultEntry({ toolCallId: "tc-other" })],
+			makeView(
+				[makeSummaryEntry(makePersistedData())],
+				[makeToolResultEntry({ toolCallId: "tc-other" })],
+			),
 			SETTINGS,
 		);
 		expect(wrongCall.ok).toBe(false);
 		expect(wrongCall.records).toHaveLength(0);
 
 		const wrongTool = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(makePersistedData())],
-			[makeToolResultEntry({ toolName: "python" })],
+			makeView(
+				[makeSummaryEntry(makePersistedData())],
+				[makeToolResultEntry({ toolName: "python" })],
+			),
 			SETTINGS,
 		);
 		expect(wrongTool.ok).toBe(false);
@@ -296,8 +323,10 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 			makeRecord({ recordId: "rec-read", toolCallId: "tc1", toolName: "read" }),
 		]);
 		const protectedResult = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(protectedTool)],
-			[makeToolResultEntry({ toolName: "read" })],
+			makeView(
+				[makeSummaryEntry(protectedTool)],
+				[makeToolResultEntry({ toolName: "read" })],
+			),
 			SETTINGS,
 		);
 		expect(protectedResult.ok).toBe(false);
@@ -314,8 +343,10 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 
 	it("fails atomically for non-text current branch tool results", () => {
 		const result = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(makePersistedData())],
-			[makeToolResultEntry({ content: [{ type: "image", data: "abc" }] })],
+			makeView(
+				[makeSummaryEntry(makePersistedData())],
+				[makeToolResultEntry({ content: [{ type: "image", data: "abc" }] })],
+			),
 			SETTINGS,
 		);
 
@@ -336,11 +367,13 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 		];
 		const data = makePersistedData(records);
 		const result = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(data)],
-			[
-				makeToolResultEntry(),
-				makeToolResultEntry({ id: "entry-2", toolCallId: "tc2" }),
-			],
+			makeView(
+				[makeSummaryEntry(data)],
+				[
+					makeToolResultEntry(),
+					makeToolResultEntry({ id: "entry-2", toolCallId: "tc2" }),
+				],
+			),
 			SETTINGS,
 		);
 
@@ -360,8 +393,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 			}),
 		);
 		const tooMany = reconstructToolOutputRecordsFromBranch(
-			tooManySummaryEntries,
-			[makeToolResultEntry()],
+			makeView(tooManySummaryEntries, [makeToolResultEntry()]),
 			SETTINGS,
 		);
 		expect(tooMany.ok).toBe(false);
@@ -376,8 +408,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 			}),
 		);
 		const branchBound = reconstructToolOutputRecordsFromBranch(
-			[makeSummaryEntry(makePersistedData())],
-			hugeBranch as never,
+			makeView([makeSummaryEntry(makePersistedData())], hugeBranch as never),
 			SETTINGS,
 		);
 		expect(branchBound.ok).toBe(false);

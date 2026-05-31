@@ -1,3 +1,4 @@
+import type { SessionBranchView } from "../session-branch-view.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
 import {
 	isExcludedTool,
@@ -71,23 +72,8 @@ export interface ToolOutputMetadataReconstructionResult {
 	error?: string;
 }
 
-interface ToolPruneCustomEntry {
-	type?: unknown;
-	customType?: unknown;
-	data?: unknown;
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isToolPruneSummaryEntry(
-	entry: ToolPruneCustomEntry,
-): entry is ToolPruneCustomEntry {
-	return (
-		entry.type === "custom" &&
-		entry.customType === TOOL_PRUNE_SUMMARY_CUSTOM_TYPE
-	);
 }
 
 function safeJsonSize(value: unknown): number | null {
@@ -446,8 +432,7 @@ function validateMetadataHeader(
  * entry by entryId, toolCallId, toolName, role, and text-only content.
  */
 export function reconstructToolOutputRecordsFromBranch(
-	branch: ToolPruneCustomEntry[],
-	branchEntries: ToolOutputBranchEntry[],
+	view: SessionBranchView,
 	settings: ToolOutputPruningSettings,
 ): ToolOutputMetadataReconstructionResult {
 	let inspectedEntries = 0;
@@ -455,7 +440,7 @@ export function reconstructToolOutputRecordsFromBranch(
 	let scannedBytes = 0;
 	let skippedEntries = 0;
 
-	const branchEntryMap = buildBranchEntryById(branchEntries);
+	const branchEntryMap = buildBranchEntryById(view.messageEntries());
 	if ("error" in branchEntryMap) {
 		return fail(
 			branchEntryMap.error,
@@ -471,31 +456,32 @@ export function reconstructToolOutputRecordsFromBranch(
 	const seenEntryIds = new Set<string>();
 	const seenShortRefs = new Set<string>();
 
-	for (const entry of branch) {
-		inspectedEntries++;
-		if (inspectedEntries > MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES) {
-			return fail(
-				`branch metadata scan exceeded ${MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES} entries`,
-				inspectedEntries,
-				scannedEntries,
-				scannedBytes,
-				skippedEntries,
-			);
-		}
-		if (!isToolPruneSummaryEntry(entry)) {
-			continue;
-		}
+	const customScan = view.customEntries(TOOL_PRUNE_SUMMARY_CUSTOM_TYPE, {
+		limit: MAX_RECONSTRUCTION_SCAN_ENTRIES + 1,
+		maxScanEntries: MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES,
+	});
+	inspectedEntries = customScan.scannedEntries;
+	if (customScan.hitScanLimit) {
+		return fail(
+			`branch metadata scan exceeded ${MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES} entries`,
+			inspectedEntries,
+			scannedEntries,
+			scannedBytes,
+			skippedEntries,
+		);
+	}
+	if (customScan.entries.length > MAX_RECONSTRUCTION_SCAN_ENTRIES) {
+		return fail(
+			`too many metadata entries: ${customScan.entries.length}`,
+			inspectedEntries,
+			scannedEntries,
+			scannedBytes,
+			skippedEntries,
+		);
+	}
 
+	for (const entry of customScan.entries) {
 		scannedEntries++;
-		if (scannedEntries > MAX_RECONSTRUCTION_SCAN_ENTRIES) {
-			return fail(
-				`too many metadata entries: ${scannedEntries}`,
-				inspectedEntries,
-				scannedEntries,
-				scannedBytes,
-				skippedEntries,
-			);
-		}
 
 		const size = safeJsonSize(entry.data);
 		if (size === null) {

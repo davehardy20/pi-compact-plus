@@ -10,11 +10,16 @@ import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
-import { extractCurrentFocus, extractTextContent } from "./focus.js";
+import {
+	extractCurrentFocus,
+	extractCurrentFocusFromBranch,
+	extractTextContent,
+} from "./focus.js";
 import { executeCompaction } from "./lifecycle.js";
-import { isAssistantMessage, isSessionMessageEntry } from "./pi-messages.js";
+import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromUsage, modelKey } from "./policy.js";
 import { buildPersistedFocusEcho } from "./reorder.js";
+import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import type { CompactionState } from "./state.js";
 import {
 	COOLDOWN_MS,
@@ -74,11 +79,8 @@ export class CompactionCoordinator {
 
 		this.state.lastTriggerAuto = false;
 
-		const cmdEntries = ctx.sessionManager.getBranch();
-		const cmdMessages = cmdEntries
-			.filter(isSessionMessageEntry)
-			.map((e) => e.message);
-		const cmdFocus = extractCurrentFocus(cmdMessages);
+		const cmdBranchView = createCurrentSessionBranchView(ctx);
+		const cmdFocus = extractCurrentFocusFromBranch(cmdBranchView);
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
@@ -124,11 +126,8 @@ export class CompactionCoordinator {
 			this.state.lastCompactTurnIndex = turnIndex;
 		}
 
-		const autoEntries = ctx.sessionManager.getBranch();
-		const autoMessages = autoEntries
-			.filter(isSessionMessageEntry)
-			.map((e) => e.message);
-		const autoFocus = extractCurrentFocus(autoMessages);
+		const autoBranchView = createCurrentSessionBranchView(ctx);
+		const autoFocus = extractCurrentFocusFromBranch(autoBranchView);
 
 		ctx.ui.notify(
 			`📦 Compact+ auto-compaction triggered at ${usage.percent.toFixed(0)}% (${usage.tokens.toLocaleString()} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode} (${triggerSource})`,

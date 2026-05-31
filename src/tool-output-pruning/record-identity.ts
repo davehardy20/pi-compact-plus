@@ -23,6 +23,14 @@ export const PROTECTED_EXCLUDED_TOOLS: readonly string[] = [
 	QUERY_TOOL_OUTPUT_TOOL_NAME,
 ];
 
+/**
+ * Current-branch entry shape consumed by pruning identity checks.
+ *
+ * The branch-view module owns Pi branch projection; record-identity owns this
+ * deliberately narrow safety boundary for fail-closed matching and bounded
+ * text reads. `type` stays optional/unknown so tests and callers can exercise
+ * stale or malformed branch-entry shapes without widening branch-view APIs.
+ */
 export interface ToolOutputBranchEntry {
 	type?: unknown;
 	id: string;

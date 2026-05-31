@@ -14,7 +14,9 @@ export {
 	extractCompletedWork,
 	extractConstraints,
 	extractCurrentFocus,
+	extractCurrentFocusFromBranch,
 	extractFailedAttempts,
 	extractOpenProblems,
 	extractSessionSnapshot,
+	extractSessionSnapshotFromBranch,
 } from "./snapshot.js";

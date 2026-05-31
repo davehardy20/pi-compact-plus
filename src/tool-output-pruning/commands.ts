@@ -8,7 +8,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type FlushResult, flushPendingBatches } from "./lifecycle.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
-import { PROTECTED_EXCLUDED_TOOLS } from "./record-identity.js";
+import {
+	PROTECTED_EXCLUDED_TOOLS,
+	type ToolOutputBranchEntry,
+} from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import type { ToolOutputPruningSettings } from "./types.js";
 
@@ -152,10 +155,7 @@ export interface ManualFlushDependencies {
 	state: ToolOutputPruningState;
 	settings: ToolOutputPruningSettings;
 	ctx: ExtensionContext;
-	branchEntries: Array<{
-		id: string;
-		message: import("@earendil-works/pi-agent-core").AgentMessage;
-	}>;
+	branchEntries: ToolOutputBranchEntry[];
 	pi: { appendEntry: (customType: string, data?: unknown) => void };
 }
 

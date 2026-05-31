@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
-import { isSessionMessageEntry } from "./pi-messages.js";
+import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import type { EffectiveUsage } from "./types.js";
 
 export function getEffectiveUsage(
@@ -26,8 +26,8 @@ export function getEffectiveUsage(
 	// Fallback: estimate from branch entries only when Pi does not expose
 	// context usage at all. Do not estimate after compaction when Pi
 	// intentionally reports unknown usage until the next assistant response.
-	const entries = ctx.sessionManager.getBranch();
-	const messages = entries.filter(isSessionMessageEntry).map((e) => e.message);
+	const branchView = createCurrentSessionBranchView(ctx);
+	const messages = branchView.messages();
 	let estimated = 0;
 	for (const msg of messages) {
 		estimated += estimateTokens(msg as AgentMessage);

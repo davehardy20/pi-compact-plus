@@ -2,11 +2,11 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
-import { extractCurrentFocus } from "./focus.js";
+import { extractCurrentFocusFromBranch } from "./focus.js";
 import { loadTelemetryWithDiagnostics } from "./persist.js";
-import { isSessionMessageEntry } from "./pi-messages.js";
 import { buildBranchInstructions } from "./prompts.js";
 import { reorderForPositioning } from "./reorder.js";
+import { createSessionBranchView } from "./session-branch-view.js";
 import type { CompactionState } from "./state.js";
 import type { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
 
@@ -89,12 +89,13 @@ export function registerCompactPlusEventHandlers(
 	});
 
 	pi.on("session_before_tree", async (event, _ctx) => {
-		const entries = event.preparation.entriesToSummarize;
-		const messages = entries
-			.filter(isSessionMessageEntry)
-			.map((e) => e.message);
+		const branchView = createSessionBranchView(
+			event.preparation.entriesToSummarize,
+		);
 		const focus =
-			messages.length > 0 ? extractCurrentFocus(messages) : undefined;
+			branchView.messages().length > 0
+				? extractCurrentFocusFromBranch(branchView)
+				: undefined;
 
 		return {
 			customInstructions: buildBranchInstructions(focus),

@@ -3,10 +3,6 @@ import { getDetails, getToolCallId } from "../pi-messages.js";
 import {
 	extractToolResultText,
 	getPrunableToolResult,
-	isCompactPlusInternalTool,
-	isExcludedTool,
-	isTextOnlyToolResult,
-	PROTECTED_EXCLUDED_TOOLS,
 } from "./record-identity.js";
 import type { ToolOutputPruningState } from "./state.js";
 import {

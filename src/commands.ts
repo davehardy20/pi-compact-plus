@@ -5,15 +5,15 @@ import type {
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
 import { registerCompactPlusStatusCommand } from "./extension-status.js";
-import { extractSessionSnapshot } from "./focus.js";
+import { extractSessionSnapshotFromBranch } from "./focus.js";
 import type { PackageMetadataResolver } from "./package-metadata.js";
-import { isSessionMessageEntry } from "./pi-messages.js";
 import {
 	buildCheckpointData,
 	buildStatusSnapshot,
 	formatCheckpointSummary,
 	formatStatusLines,
 } from "./policy.js";
+import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";
@@ -113,11 +113,8 @@ export function registerCompactPlusCommands(
 		description: "Save a lightweight checkpoint. Usage: /checkpoint [note]",
 		handler: async (args, ctx) => {
 			const note = args.trim() || undefined;
-			const entries = ctx.sessionManager.getBranch();
-			const messages = entries
-				.filter(isSessionMessageEntry)
-				.map((e) => e.message);
-			const snapshot = extractSessionSnapshot(messages);
+			const branchView = createCurrentSessionBranchView(ctx);
+			const snapshot = extractSessionSnapshotFromBranch(branchView);
 			const data = buildCheckpointData(note, snapshot);
 			pi.appendEntry(CHECKPOINT_CUSTOM_TYPE, data);
 			ctx.ui.notify(formatCheckpointSummary(data), "info");
