@@ -1,9 +1,9 @@
+import { ToolOutputPruningState } from "./tool-output-pruning/state.js";
 import type {
 	CompactionMode,
 	CompactionTelemetry,
 	TelemetryPersistenceIssue,
 } from "./types.js";
-import { ToolOutputPruningState } from "./tool-output-pruning/state.js";
 
 /**
  * Encapsulates all mutable state for Compact+.
