@@ -29,6 +29,7 @@ describe("buildCompactPlusDebugStatusMessage", () => {
 				"@davehardy20/pi-compact-plus v1.2.3",
 				"source: /repo/src/index.ts",
 				"packageRoot: /repo",
+				"updateFlow: package updates require pi update --extensions or reinstall, then /reload",
 				"compacting: true",
 				"selectedMode: hard",
 				"lastCompactTime: 2026-05-30T12:34:56.000Z",

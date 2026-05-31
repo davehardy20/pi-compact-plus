@@ -13,4 +13,7 @@ npm test
 echo "==> npm run build"
 npm run build
 
+echo "==> node scripts/check-package-contents.js"
+node scripts/check-package-contents.js
+
 echo "✅ Verification complete"

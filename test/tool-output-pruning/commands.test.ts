@@ -104,6 +104,9 @@ describe("formatPruningStatusLines", () => {
 		expect(lines[0]).toBe("Tool-output pruning:");
 		expect(lines.some((l) => l.includes("off (experimental)"))).toBe(true);
 		expect(lines.some((l) => l.includes("Mode: off"))).toBe(true);
+		expect(lines.some((l) => l.includes("/reload is safest after edits"))).toBe(
+			true,
+		);
 	});
 
 	it("formats enabled status with all fields", () => {
@@ -125,6 +128,9 @@ describe("formatPruningStatusLines", () => {
 		expect(lines.some((l) => l.includes("agent-message"))).toBe(true);
 		expect(lines.some((l) => l.includes("stub"))).toBe(true);
 		expect(lines.some((l) => l.includes("Last pruned count: 3"))).toBe(true);
+		expect(lines.some((l) => l.includes("/reload is safest after edits"))).toBe(
+			true,
+		);
 		const protectedLine = lines.find((l) => l.includes("Protected exclusions"));
 		expect(protectedLine).toContain("read");
 		expect(protectedLine).toContain("compact_plus_query_tool_output");

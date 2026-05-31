@@ -208,6 +208,11 @@ Top-level keys are also supported: `checkpointThresholdPercent`,
 missing, or overlapping thresholds fall back safely to the default `65 / 70 / 90`
 threshold profile.
 
+Threshold and cooldown constants are resolved when the extension module loads, so
+changes to those values require `/reload` or a Pi restart. Tool-output pruning
+settings are resolved when pruning commands and lifecycle events run, but
+`/reload` is still the safest way to apply settings edits consistently.
+
 ## Notes
 
 - Compact+ hooks into Pi's `session_before_compact` event to provide custom summarization.
@@ -312,6 +317,45 @@ reload verification.
 4. Run `/reload`
 
 `/reload` alone does not fetch newer package commits.
+
+## Architecture and development notes
+
+Runtime source is split into small ownership seams:
+
+- `src/index.ts` is the Pi extension composition root.
+- `src/commands.ts`, `src/events.ts`, and `src/usage.ts` own command wiring,
+  lifecycle/context hooks, and usage lookup.
+- `src/compaction-coordinator.ts` owns manual/auto compaction orchestration and
+  telemetry side effects.
+- `src/focus-echo/*` owns summary detection, parsing, sanitization, rendering,
+  context injection compatibility, and positioning.
+- `src/tool-output-pruning/*` owns experimental pruning capture, summarization,
+  metadata reconstruction, current-branch stubbing, recovery query, commands,
+  and state.
+
+Dev/release playbook:
+
+1. Keep local validation green before opening a PR:
+
+   ```bash
+   npm run typecheck
+   npm test
+   npm run build
+   ```
+
+2. Run `/compact-plus-status` after installing from a local checkout or package
+   update to confirm the loaded package name, version, source path, package root,
+   update flow, and pruning one-line status.
+3. To pick up a newer published package commit, run `pi update --extensions` or
+   reinstall the package, then `/reload`. `/reload` alone does not fetch package
+   updates.
+4. Before release, run `npm run package:check` for a fast package-content
+   sanity check, then `npm run release:check`. Release checks run verification,
+   package-content sanity checks, `npm whoami`, and `npm pack --dry-run`.
+5. Use `scripts/release.sh <patch|minor|major>` only for an intentional release.
+   `--allow-dirty` stages tracked changes with `git add -u`; untracked files
+   must be cleaned or ignored first because npm can pack them from shipped
+   directories.
 
 ## Build and test
 

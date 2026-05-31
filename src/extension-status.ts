@@ -57,6 +57,7 @@ export function buildCompactPlusDebugStatusMessage({
 			`${metadata.name} v${metadata.version}`,
 			`source: ${metadata.sourcePath}`,
 			`packageRoot: ${metadata.packageRoot}`,
+			"updateFlow: package updates require pi update --extensions or reinstall, then /reload",
 			`compacting: ${isCompacting}`,
 			`selectedMode: ${selectedMode ?? "none"}`,
 			`lastCompactTime: ${lastCompactTime ? new Date(lastCompactTime).toISOString() : "never"}`,
