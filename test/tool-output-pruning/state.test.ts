@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
+import {
+	MAX_FINALIZED_RECORDS,
+	MAX_PENDING_BATCHES,
+	MAX_PENDING_RECORDS,
+	type ToolOutputRecord,
+} from "../../src/tool-output-pruning/types.js";
+import {
+	makePendingBatch,
+	makeToolOutputRecord,
+} from "../fixtures/tool-output-pruning.js";
 
 describe("ToolOutputPruningState", () => {
 	let state: ToolOutputPruningState;
@@ -21,38 +31,11 @@ describe("ToolOutputPruningState", () => {
 	});
 
 	it("reset clears all state", () => {
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 1,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.finalizedRecords.push({
-			recordId: "r1",
-			entryId: "e1",
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: "summary",
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
+		state.pendingBatches.push(makePendingBatch({ batchId: "b1" }));
+		state.pendingRecords.push(makeToolOutputRecord());
+		state.finalizedRecords.push(
+			makeToolOutputRecord({ entryId: "e1", summary: "summary" }),
+		);
 		state.isFlushing = true;
 		state.lastSummaryStatus = "ok";
 		state.lastSummaryTime = 12345;
@@ -72,38 +55,11 @@ describe("ToolOutputPruningState", () => {
 	});
 
 	it("resetPending clears only pending batches, records, and flushing flag", () => {
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 1,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.finalizedRecords.push({
-			recordId: "r1",
-			entryId: "e1",
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: "summary",
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
+		state.pendingBatches.push(makePendingBatch({ batchId: "b1" }));
+		state.pendingRecords.push(makeToolOutputRecord());
+		state.finalizedRecords.push(
+			makeToolOutputRecord({ entryId: "e1", summary: "summary" }),
+		);
 		state.isFlushing = true;
 		state.lastSummaryStatus = "ok";
 		state.lastPrunedCount = 3;
@@ -126,19 +82,10 @@ describe("ToolOutputPruningState", () => {
 	});
 
 	it("looks up records by ref, toolCallId, and entryId", () => {
-		const record = {
-			recordId: "r1",
+		const record = makeToolOutputRecord({
 			entryId: "e1",
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
 			summary: "summary",
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		};
+		});
 		state.finalizedRecords.push(record);
 
 		expect(state.getRecordByRef("t1")).toBe(record);
@@ -150,38 +97,15 @@ describe("ToolOutputPruningState", () => {
 	});
 
 	it("returns a snapshot copy", () => {
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 1,
-			timestamp: 1000,
-			recordIds: ["r1"],
-		});
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: 1000,
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.finalizedRecords.push({
-			recordId: "r1",
-			entryId: "e1",
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: 1000,
-			chars: 100,
-			isError: false,
-			summary: "summary",
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
+		state.pendingBatches.push(makePendingBatch({ timestamp: 1000 }));
+		state.pendingRecords.push(makeToolOutputRecord({ timestamp: 1000 }));
+		state.finalizedRecords.push(
+			makeToolOutputRecord({
+				entryId: "e1",
+				timestamp: 1000,
+				summary: "summary",
+			}),
+		);
 		state.lastSummaryStatus = "ok";
 		state.lastPrunedCount = 2;
 		state.shortRefCounter = 1;
@@ -194,7 +118,6 @@ describe("ToolOutputPruningState", () => {
 		expect(snap.lastPrunedCount).toBe(2);
 		expect(snap.shortRefCounter).toBe(1);
 
-		// Mutating snapshot should not affect state
 		snap.pendingBatches.pop();
 		snap.pendingRecords.pop();
 		snap.finalizedRecords.pop();
@@ -205,45 +128,24 @@ describe("ToolOutputPruningState", () => {
 
 	it("reconciles with branch entry ids", () => {
 		state.finalizedRecords.push(
-			{
-				recordId: "r1",
-				entryId: "e1",
-				toolCallId: "tc1",
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: "summary",
-				shortRef: "t1",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-			{
+			makeToolOutputRecord({ entryId: "e1", summary: "summary" }),
+			makeToolOutputRecord({
 				recordId: "r2",
 				entryId: "e2",
 				toolCallId: "tc2",
 				toolName: "read",
-				timestamp: Date.now(),
 				chars: 200,
-				isError: false,
 				summary: "summary2",
 				shortRef: "t2",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-			{
+			}),
+			makeToolOutputRecord({
 				recordId: "r3",
 				entryId: null,
 				toolCallId: "tc3",
 				toolName: "edit",
-				timestamp: Date.now(),
 				chars: 50,
-				isError: false,
-				summary: null,
 				shortRef: "t3",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
+			}),
 		);
 
 		state.reconcileWithBranch(new Set(["e1"]));
@@ -255,43 +157,20 @@ describe("ToolOutputPruningState", () => {
 
 	it("activeRecordCount counts only records with entryId", () => {
 		state.finalizedRecords.push(
-			{
-				recordId: "r1",
-				entryId: "e1",
-				toolCallId: "tc1",
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: "summary",
-				shortRef: "t1",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-			{
+			makeToolOutputRecord({ entryId: "e1", summary: "summary" }),
+			makeToolOutputRecord({
 				recordId: "r2",
 				entryId: null,
 				toolCallId: "tc2",
 				toolName: "read",
-				timestamp: Date.now(),
 				chars: 200,
-				isError: false,
-				summary: null,
 				shortRef: "t2",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
+			}),
 		);
 
 		expect(state.activeRecordCount).toBe(1);
 	});
 });
-
-import {
-	MAX_FINALIZED_RECORDS,
-	MAX_PENDING_BATCHES,
-	MAX_PENDING_RECORDS,
-} from "../../src/tool-output-pruning/types.js";
 
 describe("ToolOutputPruningState bounded limits", () => {
 	let state: ToolOutputPruningState;
@@ -302,59 +181,45 @@ describe("ToolOutputPruningState bounded limits", () => {
 
 	it("addPendingBatch drops oldest batches when over MAX_PENDING_BATCHES", () => {
 		for (let i = 0; i < MAX_PENDING_BATCHES + 5; i++) {
-			const batch = {
-				batchId: `b${i}`,
-				turnIndex: i,
-				timestamp: Date.now(),
-				recordIds: [`r${i}`],
-			};
-			const record = {
-				recordId: `r${i}`,
-				entryId: null,
-				toolCallId: `tc${i}`,
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
-				shortRef: `t${i + 1}`,
-				argsPreview: null,
-				fallbackSnippets: null,
-			};
-			state.addPendingBatch(batch, [record]);
+			state.addPendingBatch(
+				makePendingBatch({
+					batchId: `b${i}`,
+					turnIndex: i,
+					recordIds: [`r${i}`],
+				}),
+				[
+					makeToolOutputRecord({
+						recordId: `r${i}`,
+						toolCallId: `tc${i}`,
+						shortRef: `t${i + 1}`,
+					}),
+				],
+			);
 		}
 		expect(state.pendingBatches.length).toBe(MAX_PENDING_BATCHES);
 		expect(state.pendingRecords.length).toBe(MAX_PENDING_BATCHES);
-		// Oldest batches should have been dropped
-		expect(state.pendingBatches[0]?.batchId).toBe(`b5`);
+		expect(state.pendingBatches[0]?.batchId).toBe("b5");
 	});
 
 	it("addPendingBatch drops oldest records when over MAX_PENDING_RECORDS", () => {
-		// Add one batch with many records to exceed the record limit
-		const records: import("../../src/tool-output-pruning/types.js").ToolOutputRecord[] =
-			[];
+		const records: ToolOutputRecord[] = [];
 		for (let i = 0; i < MAX_PENDING_RECORDS + 10; i++) {
-			records.push({
-				recordId: `r${i}`,
-				entryId: null,
-				toolCallId: `tc${i}`,
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
-				shortRef: `t${i + 1}`,
-				argsPreview: null,
-				fallbackSnippets: null,
-			});
+			records.push(
+				makeToolOutputRecord({
+					recordId: `r${i}`,
+					toolCallId: `tc${i}`,
+					shortRef: `t${i + 1}`,
+				}),
+			);
 		}
-		const batch = {
-			batchId: "b0",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: records.map((r) => r.recordId),
-		};
-		state.addPendingBatch(batch, records);
+		state.addPendingBatch(
+			makePendingBatch({
+				batchId: "b0",
+				turnIndex: 0,
+				recordIds: records.map((r) => r.recordId),
+			}),
+			records,
+		);
 		expect(state.pendingRecords.length).toBeLessThanOrEqual(
 			MAX_PENDING_RECORDS,
 		);
@@ -362,39 +227,25 @@ describe("ToolOutputPruningState bounded limits", () => {
 
 	it("addFinalizedRecord enforces MAX_FINALIZED_RECORDS", () => {
 		for (let i = 0; i < MAX_FINALIZED_RECORDS + 10; i++) {
-			state.addFinalizedRecord({
-				recordId: `r${i}`,
-				entryId: `e${i}`,
-				toolCallId: `tc${i}`,
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: "summary",
-				shortRef: `t${i + 1}`,
-				argsPreview: null,
-				fallbackSnippets: null,
-			});
+			state.addFinalizedRecord(
+				makeToolOutputRecord({
+					recordId: `r${i}`,
+					entryId: `e${i}`,
+					toolCallId: `tc${i}`,
+					summary: "summary",
+					shortRef: `t${i + 1}`,
+				}),
+			);
 		}
 		expect(state.finalizedRecords.length).toBe(MAX_FINALIZED_RECORDS);
-		// Oldest records should have been dropped
-		expect(state.finalizedRecords[0]?.recordId).toBe(`r10`);
+		expect(state.finalizedRecords[0]?.recordId).toBe("r10");
 	});
 
 	it("addFinalizedRecord deduplicates by recordId", () => {
-		const record = {
-			recordId: "r1",
+		const record = makeToolOutputRecord({
 			entryId: "e1",
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
 			summary: "summary",
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		};
+		});
 		state.addFinalizedRecord(record);
 		state.addFinalizedRecord(record);
 		expect(state.finalizedRecords.length).toBe(1);

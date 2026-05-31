@@ -18,41 +18,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerCompactPlusCommands } from "./commands.js";
 import { CompactionCoordinator } from "./compaction-coordinator.js";
 import { registerCompactPlusEventHandlers } from "./events.js";
-import {
-	classifyMessages,
-	extractCurrentFocus,
-	extractDependencyChain,
-} from "./focus.js";
+import { classifyMessages, extractCurrentFocus } from "./focus.js";
 import { createPackageMetadataResolver } from "./package-metadata.js";
 import { saveTelemetryWithDiagnostics } from "./persist.js";
-import {
-	buildCheckpointData,
-	getModeFromUsage,
-	getUsageBandText,
-	modelKey,
-} from "./policy.js";
-import {
-	buildBranchInstructions,
-	buildCurrentFocusBlock,
-	buildSummaryInstructions,
-} from "./prompts.js";
-import { hasAdversarialPatterns } from "./reorder.js";
+
 import { resolveCompactPlusSettings } from "./settings.js";
 import { CompactionState } from "./state.js";
 import { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
-import { isToolOutputPruningEnabled } from "./tool-output-pruning/policy.js";
 import { createQueryToolDefinition } from "./tool-output-pruning/query-tool.js";
-import {
-	CHECKPOINT_CANDIDATE_PERCENT,
-	CHECKPOINT_CUSTOM_TYPE,
-	CONTINUATION_PROMPT,
-	COOLDOWN_MS,
-	type EffectiveUsage,
-	HARD_THRESHOLD_PERCENT,
-	REGROWTH_TOKENS,
-	STANDARD_THRESHOLD_PERCENT,
-	type SummaryInstructionOptions,
-} from "./types.js";
+import type { EffectiveUsage, SummaryInstructionOptions } from "./types.js";
 import { getEffectiveUsage } from "./usage.js";
 
 export {
@@ -125,21 +99,4 @@ export const __test__ = {
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,
 	getToolOutputPruningState: () => state.toolOutputPruning,
-	CHECKPOINT_CANDIDATE_PERCENT,
-	STANDARD_THRESHOLD_PERCENT,
-	HARD_THRESHOLD_PERCENT,
-	COOLDOWN_MS,
-	REGROWTH_TOKENS,
-	CONTINUATION_PROMPT,
-	CHECKPOINT_CUSTOM_TYPE,
-	getModeFromUsage,
-	getUsageBandText,
-	modelKey,
-	extractDependencyChain,
-	buildCurrentFocusBlock,
-	buildSummaryInstructions,
-	buildBranchInstructions,
-	buildCheckpointData,
-	hasAdversarialPatterns,
-	isToolOutputPruningEnabled,
 };

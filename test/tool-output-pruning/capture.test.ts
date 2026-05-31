@@ -16,73 +16,11 @@ import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
 import type { ToolOutputPruningSettings } from "../../src/tool-output-pruning/types.js";
 import { MAX_RECORDS_PER_BATCH } from "../../src/tool-output-pruning/types.js";
 import { QUERY_TOOL_OUTPUT_TOOL_NAME } from "../../src/types.js";
-
-const DEFAULT_SETTINGS: ToolOutputPruningSettings = {
-	experimentalToolOutputPruning: true,
-	toolOutputPruningMode: "agent-message",
-	toolOutputSummaryStrategy: "llm",
-	toolOutputPruneStrategy: "stub",
-	toolOutputPruneMinChars: 3000,
-	toolOutputSummaryMaxChars: 1600,
-	toolOutputQueryMaxChars: 12000,
-	toolOutputSummarizerModel: "default",
-	toolOutputSummarizerThinking: "low",
-	toolOutputPruneExcludedTools: [
-		"read",
-		"read_hashed",
-		"hashline_edit",
-		QUERY_TOOL_OUTPUT_TOOL_NAME,
-	],
-	toolOutputPruneIncludedTools: [],
-};
-
-function makeAssistantMessage(
-	toolCalls?: Array<{ id: string; name: string }>,
-): AgentMessage {
-	return {
-		role: "assistant" as const,
-		content: toolCalls
-			? toolCalls.map((tc) => ({ type: "toolCall" as const, ...tc }))
-			: [{ type: "text" as const, text: "hello" }],
-	} as unknown as AgentMessage;
-}
-
-function makeToolResult(options: {
-	toolCallId: string;
-	toolName: string;
-	text?: string;
-	image?: boolean;
-	mixed?: boolean;
-	isError?: boolean;
-	details?: unknown;
-}): AgentMessage {
-	const content: Array<{ type: string; text?: string; source?: unknown }> = [];
-	if (options.text !== undefined) {
-		content.push({ type: "text", text: options.text });
-	}
-	if (options.image) {
-		content.push({
-			type: "image",
-			source: { type: "base64", media_type: "image/png", data: "abc" },
-		});
-	}
-	if (options.mixed) {
-		content.push({ type: "text", text: options.text ?? "" });
-		content.push({
-			type: "image",
-			source: { type: "base64", media_type: "image/png", data: "abc" },
-		});
-	}
-	return {
-		role: "toolResult" as const,
-		toolCallId: options.toolCallId,
-		toolName: options.toolName,
-		content,
-		isError: options.isError ?? false,
-		details: options.details,
-		timestamp: Date.now(),
-	} as unknown as AgentMessage;
-}
+import {
+	ENABLED_TOOL_OUTPUT_PRUNING_SETTINGS as DEFAULT_SETTINGS,
+	makeAssistantMessage,
+	makeToolResult,
+} from "../fixtures/tool-output-pruning.js";
 
 describe("extractToolResultText", () => {
 	it("extracts text from a text-only tool result", () => {
