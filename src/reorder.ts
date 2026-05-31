@@ -9,6 +9,7 @@ export {
 	FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY,
 	FOCUS_ECHO_SECTION_HEADINGS,
 	hasAdversarialPatterns,
+	normalizeFocusEchoDraft,
 	parseFocusEcho,
 	reorderForPositioning,
 } from "./focus-echo/index.js";

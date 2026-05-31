@@ -9,6 +9,7 @@ export {
 	FOCUS_ECHO_SECTION_HEADINGS,
 } from "./draft.js";
 export type { FocusEcho } from "./model.js";
+export { normalizeFocusEchoDraft } from "./normalizer.js";
 export { parseFocusEcho } from "./parser.js";
 export { reorderForPositioning } from "./positioning.js";
 export {
