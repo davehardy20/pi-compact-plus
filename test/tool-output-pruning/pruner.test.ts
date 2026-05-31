@@ -5,44 +5,20 @@ import {
 	buildPrunedToolResult,
 } from "../../src/tool-output-pruning/pruner.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type {
-	ToolOutputPruningSettings,
-	ToolOutputRecord,
-} from "../../src/tool-output-pruning/types.js";
+import {
+	DISABLED_TOOL_OUTPUT_PRUNING_SETTINGS,
+	makeToolOutputPruningSettings,
+	makeToolOutputRecord,
+	makeToolResult,
+} from "../fixtures/tool-output-pruning.js";
 
-const ENABLED_SETTINGS: ToolOutputPruningSettings = {
-	experimentalToolOutputPruning: true,
-	toolOutputPruningMode: "agent-message",
-	toolOutputSummaryStrategy: "llm",
-	toolOutputPruneStrategy: "stub",
-	toolOutputPruneMinChars: 3000,
-	toolOutputSummaryMaxChars: 1600,
-	toolOutputQueryMaxChars: 12000,
-	toolOutputSummarizerModel: "default",
-	toolOutputSummarizerThinking: "low",
-	toolOutputPruneExcludedTools: [
-		"read",
-		"read_hashed",
-		"hashline_edit",
-		"compact_plus_query_tool_output",
-	],
-	toolOutputPruneIncludedTools: [],
-};
-
-const DISABLED_SETTINGS: ToolOutputPruningSettings = {
-	...ENABLED_SETTINGS,
-	experimentalToolOutputPruning: false,
-};
+const ENABLED_SETTINGS = makeToolOutputPruningSettings();
+const DISABLED_SETTINGS = makeToolOutputPruningSettings(
+	DISABLED_TOOL_OUTPUT_PRUNING_SETTINGS,
+);
 
 function makeToolResultMessage(toolCallId: string, text: string): AgentMessage {
-	return {
-		role: "toolResult",
-		toolCallId,
-		toolName: "bash",
-		content: [{ type: "text", text }],
-		isError: false,
-		timestamp: Date.now(),
-	} as unknown as AgentMessage;
+	return makeToolResult({ toolCallId, text });
 }
 
 function makeRecord(
@@ -50,20 +26,14 @@ function makeRecord(
 	shortRef: string,
 	entryId: string | null,
 	summary: string | null,
-): ToolOutputRecord {
-	return {
+) {
+	return makeToolOutputRecord({
 		recordId: `rec-${toolCallId}`,
 		entryId,
 		toolCallId,
-		toolName: "bash",
-		timestamp: Date.now(),
-		chars: 100,
-		isError: false,
 		summary,
 		shortRef,
-		argsPreview: null,
-		fallbackSnippets: null,
-	};
+	});
 }
 
 describe("buildPrunedToolResult", () => {

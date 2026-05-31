@@ -17,87 +17,27 @@ import {
 	shouldFlushOnMessageEnd,
 } from "../../src/tool-output-pruning/lifecycle.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type {
-	ToolOutputPruningSettings,
-	ToolOutputRecord,
-} from "../../src/tool-output-pruning/types.js";
+import type { ToolOutputRecord } from "../../src/tool-output-pruning/types.js";
 import {
 	MAX_FINALIZED_RECORDS,
 	MAX_SUMMARIZER_INPUTS_PER_BATCH,
 } from "../../src/tool-output-pruning/types.js";
+import {
+	DISABLED_TOOL_OUTPUT_PRUNING_SETTINGS,
+	makeAssistantMessage,
+	makeToolOutputPruningSettings,
+	makeToolOutputRecord,
+	makeToolResult,
+} from "../fixtures/tool-output-pruning.js";
 
-const ENABLED_SETTINGS: ToolOutputPruningSettings = {
-	experimentalToolOutputPruning: true,
-	toolOutputPruningMode: "agent-message",
-	toolOutputSummaryStrategy: "llm",
-	toolOutputPruneStrategy: "stub",
+const ENABLED_SETTINGS = makeToolOutputPruningSettings({
 	toolOutputPruneMinChars: 10,
-	toolOutputSummaryMaxChars: 1600,
-	toolOutputQueryMaxChars: 12000,
-	toolOutputSummarizerModel: "default",
-	toolOutputSummarizerThinking: "low",
-	toolOutputPruneExcludedTools: [
-		"read",
-		"read_hashed",
-		"hashline_edit",
-		"compact_plus_query_tool_output",
-	],
-	toolOutputPruneIncludedTools: [],
-};
+});
 
-const DISABLED_SETTINGS: ToolOutputPruningSettings = {
-	...ENABLED_SETTINGS,
-	experimentalToolOutputPruning: false,
-};
-
-function makeAssistantMessage(
-	toolCalls?: Array<{ id: string; name: string }>,
-): AgentMessage {
-	return {
-		role: "assistant" as const,
-		content: toolCalls
-			? toolCalls.map((tc) => ({ type: "toolCall" as const, ...tc }))
-			: [{ type: "text" as const, text: "hello" }],
-	} as unknown as AgentMessage;
-}
-
-function makeToolResult(options: {
-	toolCallId: string;
-	toolName: string;
-	text: string;
-}): AgentMessage {
-	return {
-		role: "toolResult" as const,
-		toolCallId: options.toolCallId,
-		toolName: options.toolName,
-		content: [{ type: "text", text: options.text }],
-		isError: false,
-		timestamp: Date.now(),
-	} as unknown as AgentMessage;
-}
-
-function makeRecord(options: {
-	recordId: string;
-	entryId: string | null;
-	toolCallId: string;
-	shortRef: string;
-	summary?: string | null;
-	toolName?: string;
-}): ToolOutputRecord {
-	return {
-		recordId: options.recordId,
-		entryId: options.entryId,
-		toolCallId: options.toolCallId,
-		toolName: options.toolName ?? "bash",
-		timestamp: Date.now(),
-		chars: 100,
-		isError: false,
-		summary: options.summary ?? null,
-		shortRef: options.shortRef,
-		argsPreview: null,
-		fallbackSnippets: null,
-	};
-}
+const DISABLED_SETTINGS = makeToolOutputPruningSettings({
+	...DISABLED_TOOL_OUTPUT_PRUNING_SETTINGS,
+	toolOutputPruneMinChars: 10,
+});
 
 function makeMockContext() {
 	return {
@@ -597,7 +537,7 @@ describe("flushPendingBatches", () => {
 
 		for (let i = 0; i < MAX_FINALIZED_RECORDS; i++) {
 			state.finalizedRecords.push(
-				makeRecord({
+				makeToolOutputRecord({
 					recordId: `old-${i}`,
 					entryId: `old-entry-${i}`,
 					toolCallId: `old-tc-${i}`,
@@ -609,7 +549,7 @@ describe("flushPendingBatches", () => {
 		const beforeRecordIds = state.finalizedRecords.map((r) => r.recordId);
 
 		state.pendingRecords.push(
-			makeRecord({
+			makeToolOutputRecord({
 				recordId: "new-record",
 				entryId: null,
 				toolCallId: "new-tc",
@@ -734,19 +674,13 @@ describe("buildSummarizerInputs atomic resolution", () => {
 					text: "output",
 				}),
 			});
-			pendingRecords.push({
-				recordId: `r${i}`,
-				entryId: null,
-				toolCallId: `tc${i}`,
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
-				shortRef: `t${i + 1}`,
-				argsPreview: null,
-				fallbackSnippets: null,
-			});
+			pendingRecords.push(
+				makeToolOutputRecord({
+					recordId: `r${i}`,
+					toolCallId: `tc${i}`,
+					shortRef: `t${i + 1}`,
+				}),
+			);
 		}
 		const inputs = buildSummarizerInputs(pendingRecords, branchEntries);
 		expect(inputs).toBeNull();
@@ -754,32 +688,13 @@ describe("buildSummarizerInputs atomic resolution", () => {
 
 	it("returns null when a pending record is missing from the branch", () => {
 		const pendingRecords: ToolOutputRecord[] = [
-			{
-				recordId: "r1",
-				entryId: null,
-				toolCallId: "tc1",
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
-				shortRef: "t1",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-			{
+			makeToolOutputRecord(),
+			makeToolOutputRecord({
 				recordId: "r2",
-				entryId: null,
 				toolCallId: "tc2",
 				toolName: "read",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
 				shortRef: "t2",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
+			}),
 		];
 		const branchEntries = [
 			{
@@ -797,21 +712,7 @@ describe("buildSummarizerInputs atomic resolution", () => {
 	});
 
 	it("returns all inputs when every record is present within limits", () => {
-		const pendingRecords: ToolOutputRecord[] = [
-			{
-				recordId: "r1",
-				entryId: null,
-				toolCallId: "tc1",
-				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
-				shortRef: "t1",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-		];
+		const pendingRecords: ToolOutputRecord[] = [makeToolOutputRecord()];
 		const branchEntries = [
 			{
 				id: "e1",
