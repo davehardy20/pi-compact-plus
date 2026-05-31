@@ -1,3 +1,4 @@
+import { FOCUS_ECHO_SECTION_HEADINGS } from "./draft.js";
 import type { FocusEcho } from "./model.js";
 import {
 	MAX_ACTIVE_FILES,
@@ -29,15 +30,7 @@ import {
  * Parses the known headings produced by buildSummaryInstructions().
  */
 export function parseFocusEcho(summaryText: string): FocusEcho {
-	const sectionHeadings = {
-		objective: "## Current Objective",
-		activeFiles: "## Active File Set",
-		blockers: "## Open Problems",
-		errors: "## Current Errors",
-		decisions: "## Decisions Made",
-		dependencyChain: "## Dependency Chain",
-		nextStep: "## Next Best Step",
-	};
+	const sectionHeadings = FOCUS_ECHO_SECTION_HEADINGS;
 
 	return {
 		objective: extractSection(
