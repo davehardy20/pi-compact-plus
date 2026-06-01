@@ -94,14 +94,14 @@ export function applyToolOutputPruning(
 		record: ToolOutputRecord;
 		entry: ToolOutputBranchEntry;
 	}> = [];
-	state.finalizedRecords = state.finalizedRecords.filter((record) => {
+	for (const record of state.finalizedSnapshot()) {
 		const matches = branchEntries.filter((entry) =>
 			recordMatchesBranchEntry(entry, record, settings),
 		);
-		if (matches.length !== 1) return false;
+		if (matches.length !== 1) continue;
 		safeRecords.push({ record, entry: matches[0] });
-		return true;
-	});
+	}
+	state.replaceFinalizedRecords(safeRecords.map((item) => item.record));
 
 	if (safeRecords.length === 0) return undefined;
 
@@ -147,6 +147,6 @@ export function applyToolOutputPruning(
 
 	if (prunedCount === 0) return undefined;
 
-	state.lastPrunedCount = prunedCount;
+	state.updatePrunedCount(prunedCount);
 	return { messages: prunedMessages, prunedCount };
 }

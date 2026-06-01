@@ -50,26 +50,30 @@ describe("buildPruningStatusDetail", () => {
 
 	it("reflects state counters", () => {
 		const state = new ToolOutputPruningState();
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.finalizedRecords.push({
+		state.addPendingBatch(
+			{
+				batchId: "b1",
+				turnIndex: 0,
+				timestamp: Date.now(),
+				recordIds: ["r1"],
+			},
+			[
+				{
+					recordId: "r1",
+					entryId: null,
+					toolCallId: "tc1",
+					toolName: "bash",
+					timestamp: Date.now(),
+					chars: 100,
+					isError: false,
+					summary: null,
+					shortRef: "t1",
+					argsPreview: null,
+					fallbackSnippets: null,
+				},
+			],
+		);
+		state.addFinalizedRecord({
 			recordId: "r2",
 			entryId: "entry-1",
 			toolCallId: "tc2",
@@ -111,9 +115,7 @@ describe("formatPruningStatusLines", () => {
 
 	it("formats enabled status with all fields", () => {
 		const state = new ToolOutputPruningState();
-		state.lastSummaryStatus = "ok";
-		state.lastSummaryTime = Date.now();
-		state.lastPrunedCount = 3;
+		state.recordSummarySuccess(3);
 		const detail = buildPruningStatusDetail({
 			state,
 			settings: makeSettings({
@@ -147,7 +149,7 @@ describe("buildPruningOneLineStatus", () => {
 
 	it("returns compact status when enabled", () => {
 		const state = new ToolOutputPruningState();
-		state.finalizedRecords.push({
+		state.addFinalizedRecord({
 			recordId: "r1",
 			entryId: "e1",
 			toolCallId: "tc1",
@@ -160,19 +162,29 @@ describe("buildPruningOneLineStatus", () => {
 			argsPreview: null,
 			fallbackSnippets: null,
 		});
-		state.pendingRecords.push({
-			recordId: "r2",
-			entryId: null,
-			toolCallId: "tc2",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t2",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
+		state.addPendingBatch(
+			{
+				batchId: "b1",
+				turnIndex: 0,
+				timestamp: Date.now(),
+				recordIds: ["r2"],
+			},
+			[
+				{
+					recordId: "r2",
+					entryId: null,
+					toolCallId: "tc2",
+					toolName: "bash",
+					timestamp: Date.now(),
+					chars: 100,
+					isError: false,
+					summary: null,
+					shortRef: "t2",
+					argsPreview: null,
+					fallbackSnippets: null,
+				},
+			],
+		);
 		const settings = makeSettings({
 			experimentalToolOutputPruning: true,
 			toolOutputPruningMode: "agent-message",

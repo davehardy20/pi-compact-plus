@@ -80,9 +80,9 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0].entryId).toBe("e1");
-		expect(state.finalizedRecords[0].summary).toBe("summary text");
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0].entryId).toBe("e1");
+		expect(state.finalizedSnapshot()[0].summary).toBe("summary text");
 	});
 
 	it("skips records whose toolCallId is not in the branch", () => {
@@ -108,8 +108,8 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0].recordId).toBe("r1");
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0].recordId).toBe("r1");
 	});
 
 	it("uses the identity seam when resolving branch entries", () => {
@@ -145,8 +145,8 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0].entryId).toBe("match");
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0].entryId).toBe("match");
 	});
 
 	it("does not duplicate finalized records", () => {
@@ -189,13 +189,17 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.finalizedRecords).toHaveLength(1);
+		expect(state.finalizedSnapshot()).toHaveLength(1);
 	});
 
 	it("removes indexed batches from pending", () => {
-		state.pendingBatches.push(
+		state.addPendingBatch(
 			{ batchId: "b1", turnIndex: 0, timestamp: 1000, recordIds: ["r1"] },
+			[],
+		);
+		state.addPendingBatch(
 			{ batchId: "b2", turnIndex: 1, timestamp: 2000, recordIds: ["r2"] },
+			[],
 		);
 
 		const entries = [makeBranchEntry("e1", makeToolResultMessage("tc1"))];
@@ -220,8 +224,8 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.pendingBatches).toHaveLength(1);
-		expect(state.pendingBatches[0].batchId).toBe("b2");
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(1);
+		expect(state.pendingSnapshot().pendingBatches[0]?.batchId).toBe("b2");
 	});
 
 	it("preserves summary as null when not provided in summaries map", () => {
@@ -247,7 +251,7 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.finalizedRecords[0].summary).toBeNull();
+		expect(state.finalizedSnapshot()[0].summary).toBeNull();
 	});
 
 	it("handles multiple indexed batches in one call", () => {
@@ -283,8 +287,8 @@ describe("indexToolResultsFromBranch", () => {
 			DEFAULT_SETTINGS,
 		);
 
-		expect(state.finalizedRecords).toHaveLength(2);
-		expect(state.finalizedRecords[0].summary).toBe("sum1");
-		expect(state.finalizedRecords[1].summary).toBe("sum2");
+		expect(state.finalizedSnapshot()).toHaveLength(2);
+		expect(state.finalizedSnapshot()[0].summary).toBe("sum1");
+		expect(state.finalizedSnapshot()[1].summary).toBe("sum2");
 	});
 });

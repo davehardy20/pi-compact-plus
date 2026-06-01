@@ -66,6 +66,22 @@ function makeMockContext() {
 	} as unknown as import("@earendil-works/pi-coding-agent").ExtensionContext;
 }
 
+function addPendingBatchForTest(
+	state: ToolOutputPruningState,
+	records: ToolOutputRecord[],
+	batchId = "b1",
+): void {
+	state.addPendingBatch(
+		{
+			batchId,
+			turnIndex: 0,
+			timestamp: Date.now(),
+			recordIds: records.map((record) => record.recordId),
+		},
+		records,
+	);
+}
+
 describe("isFinalAssistantMessageForToolPrune", () => {
 	it("returns true for final assistant text responses", () => {
 		expect(
@@ -132,8 +148,10 @@ describe("shouldFlushOnMessageEnd", () => {
 		expect(shouldFlushOnMessageEnd(state, ENABLED_SETTINGS, true)).toBe(false);
 	});
 
-	it("returns false when a flush is already in progress", () => {
-		state.isFlushing = true;
+	it("returns false when a flush is already in progress even with pending batches", () => {
+		addPendingBatchForTest(state, [makeToolOutputRecord({ recordId: "r1" })]);
+		expect(state.beginFlush()).toBe(true);
+
 		expect(shouldFlushOnMessageEnd(state, ENABLED_SETTINGS, false)).toBe(false);
 	});
 
@@ -142,12 +160,7 @@ describe("shouldFlushOnMessageEnd", () => {
 	});
 
 	it("returns true when all conditions are met", () => {
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
+		addPendingBatchForTest(state, [makeToolOutputRecord({ recordId: "r1" })]);
 		expect(shouldFlushOnMessageEnd(state, ENABLED_SETTINGS, false)).toBe(true);
 	});
 });
@@ -179,8 +192,8 @@ describe("captureTurnEndBatch", () => {
 		);
 
 		expect(result).toBeNull();
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.pendingRecords).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(0);
 	});
 
 	it("captures eligible tool results into pending state", () => {
@@ -203,9 +216,9 @@ describe("captureTurnEndBatch", () => {
 		);
 
 		expect(result).not.toBeNull();
-		expect(state.pendingBatches).toHaveLength(1);
-		expect(state.pendingRecords).toHaveLength(1);
-		expect(state.pendingRecords[0].toolCallId).toBe("tc1");
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(1);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(1);
+		expect(state.pendingSnapshot().pendingRecords[0].toolCallId).toBe("tc1");
 	});
 
 	it("returns null when no tool results are eligible", () => {
@@ -285,25 +298,14 @@ describe("flushPendingBatches", () => {
 			timestamp: Date.now(),
 		});
 
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
+				recordId: "r1",
+				toolCallId: "tc1",
+				toolName: "bash",
+				shortRef: "t1",
+			}),
+		]);
 
 		const branchEntries = [
 			{
@@ -326,13 +328,13 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(true);
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0].entryId).toBe("e1");
-		expect(state.finalizedRecords[0].summary).toBe("Summary one.");
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.pendingRecords).toHaveLength(0);
-		expect(state.lastSummaryStatus).toBe("ok");
-		expect(state.lastSummaryTime).not.toBeNull();
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0].entryId).toBe("e1");
+		expect(state.finalizedSnapshot()[0].summary).toBe("Summary one.");
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(0);
+		expect(state.statusSnapshot().lastSummaryStatus).toBe("ok");
+		expect(state.statusSnapshot().lastSummaryTime).not.toBeNull();
 		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 		const appendCall = pi.appendEntry.mock.calls[0];
 		expect(appendCall?.[0]).toBe("compact-plus-tool-prune-summary");
@@ -353,31 +355,20 @@ describe("flushPendingBatches", () => {
 			},
 		});
 		expect(JSON.stringify(appendCall?.[1])).not.toContain("original");
-		expect(state.isFlushing).toBe(false);
+		expect(state.statusSnapshot().isFlushing).toBe(false);
 	});
 
 	it("clears pending and sets error status on summarization failure", async () => {
 		mockCompleteSimple.mockRejectedValueOnce(new Error("Network failure"));
 
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
+				recordId: "r1",
+				toolCallId: "tc1",
+				toolName: "bash",
+				shortRef: "t1",
+			}),
+		]);
 
 		const branchEntries = [
 			{
@@ -400,12 +391,12 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(false);
-		expect(state.finalizedRecords).toHaveLength(0);
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.pendingRecords).toHaveLength(0);
-		expect(state.lastSummaryStatus).toBe("error");
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(0);
+		expect(state.statusSnapshot().lastSummaryStatus).toBe("error");
 		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(state.isFlushing).toBe(false);
+		expect(state.statusSnapshot().isFlushing).toBe(false);
 	});
 
 	it("clears pending and sets error status on empty LLM response", async () => {
@@ -427,25 +418,14 @@ describe("flushPendingBatches", () => {
 			timestamp: Date.now(),
 		});
 
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
+				recordId: "r1",
+				toolCallId: "tc1",
+				toolName: "bash",
+				shortRef: "t1",
+			}),
+		]);
 
 		const branchEntries = [
 			{
@@ -468,31 +448,20 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(false);
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.lastSummaryStatus).toBe("error");
-		expect(state.isFlushing).toBe(false);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.statusSnapshot().lastSummaryStatus).toBe("error");
+		expect(state.statusSnapshot().isFlushing).toBe(false);
 	});
 
 	it("fails atomically when branch entry is missing", async () => {
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
+				recordId: "r1",
+				toolCallId: "tc1",
+				toolName: "bash",
+				shortRef: "t1",
+			}),
+		]);
 
 		// Branch is empty — no matching tool result
 		const ctx = makeMockContext();
@@ -505,9 +474,9 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(false);
-		expect(state.finalizedRecords).toHaveLength(0);
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.lastSummaryStatus).toBe("error");
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.statusSnapshot().lastSummaryStatus).toBe("error");
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 	});
 
@@ -536,7 +505,7 @@ describe("flushPendingBatches", () => {
 		});
 
 		for (let i = 0; i < MAX_FINALIZED_RECORDS; i++) {
-			state.finalizedRecords.push(
+			state.addFinalizedRecord(
 				makeToolOutputRecord({
 					recordId: `old-${i}`,
 					entryId: `old-entry-${i}`,
@@ -546,22 +515,20 @@ describe("flushPendingBatches", () => {
 				}),
 			);
 		}
-		const beforeRecordIds = state.finalizedRecords.map((r) => r.recordId);
+		const beforeRecordIds = state.finalizedSnapshot().map((r) => r.recordId);
 
-		state.pendingRecords.push(
-			makeToolOutputRecord({
-				recordId: "new-record",
-				entryId: null,
-				toolCallId: "new-tc",
-				shortRef: `t${MAX_FINALIZED_RECORDS + 1}`,
-			}),
+		addPendingBatchForTest(
+			state,
+			[
+				makeToolOutputRecord({
+					recordId: "new-record",
+					entryId: null,
+					toolCallId: "new-tc",
+					shortRef: `t${MAX_FINALIZED_RECORDS + 1}`,
+				}),
+			],
+			"new-batch",
 		);
-		state.pendingBatches.push({
-			batchId: "new-batch",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["new-record"],
-		});
 		pi.appendEntry.mockImplementationOnce(() => {
 			throw new Error("append failed after indexing");
 		});
@@ -584,16 +551,16 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(false);
-		expect(state.finalizedRecords.map((r) => r.recordId)).toEqual(
+		expect(state.finalizedSnapshot().map((r) => r.recordId)).toEqual(
 			beforeRecordIds,
 		);
 		expect(
-			state.finalizedRecords.some((r) => r.recordId === "new-record"),
+			state.finalizedSnapshot().some((r) => r.recordId === "new-record"),
 		).toBe(false);
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.pendingRecords).toHaveLength(0);
-		expect(state.lastSummaryStatus).toBe("error");
-		expect(state.isFlushing).toBe(false);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(0);
+		expect(state.statusSnapshot().lastSummaryStatus).toBe("error");
+		expect(state.statusSnapshot().isFlushing).toBe(false);
 	});
 
 	it("sets flushing flag during operation and clears after", async () => {
@@ -615,25 +582,14 @@ describe("flushPendingBatches", () => {
 			timestamp: Date.now(),
 		});
 
-		state.pendingRecords.push({
-			recordId: "r1",
-			entryId: null,
-			toolCallId: "tc1",
-			toolName: "bash",
-			timestamp: Date.now(),
-			chars: 100,
-			isError: false,
-			summary: null,
-			shortRef: "t1",
-			argsPreview: null,
-			fallbackSnippets: null,
-		});
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1"],
-		});
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
+				recordId: "r1",
+				toolCallId: "tc1",
+				toolName: "bash",
+				shortRef: "t1",
+			}),
+		]);
 
 		const branchEntries = [
 			{
@@ -654,10 +610,10 @@ describe("flushPendingBatches", () => {
 			branchEntries,
 			pi,
 		);
-		expect(state.isFlushing).toBe(true);
+		expect(state.statusSnapshot().isFlushing).toBe(true);
 
 		await flushPromise;
-		expect(state.isFlushing).toBe(false);
+		expect(state.statusSnapshot().isFlushing).toBe(false);
 	});
 });
 
@@ -769,40 +725,20 @@ describe("flushPendingBatches multi-record atomicity", () => {
 			timestamp: Date.now(),
 		});
 
-		state.pendingRecords.push(
-			{
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
 				recordId: "r1",
-				entryId: null,
 				toolCallId: "tc1",
 				toolName: "bash",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
 				shortRef: "t1",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-			{
+			}),
+			makeToolOutputRecord({
 				recordId: "r2",
-				entryId: null,
 				toolCallId: "tc2",
 				toolName: "read",
-				timestamp: Date.now(),
-				chars: 100,
-				isError: false,
-				summary: null,
 				shortRef: "t2",
-				argsPreview: null,
-				fallbackSnippets: null,
-			},
-		);
-		state.pendingBatches.push({
-			batchId: "b1",
-			turnIndex: 0,
-			timestamp: Date.now(),
-			recordIds: ["r1", "r2"],
-		});
+			}),
+		]);
 
 		const branchEntries = [
 			{
@@ -833,10 +769,10 @@ describe("flushPendingBatches multi-record atomicity", () => {
 		);
 
 		expect(result.ok).toBe(false);
-		expect(state.finalizedRecords).toHaveLength(0);
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.pendingRecords).toHaveLength(0);
-		expect(state.lastSummaryStatus).toBe("error");
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(0);
+		expect(state.statusSnapshot().lastSummaryStatus).toBe("error");
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 	});
 });

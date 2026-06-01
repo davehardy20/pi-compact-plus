@@ -194,7 +194,7 @@ describe("applyToolOutputPruning", () => {
 	it("stubs matching tool results by branch identity", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const messages = [msg1, msg2];
 		const branchEntries = [
@@ -229,7 +229,7 @@ describe("applyToolOutputPruning", () => {
 
 	it("only stubs records whose entryId is in the current branch", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const messages = [msg1];
 		// Branch does not contain e1
@@ -243,16 +243,16 @@ describe("applyToolOutputPruning", () => {
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
 	});
 
 	it("does not stub when the same entryId has a mismatched role or toolCallId", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one"),
 			makeRecord("tc2", "t2", "e2", "summary two"),
-		);
+		]);
 
 		const result = applyToolOutputPruning(
 			[msg1, msg2],
@@ -271,14 +271,14 @@ describe("applyToolOutputPruning", () => {
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
 	});
 
 	it("fails closed when a context fallback match is ambiguous", () => {
 		const branchMessage = makeToolResultMessage("tc1", "branch output");
 		const contextMessage1 = makeToolResultMessage("tc1", "context output one");
 		const contextMessage2 = makeToolResultMessage("tc1", "context output two");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const result = applyToolOutputPruning(
 			[contextMessage1, contextMessage2],
@@ -288,12 +288,12 @@ describe("applyToolOutputPruning", () => {
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.finalizedRecords).toHaveLength(1);
+		expect(state.finalizedSnapshot()).toHaveLength(1);
 	});
 
 	it("drops finalized records when toolName no longer matches branch", () => {
 		const msg = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const result = applyToolOutputPruning(
 			[msg],
@@ -311,14 +311,14 @@ describe("applyToolOutputPruning", () => {
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
 	});
 
 	it("updates lastPrunedCount when pruning occurs", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
-		state.finalizedRecords.push(makeRecord("tc2", "t2", "e2", "summary two"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc2", "t2", "e2", "summary two"));
 
 		const messages = [msg1, msg2];
 		const branchEntries = [
@@ -328,12 +328,12 @@ describe("applyToolOutputPruning", () => {
 
 		applyToolOutputPruning(messages, branchEntries, state, ENABLED_SETTINGS);
 
-		expect(state.lastPrunedCount).toBe(2);
+		expect(state.statusSnapshot().lastPrunedCount).toBe(2);
 	});
 
 	it("returns undefined when no messages match", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc99", "t99", "e99", "summary"));
+		state.addFinalizedRecord(makeRecord("tc99", "t99", "e99", "summary"));
 
 		const messages = [msg1];
 		const branchEntries = [{ id: "e1", message: msg1 }];
@@ -345,8 +345,8 @@ describe("applyToolOutputPruning", () => {
 
 	it("reconciles stale finalized records before pruning", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
-		state.finalizedRecords.push(makeRecord("tc2", "t2", "e2", "summary two"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc2", "t2", "e2", "summary two"));
 
 		const messages = [msg1];
 		// Only e1 is in branch
@@ -354,7 +354,7 @@ describe("applyToolOutputPruning", () => {
 
 		applyToolOutputPruning(messages, branchEntries, state, ENABLED_SETTINGS);
 
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0].toolCallId).toBe("tc1");
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0]?.toolCallId).toBe("tc1");
 	});
 });

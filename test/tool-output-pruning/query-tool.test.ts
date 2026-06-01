@@ -70,9 +70,9 @@ describe("queryToolOutput", () => {
 
 	it("only includes records whose entryId is in the current branch", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
-		state.finalizedRecords.push(makeRecord("tc2", "t2", "e2", "summary two"));
-		state.finalizedRecords.push(makeRecord("tc3", "t3", null, "summary three"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc2", "t2", "e2", "summary two"));
+		state.addFinalizedRecord(makeRecord("tc3", "t3", null, "summary three"));
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -83,10 +83,10 @@ describe("queryToolOutput", () => {
 	});
 
 	it("excludes records when the same entryId has a mismatched role or toolCallId", () => {
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one"),
 			makeRecord("tc2", "t2", "e2", "summary two"),
-		);
+		]);
 
 		const result = queryToolOutput({}, state, ENABLED_SETTINGS, [
 			{
@@ -104,10 +104,10 @@ describe("queryToolOutput", () => {
 	});
 
 	it("excludes non-message branch entries and current-branch toolName mismatches", () => {
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one", "bash"),
 			makeRecord("tc2", "t2", "e2", "summary two", "bash"),
-		);
+		]);
 
 		const result = queryToolOutput({}, state, ENABLED_SETTINGS, [
 			{
@@ -123,11 +123,11 @@ describe("queryToolOutput", () => {
 	});
 
 	it("excludes non-text, excluded, and include-list-missing current-branch records", () => {
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one", "bash"),
 			makeRecord("tc2", "t2", "e2", "summary two", "read"),
 			makeRecord("tc3", "t3", "e3", "summary three", "grep"),
-		);
+		]);
 
 		const result = queryToolOutput(
 			{},
@@ -154,8 +154,8 @@ describe("queryToolOutput", () => {
 	it("filters by short ref", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
-		state.finalizedRecords.push(makeRecord("tc2", "t2", "e2", "summary two"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc2", "t2", "e2", "summary two"));
 
 		const branchEntries = [
 			{ id: "e1", message: msg1 },
@@ -174,7 +174,7 @@ describe("queryToolOutput", () => {
 
 	it("filters by recordId", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -191,8 +191,8 @@ describe("queryToolOutput", () => {
 	it("filters by toolCallId", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
-		state.finalizedRecords.push(makeRecord("tc2", "t2", "e2", "summary two"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc2", "t2", "e2", "summary two"));
 
 		const branchEntries = [
 			{ id: "e1", message: msg1 },
@@ -212,12 +212,10 @@ describe("queryToolOutput", () => {
 	it("filters by toolName", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one", "bash");
 		const msg2 = makeToolResultMessage("tc2", "output two", "grep");
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one", "bash"),
-		);
-		state.finalizedRecords.push(
 			makeRecord("tc2", "t2", "e2", "summary two", "grep"),
-		);
+		]);
 
 		const branchEntries = [
 			{ id: "e1", message: msg1 },
@@ -237,12 +235,10 @@ describe("queryToolOutput", () => {
 	it("filters by text query (case-insensitive)", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const msg2 = makeToolResultMessage("tc2", "output two");
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "listed files", "bash"),
-		);
-		state.finalizedRecords.push(
 			makeRecord("tc2", "t2", "e2", "found matches", "grep"),
-		);
+		]);
 
 		const branchEntries = [
 			{ id: "e1", message: msg1 },
@@ -263,7 +259,7 @@ describe("queryToolOutput", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
 		const record = makeRecord("tc1", "t1", "e1", null, "bash");
 		record.fallbackSnippets = "first part\n…\nlast part";
-		state.finalizedRecords.push(record);
+		state.addFinalizedRecord(record);
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -281,7 +277,7 @@ describe("queryToolOutput", () => {
 			"tc1",
 			"only the original output contains needle-value",
 		);
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const result = queryToolOutput(
 			{ query: "needle-value" },
@@ -302,7 +298,7 @@ describe("queryToolOutput", () => {
 				id: `e${i}`,
 				message: makeToolResultMessage(tcId, `output ${i}`),
 			});
-			state.finalizedRecords.push(
+			state.addFinalizedRecord(
 				makeRecord(tcId, `t${i + 1}`, `e${i}`, `summary ${i}`),
 			);
 		}
@@ -320,7 +316,7 @@ describe("queryToolOutput", () => {
 
 	it("clamps limit to safe bounds", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -344,7 +340,7 @@ describe("queryToolOutput", () => {
 	it("includes original content when includeContent is true", () => {
 		const text = "line1\nline2\nline3";
 		const msg1 = makeToolResultMessage("tc1", text);
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -362,9 +358,9 @@ describe("queryToolOutput", () => {
 	it("truncates content to toolOutputQueryMaxChars", () => {
 		const text = "a".repeat(20000);
 		const msg1 = makeToolResultMessage("tc1", text);
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one", "bash", 20000),
-		);
+		]);
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -398,9 +394,9 @@ describe("queryToolOutput", () => {
 			isError: false,
 			timestamp: Date.now(),
 		} as unknown as AgentMessage;
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc-blocks", "tb", "e-blocks", "summary", "bash", 700),
-		);
+		]);
 
 		const result = queryToolOutput({ includeContent: true }, state, settings, [
 			{ id: "e-blocks", message: msg },
@@ -420,9 +416,9 @@ describe("queryToolOutput", () => {
 			toolOutputQueryMaxChars: 500,
 		};
 		const msg1 = makeToolResultMessage("tc1", "short output");
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary ".repeat(200), "bash"),
-		);
+		]);
 
 		const result = queryToolOutput({}, state, settings, [
 			{ id: "e1", message: msg1 },
@@ -439,9 +435,9 @@ describe("queryToolOutput", () => {
 			toolOutputQueryMaxChars: 700,
 		};
 		const msg1 = makeToolResultMessage("tc1", "a".repeat(5000));
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "e1", "summary one", "bash", 5000),
-		);
+		]);
 
 		const result = queryToolOutput({ includeContent: true }, state, settings, [
 			{ id: "e1", message: msg1 },
@@ -468,7 +464,7 @@ describe("queryToolOutput", () => {
 				id: `e-hard-${i}`,
 				message: makeToolResultMessage(tcId, "a".repeat(20000)),
 			});
-			state.finalizedRecords.push(
+			state.addFinalizedRecord(
 				makeRecord(
 					tcId,
 					`th${i}`,
@@ -496,7 +492,7 @@ describe("queryToolOutput", () => {
 			toolOutputQueryMaxChars: 120,
 		};
 		const msg1 = makeToolResultMessage("tc-small", "a".repeat(500));
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord(
 				"tc-small",
 				"ts",
@@ -505,7 +501,7 @@ describe("queryToolOutput", () => {
 				"bash",
 				500,
 			),
-		);
+		]);
 
 		const result = queryToolOutput({ includeContent: true }, state, settings, [
 			{ id: "e-small", message: msg1 },
@@ -529,11 +525,11 @@ describe("queryToolOutput", () => {
 			{ id: "e-b", message: makeToolResultMessage("tc-b", "b".repeat(20000)) },
 			{ id: "e-c", message: makeToolResultMessage("tc-c", "c".repeat(20000)) },
 		];
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc-a", "t1", "e-a", "summary a", "bash", 20000),
 			makeRecord("tc-b", "t2", "e-b", "summary b", "bash", 20000),
 			makeRecord("tc-c", "t3", "e-c", "summary c", "bash", 20000),
-		);
+		]);
 
 		const result = queryToolOutput(
 			{ includeContent: true, limit: 3 },
@@ -566,7 +562,7 @@ describe("queryToolOutput", () => {
 				id: `e${i}`,
 				message: makeToolResultMessage(toolCallId, "a".repeat(100000)),
 			});
-			state.finalizedRecords.push(
+			state.addFinalizedRecord(
 				makeRecord(
 					toolCallId,
 					`t${i + 1}`,
@@ -596,7 +592,7 @@ describe("queryToolOutput", () => {
 
 	it("labels output as historical data with clear delimiters", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -609,7 +605,7 @@ describe("queryToolOutput", () => {
 
 	it("omits content when includeContent is false", () => {
 		const msg1 = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const branchEntries = [{ id: "e1", message: msg1 }];
 
@@ -653,7 +649,7 @@ describe("createQueryToolDefinition", () => {
 	it("returns query results when pruning is enabled", async () => {
 		const state = new ToolOutputPruningState();
 		const msg = makeToolResultMessage("tc1", "output one");
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "e1", "summary one"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "e1", "summary one"));
 
 		const getState = () => state;
 		const getSettings = () => ENABLED_SETTINGS;
@@ -694,7 +690,7 @@ describe("queryToolOutput bounded limits", () => {
 				id: `e${i}`,
 				message: makeToolResultMessage(tcId, `output ${i}`),
 			});
-			state.finalizedRecords.push(
+			state.addFinalizedRecord(
 				makeRecord(tcId, `t${i + 1}`, `e${i}`, `summary ${i}`),
 			);
 		}
@@ -713,7 +709,7 @@ describe("queryToolOutput bounded limits", () => {
 					`${"a".repeat(MAX_QUERY_SCAN_CHARS_PER_RECORD + 10)}needle-after-cap`,
 				),
 			});
-			state.finalizedRecords.push(makeRecord(tcId, `t${i + 1}`, `e${i}`, null));
+			state.addFinalizedRecord(makeRecord(tcId, `t${i + 1}`, `e${i}`, null));
 		}
 
 		const perRecordResult = queryToolOutput(
@@ -735,8 +731,10 @@ describe("queryToolOutput bounded limits", () => {
 				),
 			});
 		}
-		state.finalizedRecords = totalCapEntries.map((entry, i) =>
-			makeRecord(`total${i}`, `tt${i}`, entry.id, null),
+		state.replaceFinalizedRecords(
+			totalCapEntries.map((entry, i) =>
+				makeRecord(`total${i}`, `tt${i}`, entry.id, null),
+			),
 		);
 
 		const totalCapResult = queryToolOutput(
@@ -760,7 +758,7 @@ describe("queryToolOutput bounded limits", () => {
 				id: `e${i}`,
 				message: makeToolResultMessage(tcId, text),
 			});
-			state.finalizedRecords.push(
+			state.addFinalizedRecord(
 				makeRecord(tcId, `t${i + 1}`, `e${i}`, `summary ${i}`, "bash", 20000),
 			);
 		}

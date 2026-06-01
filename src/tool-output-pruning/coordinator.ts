@@ -92,7 +92,7 @@ export class ToolOutputPruningCoordinator {
 	}
 
 	hasPendingFlush(): boolean {
-		return this.state.pendingBatches.length > 0;
+		return this.state.hasPending();
 	}
 
 	async onMessageEnd(
@@ -123,26 +123,27 @@ export class ToolOutputPruningCoordinator {
 		this.state.resetPending();
 		const settings = this.getSettings();
 		if (!isToolOutputPruningEnabled(settings)) {
-			this.state.finalizedRecords = [];
+			this.state.replaceFinalizedRecords([]);
 			this.state.clearReconstructionResult();
 			return;
 		}
 
 		const view = createCurrentSessionBranchView(ctx);
 		const branchEntries = view.messageEntries();
-		this.state.finalizedRecords = this.state.finalizedRecords.filter((record) =>
-			branchEntries.some((entry) =>
-				recordMatchesBranchEntry(entry, record, settings),
-			),
-		);
-		if (this.state.finalizedRecords.length === 0) {
+		const currentBranchRecords = this.state
+			.finalizedSnapshot()
+			.filter((record) =>
+				branchEntries.some((entry) =>
+					recordMatchesBranchEntry(entry, record, settings),
+				),
+			);
+		this.state.replaceFinalizedRecords(currentBranchRecords);
+		if (currentBranchRecords.length === 0) {
 			const result = reconstructToolOutputRecordsFromBranch(view, settings);
 			this.state.recordReconstructionResult(result);
+			this.state.replaceFinalizedRecords(result.ok ? result.records : []);
 			if (result.ok) {
-				this.state.finalizedRecords = result.records;
 				this.state.advanceShortRefCounterFromRecords(result.records);
-			} else {
-				this.state.finalizedRecords = [];
 			}
 		}
 	}
