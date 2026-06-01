@@ -184,9 +184,9 @@ describe("ToolOutputPruningCoordinator", () => {
 		});
 
 		expect(result?.records).toHaveLength(1);
-		expect(state.pendingBatches).toHaveLength(1);
-		expect(state.pendingRecords[0]?.toolCallId).toBe("tc1");
-		expect(state.pendingRecords[0]?.shortRef).toBe("t1");
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(1);
+		expect(state.pendingSnapshot().pendingRecords[0]?.toolCallId).toBe("tc1");
+		expect(state.pendingSnapshot().pendingRecords[0]?.shortRef).toBe("t1");
 	});
 
 	it("does not capture or query when pruning is disabled", () => {
@@ -203,7 +203,7 @@ describe("ToolOutputPruningCoordinator", () => {
 		});
 
 		expect(result).toBeNull();
-		expect(state.pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
 		expect(() => coordinator.query({}, makeCtx())).toThrow(
 			"inactive because tool-output pruning is not enabled",
 		);
@@ -214,10 +214,10 @@ describe("ToolOutputPruningCoordinator", () => {
 		state.addPendingBatch(makeBatch(["rec-tc1"]), [
 			makeRecord("tc1", "t1", "entry-1"),
 		]);
-		state.finalizedRecords.push(
+		state.replaceFinalizedRecords([
 			makeRecord("tc1", "t1", "entry-1"),
 			makeRecord("tc2", "t2", "missing-entry"),
-		);
+		]);
 		const coordinator = new ToolOutputPruningCoordinator({
 			state,
 			getSettings: () => ENABLED_SETTINGS,
@@ -225,16 +225,16 @@ describe("ToolOutputPruningCoordinator", () => {
 
 		coordinator.onSessionTree(makeCtx([makeToolResultMessage("tc1")]));
 
-		expect(state.pendingBatches).toHaveLength(0);
-		expect(state.pendingRecords).toHaveLength(0);
-		expect(state.finalizedRecords.map((record) => record.toolCallId)).toEqual([
-			"tc1",
-		]);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingRecords).toHaveLength(0);
+		expect(
+			state.finalizedSnapshot().map((record) => record.toolCallId),
+		).toEqual(["tc1"]);
 	});
 
 	it("drops finalized records when a branch entry id remains but no matching tool result does", () => {
 		const state = new ToolOutputPruningState();
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "entry-1"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "entry-1"));
 		const coordinator = new ToolOutputPruningCoordinator({
 			state,
 			getSettings: () => ENABLED_SETTINGS,
@@ -250,7 +250,7 @@ describe("ToolOutputPruningCoordinator", () => {
 			]),
 		);
 
-		expect(state.finalizedRecords).toHaveLength(0);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
 	});
 
 	it("reconstructs finalized records from current-branch metadata on session tree", () => {
@@ -281,11 +281,11 @@ describe("ToolOutputPruningCoordinator", () => {
 			]),
 		);
 
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0]?.toolCallId).toBe("tc1");
-		expect(state.finalizedRecords[0]?.fallbackSnippets).toBeNull();
-		expect(state.lastReconstructionStatus).toBe("ok");
-		expect(state.lastReconstructedCount).toBe(1);
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0]?.toolCallId).toBe("tc1");
+		expect(state.finalizedSnapshot()[0]?.fallbackSnippets).toBeNull();
+		expect(state.statusSnapshot().lastReconstructionStatus).toBe("ok");
+		expect(state.statusSnapshot().lastReconstructedCount).toBe(1);
 	});
 
 	it("advances short refs after reconstruction to avoid duplicate refs", () => {
@@ -353,8 +353,8 @@ describe("ToolOutputPruningCoordinator", () => {
 			]),
 		);
 
-		expect(state.finalizedRecords).toHaveLength(0);
-		expect(state.lastReconstructionStatus).toBeNull();
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.statusSnapshot().lastReconstructionStatus).toBeNull();
 		expect(
 			coordinator.transformContext([toolResult], makeCtx([toolResult])),
 		).toBe(undefined);
@@ -394,15 +394,17 @@ describe("ToolOutputPruningCoordinator", () => {
 			]),
 		);
 
-		expect(state.finalizedRecords).toHaveLength(0);
-		expect(state.lastReconstructionStatus).toBe("error");
-		expect(state.lastReconstructionError).toContain("current branch");
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.statusSnapshot().lastReconstructionStatus).toBe("error");
+		expect(state.statusSnapshot().lastReconstructionError).toContain(
+			"current branch",
+		);
 	});
 
 	it("stubs current-branch tool results during context transforms", () => {
 		const toolResult = makeToolResultMessage("tc1", "original output");
 		const state = new ToolOutputPruningState();
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "entry-1"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "entry-1"));
 		const coordinator = new ToolOutputPruningCoordinator({
 			state,
 			getSettings: () => ENABLED_SETTINGS,
@@ -421,13 +423,13 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(JSON.stringify(result?.messages[0])).toContain(
 			"compact_plus_query_tool_output",
 		);
-		expect(state.lastPrunedCount).toBe(1);
+		expect(state.statusSnapshot().lastPrunedCount).toBe(1);
 	});
 
 	it("queries recoverable records through the current branch", () => {
 		const toolResult = makeToolResultMessage("tc1", "original output needle");
 		const state = new ToolOutputPruningState();
-		state.finalizedRecords.push(makeRecord("tc1", "t1", "entry-1"));
+		state.addFinalizedRecord(makeRecord("tc1", "t1", "entry-1"));
 		const coordinator = new ToolOutputPruningCoordinator({
 			state,
 			getSettings: () => ENABLED_SETTINGS,
@@ -467,9 +469,9 @@ describe("ToolOutputPruningCoordinator", () => {
 		);
 
 		expect(result?.ok).toBe(true);
-		expect(state.finalizedRecords).toHaveLength(1);
-		expect(state.finalizedRecords[0]?.entryId).toBe("entry-1");
-		expect(state.pendingBatches).toHaveLength(0);
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		expect(state.finalizedSnapshot()[0]?.entryId).toBe("entry-1");
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
 		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 	});
 
@@ -493,7 +495,7 @@ describe("ToolOutputPruningCoordinator", () => {
 		);
 
 		expect(result).toBeNull();
-		expect(state.pendingBatches).toHaveLength(1);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(1);
 		expect(mockCompleteSimple).not.toHaveBeenCalled();
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 	});
@@ -518,8 +520,8 @@ describe("ToolOutputPruningCoordinator", () => {
 
 		expect(result?.ok).toBe(false);
 		expect(result?.error).toContain("Not all pending records");
-		expect(state.finalizedRecords).toHaveLength(0);
-		expect(state.pendingBatches).toHaveLength(0);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 	});
 
@@ -542,7 +544,7 @@ describe("ToolOutputPruningCoordinator", () => {
 
 		expect(result.ok).toBe(true);
 		expect(result.message).toBe("Flushed 1 tool-output record(s).");
-		expect(state.finalizedRecords[0]?.entryId).toBe("entry-1");
+		expect(state.finalizedSnapshot()[0]?.entryId).toBe("entry-1");
 		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 	});
 });

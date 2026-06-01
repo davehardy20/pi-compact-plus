@@ -71,9 +71,8 @@ export function indexToolResultsFromBranch(
 		}
 	}
 
-	// Remove indexed batches from pending
-	const indexedBatchIds = new Set(indexedBatches.map((b) => b.batch.batchId));
-	state.pendingBatches = state.pendingBatches.filter(
-		(b) => !indexedBatchIds.has(b.batchId),
-	);
+	// Remove indexed batches from pending.
+	for (const indexed of indexedBatches) {
+		state.removePendingBatch(indexed.batch.batchId);
+	}
 }

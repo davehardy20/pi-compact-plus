@@ -40,11 +40,7 @@ export function shouldFlushOnMessageEnd(
 	settings: ToolOutputPruningSettings,
 	isCompacting: boolean,
 ): boolean {
-	if (!isToolOutputPruningEnabled(settings)) return false;
-	if (isCompacting) return false;
-	if (state.isFlushing) return false;
-	if (state.pendingBatches.length === 0) return false;
-	return true;
+	return state.canFlush(isToolOutputPruningEnabled(settings), isCompacting);
 }
 
 /**
@@ -135,26 +131,26 @@ export async function flushPendingBatches(
 		return { ok: false, indexedCount: 0, prunedCount: 0, error: "not enabled" };
 	}
 
-	if (state.pendingBatches.length === 0) {
+	if (!state.beginFlush()) {
 		return { ok: true, indexedCount: 0, prunedCount: 0 };
 	}
 
-	state.isFlushing = true;
 	// Snapshot the full finalized array because indexing may trim/replace it before
 	// a later appendEntry side effect fails. Length-only rollback can keep failed
 	// records while dropping older finalized records.
-	const finalizedRecordsBefore = state.finalizedRecords.slice();
+	const finalizedRecordsBefore = state.finalizedSnapshot();
 
 	try {
+		const pending = state.pendingSnapshot();
 		const inputs = buildSummarizerInputs(
-			state.pendingRecords,
+			pending.pendingRecords,
 			branchEntries,
 			settings,
 		);
 
 		if (inputs === null) {
 			// Atomicity violation: not all pending records are resolvable or within limits
-			state.lastSummaryStatus = "error";
+			state.recordSummaryError();
 			state.resetPending();
 			return {
 				ok: false,
@@ -168,7 +164,7 @@ export async function flushPendingBatches(
 		const result = await summarizeBatch(inputs, settings, ctx);
 
 		if (!result.ok) {
-			state.lastSummaryStatus = "error";
+			state.recordSummaryError();
 			state.resetPending();
 			return {
 				ok: false,
@@ -179,9 +175,9 @@ export async function flushPendingBatches(
 		}
 
 		// Build indexed batches from pending state
-		const indexedBatches: IndexedBatch[] = state.pendingBatches
+		const indexedBatches: IndexedBatch[] = pending.pendingBatches
 			.map((batch) => {
-				const records = state.pendingRecords.filter((r) =>
+				const records = pending.pendingRecords.filter((r) =>
 					batch.recordIds.includes(r.recordId),
 				);
 				const summaries = new Map<string, string>();
@@ -201,8 +197,9 @@ export async function flushPendingBatches(
 			),
 		);
 		indexToolResultsFromBranch(branchEntries, indexedBatches, state, settings);
-		const finalizedRecordsForMetadata = state.finalizedRecords.filter(
-			(record) => indexedRecordIds.has(record.recordId),
+		const finalizedRecords = state.finalizedSnapshot();
+		const finalizedRecordsForMetadata = finalizedRecords.filter((record) =>
+			indexedRecordIds.has(record.recordId),
 		);
 
 		// Append a compact summary entry for observability/recovery. The legacy
@@ -211,7 +208,7 @@ export async function flushPendingBatches(
 		pi.appendEntry(
 			TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
 			buildToolPruneSummaryData({
-				allRecords: state.finalizedRecords,
+				allRecords: finalizedRecords,
 				metadataRecords: finalizedRecordsForMetadata,
 				settings,
 				summaryChars: result.totalChars,
@@ -219,20 +216,19 @@ export async function flushPendingBatches(
 			}),
 		);
 
-		state.lastSummaryStatus = "ok";
-		state.lastSummaryTime = Date.now();
+		state.recordSummarySuccess();
 		state.resetPending();
 
 		return {
 			ok: true,
-			indexedCount: state.finalizedRecords.length,
+			indexedCount: finalizedRecords.length,
 			prunedCount: 0,
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		// Roll back any partially finalized records to preserve atomicity.
-		state.finalizedRecords = finalizedRecordsBefore.slice();
-		state.lastSummaryStatus = "error";
+		state.replaceFinalizedRecords(finalizedRecordsBefore);
+		state.recordSummaryError();
 		state.resetPending();
 		return {
 			ok: false,
@@ -241,7 +237,7 @@ export async function flushPendingBatches(
 			error: `flush error: ${message}`,
 		};
 	} finally {
-		state.isFlushing = false;
+		state.endFlush();
 	}
 }
 

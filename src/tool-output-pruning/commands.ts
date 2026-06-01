@@ -56,25 +56,27 @@ export function buildPruningStatusDetail(
 	opts: BuildStatusOptions,
 ): PruningStatusDetail {
 	const { state, settings } = opts;
+	const pending = state.pendingSnapshot();
+	const status = state.statusSnapshot();
 	return {
 		enabled: isToolOutputPruningEnabled(settings),
 		mode: settings.toolOutputPruningMode,
 		strategy: settings.toolOutputPruneStrategy,
 		summaryStrategy: settings.toolOutputSummaryStrategy,
 		activeRecordCount: state.activeRecordCount,
-		pendingBatchCount: state.pendingBatches.length,
-		pendingRecordCount: state.pendingRecords.length,
-		isFlushing: state.isFlushing,
-		lastPrunedCount: state.lastPrunedCount,
-		lastSummaryStatus: state.lastSummaryStatus,
-		lastSummaryTime: state.lastSummaryTime,
-		lastReconstructionStatus: state.lastReconstructionStatus,
-		lastReconstructionTime: state.lastReconstructionTime,
-		lastReconstructionError: state.lastReconstructionError,
-		lastReconstructionScannedEntries: state.lastReconstructionScannedEntries,
-		lastReconstructionScannedBytes: state.lastReconstructionScannedBytes,
-		lastReconstructionSkippedEntries: state.lastReconstructionSkippedEntries,
-		lastReconstructedCount: state.lastReconstructedCount,
+		pendingBatchCount: pending.pendingBatches.length,
+		pendingRecordCount: pending.pendingRecords.length,
+		isFlushing: status.isFlushing,
+		lastPrunedCount: status.lastPrunedCount,
+		lastSummaryStatus: status.lastSummaryStatus,
+		lastSummaryTime: status.lastSummaryTime,
+		lastReconstructionStatus: status.lastReconstructionStatus,
+		lastReconstructionTime: status.lastReconstructionTime,
+		lastReconstructionError: status.lastReconstructionError,
+		lastReconstructionScannedEntries: status.lastReconstructionScannedEntries,
+		lastReconstructionScannedBytes: status.lastReconstructionScannedBytes,
+		lastReconstructionSkippedEntries: status.lastReconstructionSkippedEntries,
+		lastReconstructedCount: status.lastReconstructedCount,
 		excludedTools: settings.toolOutputPruneExcludedTools,
 		protectedExcludedTools: [...PROTECTED_EXCLUDED_TOOLS],
 		includedTools: settings.toolOutputPruneIncludedTools,
@@ -179,7 +181,8 @@ export async function manualFlushPendingBatches(
 		};
 	}
 
-	if (state.pendingBatches.length === 0) {
+	const status = state.statusSnapshot();
+	if (!state.hasPending()) {
 		return {
 			ok: true,
 			indexedCount: 0,
@@ -188,7 +191,7 @@ export async function manualFlushPendingBatches(
 		};
 	}
 
-	if (state.isFlushing) {
+	if (status.isFlushing) {
 		return {
 			ok: false,
 			indexedCount: 0,
@@ -230,14 +233,16 @@ export function buildPruningOneLineStatus(
 	if (!isToolOutputPruningEnabled(settings)) {
 		return "off";
 	}
+	const pending = state.pendingSnapshot();
+	const status = state.statusSnapshot();
 	const parts: string[] = [
 		`indexed=${state.activeRecordCount}`,
-		`pending=${state.pendingRecords.length}`,
+		`pending=${pending.pendingRecords.length}`,
 	];
-	if (state.isFlushing) parts.push("flushing");
-	if (state.lastSummaryStatus) parts.push(`last=${state.lastSummaryStatus}`);
-	if (state.lastReconstructionStatus) {
-		parts.push(`reconstruct=${state.lastReconstructionStatus}`);
+	if (status.isFlushing) parts.push("flushing");
+	if (status.lastSummaryStatus) parts.push(`last=${status.lastSummaryStatus}`);
+	if (status.lastReconstructionStatus) {
+		parts.push(`reconstruct=${status.lastReconstructionStatus}`);
 	}
 	return parts.join(" ");
 }

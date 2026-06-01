@@ -84,11 +84,13 @@ export function queryToolOutput(
 
 	// Only current-branch tool result records with matching entry id, tool call id,
 	// tool name, and safe text-only shape.
-	let candidates = state.finalizedRecords.filter((record) =>
-		branchEntries.some((entry) =>
-			recordMatchesBranchEntry(entry, record, settings),
-		),
-	);
+	let candidates = state
+		.finalizedSnapshot()
+		.filter((record) =>
+			branchEntries.some((entry) =>
+				recordMatchesBranchEntry(entry, record, settings),
+			),
+		);
 
 	// Exact-match filters
 	if (params.recordId) {

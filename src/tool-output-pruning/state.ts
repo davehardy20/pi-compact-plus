@@ -57,6 +57,65 @@ export class ToolOutputPruningState {
 		this.isFlushing = false;
 	}
 
+	/** Return pending batches and records as defensive copies. */
+	pendingSnapshot(): Pick<
+		ToolOutputPruningStateSnapshot,
+		"pendingBatches" | "pendingRecords"
+	> {
+		return {
+			pendingBatches: this.pendingBatches.slice(),
+			pendingRecords: this.pendingRecords.slice(),
+		};
+	}
+
+	/** Return finalized records as a defensive copy. */
+	finalizedSnapshot(): ToolOutputRecord[] {
+		return this.finalizedRecords.slice();
+	}
+
+	/** Return status counters and timestamps as a defensive value object. */
+	statusSnapshot(): Omit<
+		ToolOutputPruningStateSnapshot,
+		"pendingBatches" | "pendingRecords" | "finalizedRecords"
+	> {
+		return {
+			isFlushing: this.isFlushing,
+			lastSummaryStatus: this.lastSummaryStatus,
+			lastSummaryTime: this.lastSummaryTime,
+			lastPrunedCount: this.lastPrunedCount,
+			lastReconstructionStatus: this.lastReconstructionStatus,
+			lastReconstructionTime: this.lastReconstructionTime,
+			lastReconstructionError: this.lastReconstructionError,
+			lastReconstructionScannedEntries: this.lastReconstructionScannedEntries,
+			lastReconstructionScannedBytes: this.lastReconstructionScannedBytes,
+			lastReconstructionSkippedEntries: this.lastReconstructionSkippedEntries,
+			lastReconstructedCount: this.lastReconstructedCount,
+			shortRefCounter: this.shortRefCounter,
+		};
+	}
+
+	/** True when any pending batch is waiting to be summarized/indexed. */
+	hasPending(): boolean {
+		return this.pendingBatches.length > 0;
+	}
+
+	/** True when the caller's external policy permits starting a flush now. */
+	canFlush(isEnabled: boolean, isCompacting: boolean): boolean {
+		return isEnabled && !isCompacting && !this.isFlushing && this.hasPending();
+	}
+
+	/** Begin a flush if one is not already running and pending work exists. */
+	beginFlush(): boolean {
+		if (this.isFlushing || !this.hasPending()) return false;
+		this.isFlushing = true;
+		return true;
+	}
+
+	/** End the current flush guard. Safe to call from finally blocks. */
+	endFlush(): void {
+		this.isFlushing = false;
+	}
+
 	/**
 	 * Add a pending batch and its records, enforcing bounded pending limits.
 	 * If limits are exceeded, oldest batches and their records are dropped.
@@ -68,6 +127,21 @@ export class ToolOutputPruningState {
 		this.pendingBatches.push(batch);
 		this.pendingRecords.push(...records);
 		this.trimPending();
+	}
+
+	/** Remove a pending batch and the records owned by that batch. */
+	removePendingBatch(batchId: string): PendingToolOutputBatch | undefined {
+		const index = this.pendingBatches.findIndex(
+			(batch) => batch.batchId === batchId,
+		);
+		if (index === -1) return undefined;
+		const [removed] = this.pendingBatches.splice(index, 1);
+		if (!removed) return undefined;
+		const removedIds = new Set(removed.recordIds);
+		this.pendingRecords = this.pendingRecords.filter(
+			(record) => !removedIds.has(record.recordId),
+		);
+		return removed;
 	}
 
 	private trimPending(): void {
@@ -109,6 +183,28 @@ export class ToolOutputPruningState {
 		if (!exists) {
 			this.finalizedRecords.push(record);
 		}
+		this.trimFinalized();
+	}
+
+	/** Replace a finalized record by recordId, or append it if not present. */
+	replaceFinalizedRecord(record: ToolOutputRecord): void {
+		const index = this.finalizedRecords.findIndex(
+			(r) => r.recordId === record.recordId,
+		);
+		if (index === -1) {
+			this.finalizedRecords.push(record);
+		} else {
+			this.finalizedRecords[index] = record;
+		}
+		this.trimFinalized();
+	}
+
+	/** Replace all finalized records, preserving bounded retention. */
+	replaceFinalizedRecords(records: ToolOutputRecord[]): void {
+		this.finalizedRecords = records.slice(-MAX_FINALIZED_RECORDS);
+	}
+
+	private trimFinalized(): void {
 		if (this.finalizedRecords.length > MAX_FINALIZED_RECORDS) {
 			this.finalizedRecords = this.finalizedRecords.slice(
 				-MAX_FINALIZED_RECORDS,
@@ -149,6 +245,25 @@ export class ToolOutputPruningState {
 	/** Look up a finalized record by entryId. */
 	getRecordByEntryId(entryId: string): ToolOutputRecord | undefined {
 		return this.finalizedRecords.find((r) => r.entryId === entryId);
+	}
+
+	/** Record a successful summary/prune status update. */
+	recordSummarySuccess(prunedCount = this.lastPrunedCount): void {
+		this.lastSummaryStatus = "ok";
+		this.lastSummaryTime = Date.now();
+		this.lastPrunedCount = prunedCount;
+	}
+
+	/** Record a failed summary/prune status update. */
+	recordSummaryError(prunedCount = this.lastPrunedCount): void {
+		this.lastSummaryStatus = "error";
+		this.lastSummaryTime = Date.now();
+		this.lastPrunedCount = prunedCount;
+	}
+
+	/** Update the last observed pruned count without changing summary status. */
+	updatePrunedCount(prunedCount: number): void {
+		this.lastPrunedCount = prunedCount;
 	}
 
 	/** Record safe, bounded reconstruction diagnostics. */
