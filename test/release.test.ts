@@ -96,6 +96,15 @@ switch (cmd) {
   case "whoami":
     console.log("testuser");
     break;
+  case "view":
+    if (process.env.NPM_VIEW_EXISTS === "1") {
+      console.log("0.0.2");
+    } else {
+      console.error("npm error code E404");
+      console.error("npm error 404 Not Found - GET https://registry.npmjs.org/test-pkg");
+      process.exit(1);
+    }
+    break;
   case "pack":
     if (rest.includes("--json")) {
       const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -124,6 +133,9 @@ switch (cmd) {
       execFileSync("git", ["tag", "v" + ver], { stdio: "ignore" });
     }
     console.log(ver);
+    break;
+  case "publish":
+    console.log(rest.includes("--dry-run") ? "mock publish dry-run" : "mock publish");
     break;
   default:
     console.error("Unknown npm command: " + cmd);
@@ -301,11 +313,12 @@ describe("release-check.sh", () => {
 		);
 	});
 
-	it("verify script includes package content checks", () => {
+	it("verify script includes live and package content checks", () => {
 		const verifyScript = fs.readFileSync(
 			path.join(process.cwd(), "scripts", "verify.sh"),
 			"utf8",
 		);
+		expect(verifyScript).toContain("node scripts/live-custom-path-check.mjs");
 		expect(verifyScript).toContain("node scripts/check-package-contents.js");
 	});
 
@@ -421,7 +434,8 @@ describe("release.sh", () => {
 			{ PATH: getPathEnv(dir) },
 		);
 
-		expect(result.exitCode).not.toBe(0);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("Released test-pkg@0.0.2");
 		const committed = commitFiles(dir, "HEAD~1");
 		expect(committed).toContain("src/index.ts");
 		expect(commitMessage(dir, "HEAD~1")).toContain("staged change");
@@ -452,7 +466,8 @@ describe("release.sh", () => {
 			{ PATH: getPathEnv(dir) },
 		);
 
-		expect(result.exitCode).not.toBe(0);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("Released test-pkg@0.0.2");
 		const committed = commitFiles(dir, "HEAD~1");
 		expect(committed).toContain("src/index.ts");
 		expect(committed).toContain("src/other.ts");
@@ -469,7 +484,12 @@ describe("release.sh", () => {
 			PATH: getPathEnv(dir),
 		});
 
-		expect(result.exitCode).not.toBe(0);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("npm publish --dry-run --access public");
+		expect(result.stdout).toContain("mock publish dry-run");
+		expect(result.stdout).toContain("npm publish --access public");
+		expect(result.stdout).toContain("mock publish");
+		expect(result.stdout).toContain("Released test-pkg@0.0.2");
 		const headAfter = execFileSync("git", ["rev-parse", "HEAD"], {
 			cwd: dir,
 			encoding: "utf-8",
@@ -477,5 +497,28 @@ describe("release.sh", () => {
 		// On a clean tree, release.sh commits via npm version, so HEAD changes.
 		// The key behavior is that no *local* files were auto-committed before npm version.
 		expect(headBefore).not.toBe(headAfter);
+	});
+
+	it("fails before version commit when the next npm version already exists", () => {
+		const headBefore = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: dir,
+			encoding: "utf-8",
+		}).trim();
+
+		const result = exec(["scripts/release.sh", "patch"], dir, undefined, {
+			PATH: getPathEnv(dir),
+			NPM_VIEW_EXISTS: "1",
+		});
+
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr + result.stdout).toContain(
+			"test-pkg@0.0.2 is already published",
+		);
+		expect(
+			execFileSync("git", ["rev-parse", "HEAD"], {
+				cwd: dir,
+				encoding: "utf-8",
+			}).trim(),
+		).toBe(headBefore);
 	});
 });

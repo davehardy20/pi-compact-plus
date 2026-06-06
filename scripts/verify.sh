@@ -13,6 +13,9 @@ npm test
 echo "==> npm run build"
 npm run build
 
+echo "==> node scripts/live-custom-path-check.mjs"
+node scripts/live-custom-path-check.mjs
+
 echo "==> node scripts/check-package-contents.js"
 node scripts/check-package-contents.js
 
