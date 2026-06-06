@@ -1,6 +1,6 @@
 {
 	"name": "@davehardy20/pi-compact-plus",
-	"version": "0.1.8",
+	"version": "0.1.9",
 	"description": "Pi package for advanced context compaction with mode-aware triggers, structured summaries, current-focus extraction, content classification, and lightweight checkpoints.",
 	"type": "module",
 	"keywords": [
@@ -35,6 +35,7 @@
 		"package:check": "node ./scripts/check-package-contents.js",
 		"verify": "bash ./scripts/verify.sh",
 		"release:check": "bash ./scripts/release-check.sh",
+		"release:publish-current": "bash ./scripts/release.sh --publish-current",
 		"release:patch": "bash ./scripts/release.sh patch",
 		"release:minor": "bash ./scripts/release.sh minor",
 		"release:major": "bash ./scripts/release.sh major"

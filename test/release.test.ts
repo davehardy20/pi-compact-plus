@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,30 +16,35 @@ function exec(
 	input?: string,
 	env?: Record<string, string>,
 ): ExecResult {
-	try {
-		const stdout = execFileSync("bash", args, {
-			cwd,
-			encoding: "utf-8",
-			input,
-			env: { ...process.env, ...env },
-		});
-		return { stdout, stderr: "", exitCode: 0 };
-	} catch (err: unknown) {
-		const error = err as { stdout?: string; stderr?: string; status?: number };
-		return {
-			stdout: error.stdout ?? "",
-			stderr: error.stderr ?? "",
-			exitCode: error.status ?? 1,
-		};
-	}
+	const result = spawnSync("bash", args, {
+		cwd,
+		encoding: "utf-8",
+		input,
+		env: { ...process.env, ...env },
+	});
+
+	return {
+		stdout: result.stdout ?? "",
+		stderr: result.stderr ?? result.error?.message ?? "",
+		exitCode: result.status ?? (result.error ? 1 : 0),
+	};
 }
 
 function setupTempRepo(): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cp-release-test-"));
 
-	execFileSync("git", ["init"], { cwd: dir });
-	execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
-	execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+	execFileSync("git", ["init", "-b", "master"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.email", "test@test.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Test"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
 
 	fs.writeFileSync(
 		path.join(dir, "package.json"),
@@ -147,12 +152,21 @@ switch (cmd) {
 
 	const originDir = path.join(dir, "origin.git");
 	fs.mkdirSync(originDir);
-	execFileSync("git", ["init", "--bare"], { cwd: originDir });
-	execFileSync("git", ["remote", "add", "origin", originDir], { cwd: dir });
+	execFileSync("git", ["init", "--bare", "--initial-branch=master"], {
+		cwd: originDir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["remote", "add", "origin", originDir], {
+		cwd: dir,
+		stdio: "ignore",
+	});
 
 	fs.writeFileSync(path.join(dir, ".gitignore"), "bin/\norigin.git/\n");
-	execFileSync("git", ["add", "."], { cwd: dir });
-	execFileSync("git", ["commit", "-m", "init"], { cwd: dir });
+	execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+	execFileSync("git", ["commit", "-m", "init"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
 
 	return dir;
 }
@@ -318,8 +332,12 @@ describe("release-check.sh", () => {
 			path.join(process.cwd(), "scripts", "verify.sh"),
 			"utf8",
 		);
+		const packageJson = JSON.parse(
+			fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
+		);
 		expect(verifyScript).toContain("node scripts/live-custom-path-check.mjs");
 		expect(verifyScript).toContain("node scripts/check-package-contents.js");
+		expect(packageJson.scripts).toHaveProperty("release:publish-current");
 	});
 
 	it("mentions dry run with --dry-run", () => {
@@ -520,5 +538,30 @@ describe("release.sh", () => {
 				encoding: "utf-8",
 			}).trim(),
 		).toBe(headBefore);
+	});
+
+	it("publishes the current merged version without bumping", () => {
+		execFileSync("git", ["push", "origin", "master"], { cwd: dir });
+
+		const result = exec(
+			["scripts/release.sh", "--publish-current", "--yes"],
+			dir,
+			undefined,
+			{ PATH: getPathEnv(dir) },
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("mock publish dry-run");
+		expect(result.stdout).toContain("mock publish");
+		expect(result.stdout).toContain("Released test-pkg@0.0.1");
+		expect(
+			JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")),
+		).toHaveProperty("version", "0.0.1");
+		expect(
+			execFileSync("git", ["tag", "--points-at", "HEAD"], {
+				cwd: dir,
+				encoding: "utf-8",
+			}),
+		).toContain("v0.0.1");
 	});
 });
