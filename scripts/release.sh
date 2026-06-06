@@ -56,6 +56,11 @@ if [[ -z "$BRANCH" ]]; then
   exit 1
 fi
 
+if ! git remote get-url origin >/dev/null 2>&1; then
+  echo "❌ Git remote 'origin' is not configured; cannot push release commit/tag." >&2
+  exit 1
+fi
+
 PACKAGE_NAME="$(node -p "require('./package.json').name")"
 CURRENT_VERSION="$(node -p "require('./package.json').version")"
 
@@ -135,11 +140,29 @@ fi
 
 echo
 PREVIEW_VERSION="$(npm version --no-git-tag-version "$BUMP_TYPE" | tr -d 'v')"
-git checkout -- package.json package-lock.json >/dev/null 2>&1 || true
+git checkout -- package.json >/dev/null 2>&1 || true
+if git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+  git checkout -- package-lock.json >/dev/null 2>&1 || true
+fi
 
 echo "Package: $PACKAGE_NAME"
 echo "Current version: $CURRENT_VERSION"
 echo "Next version:    $PREVIEW_VERSION"
+echo
+
+echo "==> Checking npm version availability"
+NPM_VIEW_OUTPUT=""
+if NPM_VIEW_OUTPUT="$(npm view "$PACKAGE_NAME@$PREVIEW_VERSION" version 2>&1)"; then
+  echo "❌ $PACKAGE_NAME@$PREVIEW_VERSION is already published on npm." >&2
+  exit 1
+fi
+if ! grep -Eq '(E404|404|not in this registry)' <<<"$NPM_VIEW_OUTPUT"; then
+  echo "❌ Could not verify npm version availability for $PACKAGE_NAME@$PREVIEW_VERSION" >&2
+  echo "$NPM_VIEW_OUTPUT" >&2
+  exit 1
+fi
+echo "npm: $PACKAGE_NAME@$PREVIEW_VERSION is available"
+
 read -r -p "Continue with release? [y/N] " CONFIRM
 case "$CONFIRM" in
   y|Y|yes|YES) ;;
@@ -154,12 +177,16 @@ echo
 echo "==> npm version $BUMP_TYPE"
 npm version "$BUMP_TYPE"
 NEW_VERSION="$(node -p "require('./package.json').version")"
+NEW_TAG="v$NEW_VERSION"
+
+echo "==> npm publish --dry-run --access public"
+npm publish --dry-run --access public
 
 echo "==> git push origin $BRANCH"
 git push origin "$BRANCH"
 
-echo "==> git push origin $BRANCH --tags"
-git push origin "$BRANCH" --tags
+echo "==> git push origin $NEW_TAG"
+git push origin "$NEW_TAG"
 
 echo "==> npm publish --access public"
 npm publish --access public

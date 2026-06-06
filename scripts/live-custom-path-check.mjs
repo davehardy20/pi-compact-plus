@@ -171,7 +171,12 @@ const indexedBatch = {
 	records: captureResult.records,
 	summaries: mockSummaries,
 };
-indexToolResultsFromBranch(branchEntries, [indexedBatch], state);
+indexToolResultsFromBranch(
+	branchEntries,
+	[indexedBatch],
+	state,
+	enabledSettings,
+);
 assert(state.finalizedRecords.length === 1, "should finalize 1 record");
 assert(
 	state.finalizedRecords[0].entryId === "entry-1",
