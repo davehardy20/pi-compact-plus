@@ -160,7 +160,6 @@ export class CompactionCoordinator {
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,
-			branchEntries: event.branchEntries,
 		});
 
 		const triggerSource: TriggerSource = this.state.lastTriggerAuto

@@ -663,6 +663,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(compactMock).toHaveBeenCalledTimes(1);
 		expect(compactMock.mock.calls[0]).toHaveLength(8);
 		expect(compactMock.mock.calls[0]?.[7]).toEqual(expect.any(Function));
+		expect(compactMock.mock.calls[0]?.[6]).toBe("minimal");
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
 			expect.stringContaining("native Pi compaction"),
 			"warning",
@@ -686,7 +687,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(__test__.getLastCompaction()).toMatchObject({
 			executionPath: "custom",
 			fromExtension: true,
-			thinkingLevel: "high",
+			thinkingLevel: "minimal",
 		});
 		expect(__test__.getLastCompaction()?.compatibilityReason).toContain(
 			"streamSimple adapter",

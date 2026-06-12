@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   node-pr-checks:
-    name: node-pr-checks
+    name: Typecheck and test
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
