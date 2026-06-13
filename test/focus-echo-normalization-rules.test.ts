@@ -1,44 +1,91 @@
 import { describe, expect, it } from "vitest";
 
+import * as normalizationRules from "../src/focus-echo/normalization-rules.js";
 import {
-	ACTIVE_FILE_CANDIDATE_PATTERN,
-	ACTIVE_FILE_GROUP_PRIORITY,
-	BLOCKER_NORMALIZATION_RULES,
-	DEPENDENCY_NORMALIZATION_RULES,
-	NEXT_STEP_NORMALIZATION_RULES,
-	OBJECTIVE_NORMALIZATION_RULES,
-	OBJECTIVE_PRE_COLON_RULES,
-	OBJECTIVE_SOURCE_OF_TRUTH_RULES,
+	normalizeActiveFiles,
+	normalizeBlockers,
+	normalizeDecisions,
+	normalizeDependencyChain,
+	normalizeNextStep,
+	normalizeObjective,
 } from "../src/focus-echo/normalization-rules.js";
 
-const RULE_GROUPS = [
-	BLOCKER_NORMALIZATION_RULES,
-	DEPENDENCY_NORMALIZATION_RULES,
-	NEXT_STEP_NORMALIZATION_RULES,
-	OBJECTIVE_NORMALIZATION_RULES,
-	OBJECTIVE_PRE_COLON_RULES,
-	OBJECTIVE_SOURCE_OF_TRUTH_RULES,
-];
-
 describe("focus echo normalization rules", () => {
-	it("keeps parser replacement rules named for reviewable golden-driven edits", () => {
-		for (const group of RULE_GROUPS) {
-			expect(group.length).toBeGreaterThan(0);
-			const names = group.map((rule) => rule.name);
-			expect(new Set(names).size).toBe(names.length);
-			expect(names.every((name) => name.length > 0)).toBe(true);
-		}
+	it("keeps raw rule taxonomy private behind semantic helpers", () => {
+		expect(Object.keys(normalizationRules).sort()).toEqual([
+			"normalizeActiveFiles",
+			"normalizeBlockers",
+			"normalizeDecisions",
+			"normalizeDependencyChain",
+			"normalizeNextStep",
+			"normalizeObjective",
+		]);
 	});
 
-	it("keeps active-file rules path-first and path-shaped", () => {
-		expect(ACTIVE_FILE_GROUP_PRIORITY).toEqual([
-			"files modified",
-			"likely next files to inspect/edit",
-			"files read that still matter",
-			"default",
+	it("exposes semantic helpers for field-level normalization", () => {
+		expect(
+			normalizeObjective(
+				"Use the latest live /compact-plus status output as the source of truth to further refining persisted focus echo normalization so /compact-plus status renders cleaner objective, blockers, dependency chain, and next step text after compaction.",
+			),
+		).toBe(
+			"Refine persisted focus echo normalization for /compact-plus status",
+		);
+		expect(
+			normalizeBlockers(
+				[
+					"- Latest pasted live /compact+ status shows a noisy/stale persisted last focus echo with objective leaks; blockers leak stale/literal text: raw pasted summary",
+					"- No known blocker",
+				],
+				[
+					"- Objective: Fix seeds issue pi-compact-plus-1234 in /Users/dave/tools/pi-compact-plus by updating src/focus-echo/normalizer.ts",
+				],
+			),
+		).toEqual([
+			"Live /compact-plus status shows noisy persisted echo content",
+			"Blockers retains stale/literal text",
+			"Objective still includes issue boilerplate/path noise",
 		]);
 		expect(
-			"src/focus-echo/parser.ts".match(ACTIVE_FILE_CANDIDATE_PATTERN)?.[1],
-		).toBe("src/focus-echo/parser.ts");
+			normalizeActiveFiles([
+				"- files read that still matter",
+				"- /Users/dave/tools/pi-compact-plus/README.md",
+				"- files modified",
+				"- package.json",
+				"- /Users/dave/tools/pi-compact-plus/src/focus-echo/normalizer.ts",
+				"- likely next files to inspect/edit",
+				"- ./test/focus-echo-normalization-rules.test.ts",
+				"- notes without a file reference",
+			]),
+		).toEqual([
+			"src/focus-echo/normalizer.ts",
+			"test/focus-echo-normalization-rules.test.ts",
+		]);
+		expect(
+			normalizeDecisions([
+				"- **Keep the normalizer seam**: callers continue through normalizeFocusEchoDraft.",
+				"- Continue testing through the public FocusEchoDraft seam.",
+				"- **Keep the normalizer seam**: duplicate should be removed.",
+				"- No further decision.",
+			]),
+		).toEqual([
+			"Keep the normalizer seam",
+			"Continue testing through the public FocusEchoDraft seam.",
+		]);
+		expect(
+			normalizeDependencyChain([
+				"- release checklist",
+				"-> docs",
+				"- buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts normalize summary fields",
+				"-> remaining status validation",
+			]),
+		).toEqual([
+			"buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts",
+			"status validation",
+		]);
+		expect(
+			normalizeNextStep(
+				"Inspecting src/reorder.ts and refining normalization after the newest echo-normalization edits.",
+			),
+		).toBe("Refine normalization after the newest echo-normalization edits.");
 	});
 });
