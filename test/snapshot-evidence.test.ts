@@ -1,12 +1,13 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
-import { extractDependencyChain } from "../src/extract.js";
 import {
 	extractCompletedWork,
 	extractConstraints,
+	extractCurrentFocus,
+	extractDependencyChain,
 	extractOpenProblems,
 	extractSessionSnapshot,
-} from "../src/snapshot.js";
+} from "../src/session-evidence.js";
 
 function userMessage(text: string): AgentMessage {
 	return {
@@ -56,6 +57,21 @@ function bashExecution(
 }
 
 describe("evidence-weighted session snapshot extraction", () => {
+	it("uses recent explicit objectives before older substantial user messages", () => {
+		const messages = [
+			userMessage("We are discussing an older unrelated task."),
+			assistantText("Acknowledged."),
+			userMessage("Task: deepen the Session Evidence seam."),
+		];
+
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"deepen the Session Evidence seam.",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"deepen the Session Evidence seam.",
+		);
+	});
+
 	it("does not treat unsupported assistant self-reports as completed work", () => {
 		const completedWork = extractCompletedWork([
 			userMessage("Task: add authentication middleware."),
@@ -91,6 +107,17 @@ describe("evidence-weighted session snapshot extraction", () => {
 		expect(snapshot.blockers.join("\n")).not.toMatch(/stale validation/i);
 		expect(snapshot.currentErrors.join("\n")).not.toMatch(/stale validation/i);
 		expect(snapshot.completedWork.join("\n")).toMatch(/error-handling/i);
+	});
+
+	it("accepts successful build wording from validation commands", () => {
+		const snapshot = extractSessionSnapshot([
+			toolResult("Error: stale build state", true),
+			bashExecution("npm run build", "Compiled successfully"),
+		]);
+
+		expect(snapshot.blockers.join("\n")).not.toMatch(/stale build/i);
+		expect(snapshot.currentErrors.join("\n")).not.toMatch(/stale build/i);
+		expect(snapshot.completedWork.join("\n")).toMatch(/npm run build passed/i);
 	});
 
 	it("does not keep historical assistant error prose after a retry", () => {
@@ -277,6 +304,27 @@ describe("evidence-weighted session snapshot extraction", () => {
 		]);
 
 		expect(snapshot.decisions).toEqual(["Keep JSONL as canonical storage"]);
+	});
+
+	it("keeps full-history focus decisions while snapshots use recent decisions", () => {
+		const olderDecision = assistantText(
+			"## Decisions Made\n- Keep historical focus decision",
+		);
+		const filler = Array.from({ length: 25 }, (_, index) =>
+			userMessage(`status filler ${index}`),
+		);
+		const recentDecision = assistantText(
+			"## Decisions Made\n- Keep recent snapshot decision",
+		);
+		const messages = [olderDecision, ...filler, recentDecision];
+
+		expect(extractCurrentFocus(messages).decisions).toEqual([
+			"Keep historical focus decision",
+			"Keep recent snapshot decision",
+		]);
+		expect(extractSessionSnapshot(messages).decisions).toEqual([
+			"Keep recent snapshot decision",
+		]);
 	});
 
 	it("keeps user-specified constraints and structured assistant status", () => {

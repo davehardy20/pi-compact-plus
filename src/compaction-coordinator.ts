@@ -10,16 +10,16 @@ import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
-import {
-	extractCurrentFocus,
-	extractCurrentFocusFromBranch,
-	extractTextContent,
-} from "./focus.js";
 import { executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromUsage, modelKey } from "./policy.js";
 import { buildPersistedFocusEcho } from "./reorder.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
+import {
+	extractCurrentFocus,
+	extractCurrentFocusFromBranch,
+	extractTextContent,
+} from "./session-evidence.js";
 import type { CompactionState } from "./state.js";
 import {
 	COOLDOWN_MS,

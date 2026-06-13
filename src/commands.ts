@@ -5,7 +5,6 @@ import type {
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
 import { registerCompactPlusStatusCommand } from "./extension-status.js";
-import { extractSessionSnapshotFromBranch } from "./focus.js";
 import type { PackageMetadataResolver } from "./package-metadata.js";
 import {
 	buildCheckpointData,
@@ -14,6 +13,7 @@ import {
 	formatStatusLines,
 } from "./policy.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
+import { extractSessionSnapshotFromBranch } from "./session-evidence.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";

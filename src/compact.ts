@@ -5,13 +5,14 @@ import type {
 	ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
+import { classifyMessages } from "./classify.js";
 import type { CompactionRuntimeCompatibility } from "./compatibility.js";
-import { classifyMessages, extractCurrentFocus } from "./focus.js";
 import {
 	getAssistantIdBearingToolCallBlocks,
 	getToolCallId,
 } from "./pi-messages.js";
 import { buildSummaryInstructions } from "./prompts.js";
+import { extractCurrentFocus } from "./session-evidence.js";
 import type { CompactionMode } from "./types.js";
 
 export interface CompactionAttemptResult {
