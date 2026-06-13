@@ -109,6 +109,17 @@ describe("evidence-weighted session snapshot extraction", () => {
 		expect(snapshot.completedWork.join("\n")).toMatch(/error-handling/i);
 	});
 
+	it("accepts successful build wording from validation commands", () => {
+		const snapshot = extractSessionSnapshot([
+			toolResult("Error: stale build state", true),
+			bashExecution("npm run build", "Compiled successfully"),
+		]);
+
+		expect(snapshot.blockers.join("\n")).not.toMatch(/stale build/i);
+		expect(snapshot.currentErrors.join("\n")).not.toMatch(/stale build/i);
+		expect(snapshot.completedWork.join("\n")).toMatch(/npm run build passed/i);
+	});
+
 	it("does not keep historical assistant error prose after a retry", () => {
 		const snapshot = extractSessionSnapshot([
 			assistantText("Earlier error: Redis was unavailable in the test env."),

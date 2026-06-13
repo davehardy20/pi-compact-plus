@@ -169,7 +169,7 @@ function hasValidationFailureEvidence(text: string): boolean {
 
 function outputLooksSuccessful(text: string): boolean {
 	if (hasValidationFailureEvidence(text)) return false;
-	return /(?:✓|\bpassed\b|\bsuccess\b|\bsucceeded\b|completed successfully|exit code:? 0)/i.test(
+	return /(?:✓|\bpassed\b|\bsuccess\b|\bsuccessful(?:ly)?\b|\bsucceeded\b|completed successfully|exit code:? 0)/i.test(
 		text,
 	);
 }
