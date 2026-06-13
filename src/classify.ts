@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { extractTextContent } from "./extract.js";
 import { getAssistantToolCallBlocks, getIsError } from "./pi-messages.js";
+import { extractTextContent } from "./session-evidence.js";
 import type { ClassifiedMessages, CompactionMode } from "./types.js";
 
 /**

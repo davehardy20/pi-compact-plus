@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { classifyMessages } from "../src/classify.js";
-import { extractActiveFiles } from "../src/extract.js";
+import { extractActiveFiles } from "../src/session-evidence.js";
 
 function assistantWithIdlessToolCall(
 	args: Record<string, unknown>,

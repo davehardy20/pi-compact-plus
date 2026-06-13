@@ -15,13 +15,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+import { classifyMessages } from "./classify.js";
 import { registerCompactPlusCommands } from "./commands.js";
 import { CompactionCoordinator } from "./compaction-coordinator.js";
 import { registerCompactPlusEventHandlers } from "./events.js";
-import { classifyMessages, extractCurrentFocus } from "./focus.js";
 import { createPackageMetadataResolver } from "./package-metadata.js";
 import { saveTelemetryWithDiagnostics } from "./persist.js";
-
+import { extractCurrentFocus } from "./session-evidence.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 import { CompactionState } from "./state.js";
 import { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";

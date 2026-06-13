@@ -9,7 +9,7 @@ import {
 	extractCurrentFocusFromBranch,
 	extractSessionSnapshot,
 	extractSessionSnapshotFromBranch,
-} from "../src/snapshot.js";
+} from "../src/session-evidence.js";
 
 function userMessage(text: string): AgentMessage {
 	return { role: "user", content: [{ type: "text", text }] } as AgentMessage;
