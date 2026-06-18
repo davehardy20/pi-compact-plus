@@ -8,6 +8,7 @@ import {
 	type CompactionMode,
 	type CompactionTelemetry,
 	type CompactPlusStatus,
+	type CompactPlusThresholdMode,
 	type EffectiveUsage,
 	HARD_THRESHOLD_PERCENT,
 	HARD_THRESHOLD_TOKENS,
@@ -60,11 +61,12 @@ export function highestSeverityMode(
 
 export function getModeFromEffectiveUsage(
 	usage: EffectiveUsage,
+	mode: CompactPlusThresholdMode = THRESHOLD_MODE,
 ): CompactionMode | null {
 	const percentMode = getModeFromUsage(usage.percent);
 	const tokenMode = getModeFromTokenUsage(usage.tokens);
 
-	switch (THRESHOLD_MODE) {
+	switch (mode) {
 		case "percent":
 			return percentMode;
 		case "tokens":
@@ -75,41 +77,55 @@ export function getModeFromEffectiveUsage(
 }
 
 export function getUsageBandText(percent: number | null): string {
-	if (percent === null) return "unknown";
-	if (percent >= HARD_THRESHOLD_PERCENT) {
-		return `hard (>= ${HARD_THRESHOLD_PERCENT}%)`;
-	}
-	if (percent >= STANDARD_THRESHOLD_PERCENT) {
-		return `standard (${formatRange(STANDARD_THRESHOLD_PERCENT, HARD_THRESHOLD_PERCENT - 1)})`;
-	}
-	if (percent >= CHECKPOINT_CANDIDATE_PERCENT) {
-		return `checkpoint candidate (${formatRange(CHECKPOINT_CANDIDATE_PERCENT, STANDARD_THRESHOLD_PERCENT - 1)})`;
-	}
-	return `normal (< ${CHECKPOINT_CANDIDATE_PERCENT}%)`;
+	return getThresholdBandText(
+		percent,
+		CHECKPOINT_CANDIDATE_PERCENT,
+		STANDARD_THRESHOLD_PERCENT,
+		HARD_THRESHOLD_PERCENT,
+		(value) => value.toString(),
+		"%",
+	);
 }
 
 export function getTokenBandText(tokens: number | null): string {
-	if (tokens === null) return "unknown";
-	if (tokens >= HARD_THRESHOLD_TOKENS) {
-		return `hard (>= ${HARD_THRESHOLD_TOKENS.toLocaleString()} tokens)`;
-	}
-	if (tokens >= STANDARD_THRESHOLD_TOKENS) {
-		return `standard (${formatTokenRange(STANDARD_THRESHOLD_TOKENS, HARD_THRESHOLD_TOKENS - 1)})`;
-	}
-	if (tokens >= CHECKPOINT_CANDIDATE_TOKENS) {
-		return `checkpoint candidate (${formatTokenRange(CHECKPOINT_CANDIDATE_TOKENS, STANDARD_THRESHOLD_TOKENS - 1)})`;
-	}
-	return `normal (< ${CHECKPOINT_CANDIDATE_TOKENS.toLocaleString()} tokens)`;
+	return getThresholdBandText(
+		tokens,
+		CHECKPOINT_CANDIDATE_TOKENS,
+		STANDARD_THRESHOLD_TOKENS,
+		HARD_THRESHOLD_TOKENS,
+		(value) => value.toLocaleString(),
+		" tokens",
+	);
 }
 
-function formatRange(start: number, end: number): string {
-	return end >= start ? `${start}-${end}%` : `>= ${start}%`;
+function getThresholdBandText(
+	value: number | null,
+	checkpoint: number,
+	standard: number,
+	hard: number,
+	format: (value: number) => string,
+	unit: string,
+): string {
+	if (value === null) return "unknown";
+	if (value >= hard) return `hard (>= ${format(hard)}${unit})`;
+	if (value >= standard) {
+		return `standard (${formatRange(standard, hard - 1, format, unit)})`;
+	}
+	if (value >= checkpoint) {
+		return `checkpoint candidate (${formatRange(checkpoint, standard - 1, format, unit)})`;
+	}
+	return `normal (< ${format(checkpoint)}${unit})`;
 }
 
-function formatTokenRange(start: number, end: number): string {
+function formatRange(
+	start: number,
+	end: number,
+	format: (value: number) => string = String,
+	unit = "",
+): string {
 	return end >= start
-		? `${start.toLocaleString()}-${end.toLocaleString()} tokens`
-		: `>= ${start.toLocaleString()} tokens`;
+		? `${format(start)}-${format(end)}${unit}`
+		: `>= ${format(start)}${unit}`;
 }
 
 export function modelKey(
@@ -168,12 +184,23 @@ export function buildStatusSnapshot(args: {
 }): CompactPlusStatus {
 	const now = Date.now();
 	const cooldownRemainingMs = getCooldownRemainingMs(now, args.lastCompactTime);
+	const usage = args.usage;
+	const effectiveBand =
+		usage === null
+			? null
+			: getModeFromEffectiveUsage({
+					percent: usage.percent,
+					tokens: usage.tokens,
+					contextWindow: usage.contextWindow,
+					source: usage.source,
+				});
 	return {
 		usagePercent: args.usage?.percent ?? null,
 		usageTokens: args.usage?.tokens ?? null,
 		contextWindow: args.usage?.contextWindow ?? null,
 		usageSource: args.usage?.source ?? "unknown",
 		band: getUsageBandText(args.usage?.percent ?? null),
+		effectiveBand,
 		selectedMode: args.selectedMode,
 		isCompacting: args.isCompacting,
 		cooldownActive: cooldownRemainingMs > 0,
@@ -205,13 +232,6 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 			? "unknown"
 			: status.contextWindow.toLocaleString();
 
-	const effectiveBand = getModeFromEffectiveUsage({
-		percent: status.usagePercent,
-		tokens: status.usageTokens,
-		contextWindow: status.contextWindow ?? 0,
-		source: status.usageSource,
-	});
-
 	const lines = [
 		"📦 Compact+ status",
 		`  Usage: ${usagePercentText} (${usageTokensText} / ${contextWindowText} tokens)`,
@@ -219,7 +239,7 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 		`  Threshold mode: ${THRESHOLD_MODE}`,
 		`  Percent band: ${status.band}`,
 		`  Token band: ${getTokenBandText(status.usageTokens)}`,
-		`  Effective band: ${effectiveBand ?? "none"}`,
+		`  Effective band: ${status.effectiveBand ?? "none"}`,
 		`  Thresholds:`,
 		`    percent checkpoint=${CHECKPOINT_CANDIDATE_PERCENT}% standard=${STANDARD_THRESHOLD_PERCENT}% hard=${HARD_THRESHOLD_PERCENT}%`,
 		`    tokens checkpoint=${CHECKPOINT_CANDIDATE_TOKENS.toLocaleString()} standard=${STANDARD_THRESHOLD_TOKENS.toLocaleString()} hard=${HARD_THRESHOLD_TOKENS.toLocaleString()}`,

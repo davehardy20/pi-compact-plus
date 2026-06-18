@@ -2,6 +2,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CompactionExecutionPath } from "./compatibility.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 
+export type { CompactPlusThresholdMode } from "./settings.js";
+
 export type CompactionMode = "standard" | "hard" | "checkpoint";
 
 export type UsageSource = "native" | "estimated" | "unknown";
@@ -39,6 +41,7 @@ export interface CompactPlusStatus {
 	contextWindow: number | null;
 	usageSource: UsageSource;
 	band: string;
+	effectiveBand: CompactionMode | null;
 	selectedMode: CompactionMode | null;
 	isCompacting: boolean;
 	cooldownActive: boolean;

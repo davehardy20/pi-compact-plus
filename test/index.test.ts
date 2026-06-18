@@ -2500,6 +2500,7 @@ Continue pi-compact-plus-d843 in /Users/dave/tools/pi-compact-plus by tightening
 			contextWindow: 272000,
 			usageSource: "unknown",
 			band: "unknown",
+			effectiveBand: null,
 			selectedMode: null,
 			isCompacting: false,
 			cooldownActive: false,
@@ -2659,6 +2660,50 @@ describe("Compact+ effective-cap threshold policy", () => {
 			getModeFromEffectiveUsage(
 				nativeUsage({ percent: 70, tokens: 190_400, contextWindow: 272_000 }),
 			),
+		).toBe("standard");
+	});
+});
+
+describe("Compact+ threshold mode dispatch", () => {
+	// Usage where percent and token bands disagree: percent is below any
+	// threshold, tokens are at standard. Each mode should pick its own band.
+	const usage = {
+		percent: 20,
+		tokens: 200_000,
+		contextWindow: 1_000_000,
+		source: "native" as const,
+	};
+
+	it("percent mode ignores token thresholds and returns null below 65%", () => {
+		expect(getModeFromEffectiveUsage(usage, "percent")).toBeNull();
+	});
+
+	it("percent mode triggers by percent even when tokens are well below threshold", () => {
+		const highPercentLowTokens = {
+			percent: 85,
+			tokens: 50_000,
+			contextWindow: 200_000,
+			source: "native" as const,
+		};
+		expect(getModeFromEffectiveUsage(highPercentLowTokens, "percent")).toBe(
+			"standard",
+		);
+	});
+
+	it("tokens mode ignores percent and triggers on token count alone", () => {
+		expect(getModeFromEffectiveUsage(usage, "tokens")).toBe("standard");
+	});
+
+	it("effective_cap picks the more severe of the two bands", () => {
+		expect(getModeFromEffectiveUsage(usage, "effective_cap")).toBe("standard");
+		const percentOnlyStandard = {
+			percent: 75,
+			tokens: 10_000,
+			contextWindow: 200_000,
+			source: "native" as const,
+		};
+		expect(
+			getModeFromEffectiveUsage(percentOnlyStandard, "effective_cap"),
 		).toBe("standard");
 	});
 });
