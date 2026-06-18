@@ -1,4 +1,4 @@
-import type { FocusEcho } from "../../src/reorder.js";
+import type { FocusEcho } from "../../src/focus-echo/index.js";
 
 export interface FocusEchoGoldenFixture {
 	name: string;
@@ -96,7 +96,11 @@ export const focusEchoGoldens: FocusEchoGoldenFixture[] = [
 			],
 			dependencyChain: [
 				"src/index.ts",
-				"buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts",
+				// dependency-005 pruned in plan pl-874d step 4: src/reorder.ts was deleted in
+				// slice 0, so the rule that rewrote this to a short dead-path output is gone.
+				// Input referencing the deleted path now passes through unchanged
+				// (behavior_invariant allows updates for reorder.ts-referencing inputs).
+				"buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts",
 				"targeted test/index.test.ts coverage",
 				"live /compact-plus status validation",
 			],
@@ -111,7 +115,7 @@ export const focusEchoGoldens: FocusEchoGoldenFixture[] = [
 			"Active files context: src/reorder.ts, test/index.test.ts, src/policy.ts, docs/refactor-inventory.md",
 			"Blockers context: Latest pasted live /compact-plus status shows a noisy/stale persisted last focus echo around objective, blockers, depen…; Add regression coverage for the newest live echo shape",
 			"Prior decisions context: Use the latest successful custom-path Compact+ status echo as the source of truth.",
-			"Dependency chain context: src/index.ts → buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts → targeted test/index.test.ts coverage → live /compact-plus status validation",
+			"Dependency chain context: src/index.ts → buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts → targeted test/index.test.ts coverage → live /compact-plus status validation",
 			"Previously inferred next step: Add regression coverage in test/index.test.ts for the newest live echo shape.",
 			"</focus-echo>",
 		].join("\n"),
@@ -254,13 +258,16 @@ Use the latest live /compact-plus status snapshot as the source of truth to cont
 					"Update test expectations for path-preference active files",
 				],
 				nextStep:
-					"Update test/index.test.ts expectations for current src/reorder.ts behavior.",
+					// next-step-011 pruned in plan pl-874d step 4: src/reorder.ts was deleted in
+					// slice 0, so the rule that rewrote this input to a short dead-path output is
+					// gone. The reorder.ts-referencing input now truncates unchanged (120-char cap).
+					"Reconcile the 2 failing vitest expectations in test/index.test.ts with the new src/reorder.ts behavior, especially the…",
 			},
 			expectedEchoLines: [
 				"Objective context: Refine persisted focus echo cleanup for direct /compact-plus status output",
 				"Active files context: src/reorder.ts, test/index.test.ts, src/index.ts",
 				"Blockers context: Live /compact-plus status shows noisy persisted echo content; Confirm stale Active files leakage; Update test expectations for path-preference active files",
-				"Previously inferred next step: Update test/index.test.ts expectations for current src/reorder.ts behavior.",
+				"Previously inferred next step: Reconcile the 2 failing vitest expectations in test/index.test.ts with the new src/reorder.ts behavior, especially the…",
 			],
 			rejectedEchoText: [
 				"Use the latest live /compact-plus status snapshot as the source of truth",

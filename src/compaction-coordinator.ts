@@ -10,10 +10,10 @@ import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
+import { buildPersistedFocusEcho } from "./focus-echo/index.js";
 import { executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
-import { buildPersistedFocusEcho } from "./reorder.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import {
 	extractCurrentFocus,

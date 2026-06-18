@@ -73,7 +73,10 @@ describe("focus echo normalizer characterization", () => {
 				"Continue testing through the public FocusEchoDraft seam.",
 			],
 			dependencyChain: [
-				"buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts",
+				// dependency-005 pruned in plan pl-874d step 4 (src/reorder.ts deleted in
+				// slice 0; rule output named a dead path). Reorder.ts-referencing input now
+				// passes through unchanged per the behavior_invariant.
+				"buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts normalize summary fields",
 				"status validation",
 			],
 			nextStep:

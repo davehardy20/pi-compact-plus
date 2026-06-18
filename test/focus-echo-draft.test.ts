@@ -5,7 +5,7 @@ import {
 	type FocusEchoDraft,
 	normalizeFocusEchoDraft,
 	parseFocusEcho,
-} from "../src/reorder.js";
+} from "../src/focus-echo/index.js";
 import { SOURCE_OF_TRUTH_STATUS_SUMMARY } from "./fixtures/focus-echo-goldens.js";
 
 describe("FocusEchoDraft seam", () => {
@@ -102,7 +102,9 @@ describe("FocusEchoDraft seam", () => {
 			decisions: ["Seam"],
 			dependencyChain: [
 				"src/index.ts",
-				"buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts",
+				// dependency-005 pruned in plan pl-874d step 4 (src/reorder.ts deleted in
+				// slice 0; rule output named a dead path). Input now passes through unchanged.
+				"buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts normalize summary fields",
 				"targeted test/index.test.ts coverage",
 				"live /compact-plus status validation",
 			],
