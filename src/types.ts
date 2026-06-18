@@ -112,11 +112,17 @@ export interface CompactionTelemetry {
 const compactPlusSettings = resolveCompactPlusSettings();
 
 export const COMPACT_PLUS_SETTINGS_PATH = compactPlusSettings.settingsPath;
+export const THRESHOLD_MODE = compactPlusSettings.thresholdMode;
 export const CHECKPOINT_CANDIDATE_PERCENT =
 	compactPlusSettings.checkpointThresholdPercent;
 export const STANDARD_THRESHOLD_PERCENT =
 	compactPlusSettings.standardThresholdPercent;
 export const HARD_THRESHOLD_PERCENT = compactPlusSettings.hardThresholdPercent;
+export const CHECKPOINT_CANDIDATE_TOKENS =
+	compactPlusSettings.checkpointThresholdTokens;
+export const STANDARD_THRESHOLD_TOKENS =
+	compactPlusSettings.standardThresholdTokens;
+export const HARD_THRESHOLD_TOKENS = compactPlusSettings.hardThresholdTokens;
 export const COOLDOWN_MS = compactPlusSettings.cooldownMs;
 export const CONTINUATION_PROMPT = "Continue with the current task.";
 export const CHECKPOINT_CUSTOM_TYPE = "compact-plus-checkpoint";

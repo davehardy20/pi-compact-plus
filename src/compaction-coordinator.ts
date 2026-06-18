@@ -12,7 +12,7 @@ import {
 } from "./compatibility.js";
 import { executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
-import { getModeFromUsage, modelKey } from "./policy.js";
+import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
 import { buildPersistedFocusEcho } from "./reorder.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import {
@@ -27,6 +27,7 @@ import {
 	type CompactionTelemetry,
 	type EffectiveUsage,
 	REGROWTH_TOKENS,
+	THRESHOLD_MODE,
 	type TriggerSource,
 } from "./types.js";
 
@@ -100,7 +101,7 @@ export class CompactionCoordinator {
 
 		if (usage.percent === null || usage.tokens === null) return;
 
-		const mode = getModeFromUsage(usage.percent);
+		const mode = getModeFromEffectiveUsage(usage);
 		if (!mode || mode === "checkpoint") return;
 
 		const now = Date.now();
@@ -130,7 +131,7 @@ export class CompactionCoordinator {
 		const autoFocus = extractCurrentFocusFromBranch(autoBranchView);
 
 		ctx.ui.notify(
-			`📦 Compact+ auto-compaction triggered at ${usage.percent.toFixed(0)}% (${usage.tokens.toLocaleString()} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode} (${triggerSource})`,
+			`📦 Compact+ auto-compaction triggered at ${usage.percent.toFixed(0)}% (${usage.tokens.toLocaleString()} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode}, thresholdMode: ${THRESHOLD_MODE} (${triggerSource})`,
 			"info",
 		);
 
@@ -168,7 +169,7 @@ export class CompactionCoordinator {
 				: "turn_end"
 			: "command";
 		const triggerReason = this.state.lastTriggerAuto
-			? "auto at threshold"
+			? `auto at ${THRESHOLD_MODE} threshold`
 			: `manual /compact-plus ${mode}`;
 		const previousSummaryPresent = event.preparation.messagesToSummarize.some(
 			(m) =>
