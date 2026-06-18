@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import * as normalizationRules from "../src/focus-echo/normalization-rules.js";
+import * as normalizationRules from "../src/focus-echo/rules/index.js";
 import {
 	normalizeActiveFiles,
 	normalizeBlockers,
@@ -8,7 +8,7 @@ import {
 	normalizeDependencyChain,
 	normalizeNextStep,
 	normalizeObjective,
-} from "../src/focus-echo/normalization-rules.js";
+} from "../src/focus-echo/rules/index.js";
 
 describe("focus echo normalization rules", () => {
 	it("keeps raw rule taxonomy private behind semantic helpers", () => {
@@ -79,7 +79,10 @@ describe("focus echo normalization rules", () => {
 				"-> remaining status validation",
 			]),
 		).toEqual([
-			"buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts",
+			// dependency-005 was pruned in plan pl-874d step 4 (src/reorder.ts deleted in
+			// slice 0; the rule rewrote to a dead-path output). With the rule gone, this
+			// reorder.ts-referencing input passes through unchanged (see behavior_invariant).
+			"buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts normalize summary fields",
 			"status validation",
 		]);
 		expect(

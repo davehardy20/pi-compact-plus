@@ -2,9 +2,9 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
+import { reorderForPositioning } from "./focus-echo/index.js";
 import { loadTelemetryWithDiagnostics } from "./persist.js";
 import { buildBranchInstructions } from "./prompts.js";
-import { reorderForPositioning } from "./reorder.js";
 import { createSessionBranchView } from "./session-branch-view.js";
 import { extractCurrentFocusFromBranch } from "./session-evidence.js";
 import type { CompactionState } from "./state.js";

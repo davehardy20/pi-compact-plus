@@ -50,7 +50,7 @@ const {
 	detectCompactionSummary,
 	reorderForPositioning,
 	hasAdversarialPatterns,
-} = await import("../src/reorder.js");
+} = await import("../src/focus-echo/index.js");
 const {
 	buildBranchInstructions,
 	buildCurrentFocusBlock,
@@ -1656,7 +1656,9 @@ Refine persisted focus echo normalization for direct /compact-plus status output
 			"Latest direct live Last focus echo is too noisy",
 		);
 		expect(echo).toContain(
-			"Previously inferred next step: Refine buildPersistedFocusEcho(summaryText) normalization in src/reorder.ts against the captured live focus echo.",
+			// next-step-005 pruned in plan pl-874d step 4 (src/reorder.ts deleted in slice 0;
+			// rule output named a dead path). Input now truncates unchanged (120-char cap).
+			"Previously inferred next step: Refine src/reorder.ts around buildPersistedFocusEcho(summaryText) using the captured live Last focus echo, specifically…",
 		);
 	});
 
@@ -1699,7 +1701,9 @@ Refine persisted focus echo normalization for direct /compact-plus status output
 			"The latest direct live Last focus echo was too noisy before the newest heuristic edits",
 		);
 		expect(echo).toContain(
-			"Previously inferred next step: Refine src/reorder.ts using the newly pasted live focus echo to clean Objective and Blockers.",
+			// next-step-006 pruned in plan pl-874d step 4 (src/reorder.ts deleted in slice 0;
+			// rule output named a dead path). Input now truncates unchanged (120-char cap).
+			"Previously inferred next step: Refine src/reorder.ts again using the newly pasted live Last focus echo, targeting the still-noisy Objective, Blockers,…",
 		);
 	});
 
@@ -1759,7 +1763,10 @@ Use the newly pasted post-compaction /compact-plus status snapshot as the source
 		);
 		expect(echo).not.toContain("Blockers retains stale/literal text");
 		expect(echo).toContain(
-			"Dependency chain context: Persisted focus-echo cleanup for /compact-plus status → SessionCompactEvent.compactionEntry.summary → buildPersistedFocusEcho()/parseFocusEcho() in src/reorder.ts → summary-normalization helpers in src/reorder.ts",
+			// dependency-005 + dependency-006 pruned in plan pl-874d step 4 (src/reorder.ts
+			// deleted in slice 0; both rule outputs named a dead path). Segments now pass
+			// through unchanged (each truncated to the 120-char echo cap).
+			"Dependency chain context: Persisted focus-echo cleanup for /compact-plus status → SessionCompactEvent.compactionEntry.summary → buildPersistedFocusEcho(summaryText) / parseFocusEcho() in src/reorder.ts → summary-normalization helpers including normalizeBlockerItem, normalizeNextStep, extractBlockers(), extractActiveFiles(…",
 		);
 		expect(echo).toContain(
 			"Previously inferred next step: Reproduce the live focus echo in test/index.test.ts and refine buildPersistedFocusEcho(summaryText).",
@@ -1965,7 +1972,9 @@ Use the latest live /compact-plus status snapshot as the source of truth to cont
 			"Blockers context: Live /compact-plus status shows noisy persisted echo content; Confirm stale Active files leakage; Update test expectations for path-preference active files",
 		);
 		expect(echo).toContain(
-			"Previously inferred next step: Update test/index.test.ts expectations for current src/reorder.ts behavior.",
+			// next-step-011 pruned in plan pl-874d step 4 (src/reorder.ts deleted in slice 0;
+			// rule output named a dead path). Input now truncates unchanged (120-char cap).
+			"Previously inferred next step: Reconcile the 2 failing vitest expectations in test/index.test.ts with the new src/reorder.ts behavior, especially the…",
 		);
 	});
 

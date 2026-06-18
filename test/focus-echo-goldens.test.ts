@@ -8,7 +8,7 @@ import {
 	FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY,
 	parseFocusEcho,
 	reorderForPositioning,
-} from "../src/reorder.js";
+} from "../src/focus-echo/index.js";
 import {
 	focusEchoGoldens,
 	LIVE_STATUS_SOURCE_OF_TRUTH_VARIANTS,

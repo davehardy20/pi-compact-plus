@@ -7,7 +7,7 @@ import {
 	normalizeDependencyChain,
 	normalizeNextStep,
 	normalizeObjective,
-} from "./normalization-rules.js";
+} from "./rules/index.js";
 
 /**
  * Normalize raw Compact+ summary fields into the rendered focus-echo model.
