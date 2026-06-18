@@ -444,6 +444,36 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(__test__.getSelectedMode()).toBe("hard");
 	});
 
+	it("auto-compacts a 1M-token model with token-only usage (percent null)", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const messageEndHandler = pi.events.get("message_end")?.[0];
+		expect(messageEndHandler).toBeDefined();
+		if (!messageEndHandler) throw new Error("handler not registered");
+
+		const ctx = createMockCtx({
+			contextWindow: 1_000_000,
+			contextUsage: { tokens: 200_000, percent: null },
+		});
+
+		await messageEndHandler(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					stopReason: "stop",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			},
+			ctx,
+		);
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(__test__.getSelectedMode()).toBe("standard");
+	});
+
 	it("extracts manual compaction focus from one captured branch-view message projection", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
