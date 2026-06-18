@@ -12,7 +12,7 @@ import {
 } from "./compatibility.js";
 import { executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
-import { getModeFromUsage, modelKey } from "./policy.js";
+import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
 import { buildPersistedFocusEcho } from "./reorder.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import {
@@ -27,6 +27,7 @@ import {
 	type CompactionTelemetry,
 	type EffectiveUsage,
 	REGROWTH_TOKENS,
+	THRESHOLD_MODE,
 	type TriggerSource,
 } from "./types.js";
 
@@ -98,15 +99,24 @@ export class CompactionCoordinator {
 		const model = ctx.model;
 		if (!usage || !model) return;
 
-		if (usage.percent === null || usage.tokens === null) return;
+		// Token-aware thresholds mean a single usage metric can be enough: percent
+		// mode needs percent, tokens mode needs tokens, and effective_cap can
+		// trigger from either band. Only bail when no metric is available at all;
+		// the selected-mode check below handles mode/metric mismatches.
+		if (usage.percent === null && usage.tokens === null) return;
 
-		const mode = getModeFromUsage(usage.percent);
+		const mode = getModeFromEffectiveUsage(usage);
 		if (!mode || mode === "checkpoint") return;
 
 		const now = Date.now();
 		if (this.state.isOnCooldown(COOLDOWN_MS)) return;
 
-		if (this.state.isRegrowthBelowThreshold(usage.tokens, REGROWTH_TOKENS)) {
+		// Regrowth can only be measured against a token count; without one, rely
+		// on the cooldown guard alone rather than blocking compaction.
+		if (
+			usage.tokens !== null &&
+			this.state.isRegrowthBelowThreshold(usage.tokens, REGROWTH_TOKENS)
+		) {
 			return;
 		}
 
@@ -129,8 +139,13 @@ export class CompactionCoordinator {
 		const autoBranchView = createCurrentSessionBranchView(ctx);
 		const autoFocus = extractCurrentFocusFromBranch(autoBranchView);
 
+		const percentText =
+			usage.percent === null ? "unknown" : `${usage.percent.toFixed(0)}%`;
+		const tokensText =
+			usage.tokens === null ? "unknown" : usage.tokens.toLocaleString();
+
 		ctx.ui.notify(
-			`📦 Compact+ auto-compaction triggered at ${usage.percent.toFixed(0)}% (${usage.tokens.toLocaleString()} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode} (${triggerSource})`,
+			`📦 Compact+ auto-compaction triggered at ${percentText} (${tokensText} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode}, thresholdMode: ${THRESHOLD_MODE} (${triggerSource})`,
 			"info",
 		);
 
@@ -168,7 +183,7 @@ export class CompactionCoordinator {
 				: "turn_end"
 			: "command";
 		const triggerReason = this.state.lastTriggerAuto
-			? "auto at threshold"
+			? `auto at ${THRESHOLD_MODE} threshold`
 			: `manual /compact-plus ${mode}`;
 		const previousSummaryPresent = event.preparation.messagesToSummarize.some(
 			(m) =>

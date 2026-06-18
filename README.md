@@ -20,14 +20,40 @@ lightweight checkpoints.
 
 ### Auto-compaction triggers
 
-Compact+ replaces Pi's single-threshold early-compaction trigger with a tiered policy:
+Compact+ replaces Pi's single-threshold early-compaction trigger with a tiered
+policy that supports three threshold modes:
 
-| Band | Usage | Behavior |
+| Mode | Behaviour |
+| --- | --- |
+| `percent` | Trigger only by percentage of the model context window |
+| `tokens` | Trigger only by absolute token count |
+| `effective_cap` | Trigger by whichever threshold reaches a more severe compaction mode first |
+
+Default mode: `effective_cap`.
+
+Default percent thresholds:
+
+| Band | Usage | Behaviour |
 | --- | --- | --- |
 | Normal | < 65% | No auto-compaction |
 | Checkpoint candidate | 65–69% | Eligible for checkpoint (no auto-compact) |
 | Standard | 70–89% | Auto standard compaction |
 | Hard | ≥ 90% | Auto hard compaction (aggressive pruning) |
+
+Default token thresholds:
+
+| Band | Tokens | Behaviour |
+| --- | --- | --- |
+| Normal | < 185,000 | No auto-compaction |
+| Checkpoint candidate | 185,000–199,999 | Eligible for checkpoint (no auto-compact) |
+| Standard | 200,000–259,999 | Auto standard compaction |
+| Hard | ≥ 260,000 | Auto hard compaction (aggressive pruning) |
+
+For very large context models, such as 1M-token models, `effective_cap` prevents
+auto-compaction from waiting until hundreds of thousands of tokens beyond the
+practical working-memory range. A 1M-token model at 20% usage still hits the
+200,000 standard token threshold, so Compact+ standard-compacts there instead of
+waiting for 70% (~700k tokens).
 
 Auto-compaction is triggered at `message_end` and `turn_end` with cooldown and regrowth guards to avoid thrashing.
 
@@ -156,14 +182,19 @@ Compact+ supports threshold tuning through either environment variables or your
 Pi agent `settings.json` file at `~/.pi/agent/settings.json`. Environment
 variables take precedence over `settings.json` values.
 
-Default profile: checkpoint candidate at `65%`, standard compaction at `70%`,
-hard compaction at `90%`.
+Default profile: `effective_cap` threshold mode; checkpoint candidate at `65%`
+/ `185,000` tokens, standard compaction at `70%` / `200,000` tokens, hard
+compaction at `90%` / `260,000` tokens.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `COMPACT_PLUS_CHECKPOINT_THRESHOLD` | 65 | Checkpoint-candidate threshold |
-| `COMPACT_PLUS_STANDARD_THRESHOLD` | 70 | Standard compaction threshold |
-| `COMPACT_PLUS_HARD_THRESHOLD` | 90 | Hard compaction threshold |
+| `COMPACT_PLUS_THRESHOLD_MODE` | `effective_cap` | Threshold strategy: `percent`, `tokens`, or `effective_cap` |
+| `COMPACT_PLUS_CHECKPOINT_THRESHOLD` | 65 | Checkpoint-candidate threshold (percent) |
+| `COMPACT_PLUS_STANDARD_THRESHOLD` | 70 | Standard compaction threshold (percent) |
+| `COMPACT_PLUS_HARD_THRESHOLD` | 90 | Hard compaction threshold (percent) |
+| `COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS` | 185000 | Checkpoint-candidate token threshold |
+| `COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS` | 200000 | Standard compaction token threshold |
+| `COMPACT_PLUS_HARD_THRESHOLD_TOKENS` | 260000 | Hard compaction token threshold |
 | `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Auto-compaction cooldown in ms |
 | `COMPACT_PLUS_SETTINGS_PATH` | `~/.pi/agent/settings.json` | Optional JSON config path |
 | `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `false` | Enable experimental tool-output pruning |
@@ -190,10 +221,14 @@ Example `settings.json`:
 
 ```json
 {
+  "thresholdMode": "effective_cap",
   "thresholds": {
     "checkpoint": 65,
     "standard": 70,
-    "hard": 90
+    "hard": 90,
+    "checkpointTokens": 185000,
+    "standardTokens": 200000,
+    "hardTokens": 260000
   },
   "cooldownMs": 120000,
   "experimentalToolOutputPruning": true,
@@ -203,10 +238,14 @@ Example `settings.json`:
 }
 ```
 
-Top-level keys are also supported: `checkpointThresholdPercent`,
-`standardThresholdPercent`, `hardThresholdPercent`, and `cooldownMs`. Invalid,
-missing, or overlapping thresholds fall back safely to the default `65 / 70 / 90`
-threshold profile.
+Top-level keys are also supported: `thresholdMode`,
+`checkpointThresholdPercent`, `standardThresholdPercent`,
+`hardThresholdPercent`, `checkpointThresholdTokens`,
+`standardThresholdTokens`, `hardThresholdTokens`, and `cooldownMs`. Invalid,
+missing, or overlapping percent thresholds fall back safely to the default
+`65 / 70 / 90` percent profile, and invalid or overlapping token thresholds fall
+back to the default `185,000 / 200,000 / 260,000` token profile. Token
+thresholds are clamped to the range `50,000`–`2,000,000`.
 
 Threshold and cooldown constants are resolved when the extension module loads, so
 changes to those values require `/reload` or a Pi restart. Tool-output pruning
@@ -283,7 +322,8 @@ Run `/compact-plus status` for detailed runtime state:
 
 - current usage percent, tokens, and context window
 - usage source (native or estimated)
-- current band and thresholds
+- current threshold mode, percent band, token band, and effective band
+- percent and token thresholds
 - when Pi has not produced a post-compaction assistant usage yet, status will
   show usage as unknown instead of estimating from the pre-compaction branch
 - cooldown state

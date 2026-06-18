@@ -6,12 +6,20 @@ export interface CompactPlusSettingsFile {
 	checkpointThresholdPercent?: unknown;
 	standardThresholdPercent?: unknown;
 	hardThresholdPercent?: unknown;
+	thresholdMode?: unknown;
+	checkpointThresholdTokens?: unknown;
+	standardThresholdTokens?: unknown;
+	hardThresholdTokens?: unknown;
 	cooldownMs?: unknown;
 	thresholds?: {
 		checkpoint?: unknown;
 		checkpointCandidate?: unknown;
 		standard?: unknown;
 		hard?: unknown;
+		checkpointTokens?: unknown;
+		checkpointCandidateTokens?: unknown;
+		standardTokens?: unknown;
+		hardTokens?: unknown;
 	};
 	experimentalToolOutputPruning?: unknown;
 	toolOutputPruningMode?: unknown;
@@ -26,10 +34,16 @@ export interface CompactPlusSettingsFile {
 	toolOutputPruneIncludedTools?: unknown;
 }
 
+export type CompactPlusThresholdMode = "percent" | "tokens" | "effective_cap";
+
 export interface ResolvedCompactPlusSettings {
+	thresholdMode: CompactPlusThresholdMode;
 	checkpointThresholdPercent: number;
 	standardThresholdPercent: number;
 	hardThresholdPercent: number;
+	checkpointThresholdTokens: number;
+	standardThresholdTokens: number;
+	hardThresholdTokens: number;
 	cooldownMs: number;
 	settingsPath: string;
 	experimentalToolOutputPruning: boolean;
@@ -53,9 +67,13 @@ export interface ResolvedCompactPlusSettings {
 }
 
 export const DEFAULT_COMPACT_PLUS_SETTINGS = {
+	thresholdMode: "effective_cap" as const,
 	checkpointThresholdPercent: 65,
 	standardThresholdPercent: 70,
 	hardThresholdPercent: 90,
+	checkpointThresholdTokens: 185_000,
+	standardThresholdTokens: 200_000,
+	hardThresholdTokens: 260_000,
 	cooldownMs: 120_000,
 	experimentalToolOutputPruning: false,
 	toolOutputPruningMode: "off" as const,
@@ -140,7 +158,7 @@ export function resolveCompactPlusSettings(
 	fileSettings: CompactPlusSettingsFile = loadCompactPlusSettingsFile(env),
 ): ResolvedCompactPlusSettings {
 	const settingsPath = getSettingsPath(env);
-	const checkpointThresholdPercent = resolvePercentSetting(
+	let checkpointThresholdPercent = resolvePercentSetting(
 		env.COMPACT_PLUS_CHECKPOINT_THRESHOLD,
 		firstDefined(
 			fileSettings.checkpointThresholdPercent,
@@ -149,7 +167,7 @@ export function resolveCompactPlusSettings(
 		),
 		DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdPercent,
 	);
-	const standardThresholdPercent = resolvePercentSetting(
+	let standardThresholdPercent = resolvePercentSetting(
 		env.COMPACT_PLUS_STANDARD_THRESHOLD,
 		firstDefined(
 			fileSettings.standardThresholdPercent,
@@ -157,13 +175,46 @@ export function resolveCompactPlusSettings(
 		),
 		DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdPercent,
 	);
-	const hardThresholdPercent = resolvePercentSetting(
+	let hardThresholdPercent = resolvePercentSetting(
 		env.COMPACT_PLUS_HARD_THRESHOLD,
 		firstDefined(
 			fileSettings.hardThresholdPercent,
 			fileSettings.thresholds?.hard,
 		),
 		DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdPercent,
+	);
+
+	const thresholdMode = resolveEnumSetting(
+		env.COMPACT_PLUS_THRESHOLD_MODE,
+		fileSettings.thresholdMode,
+		["percent", "tokens", "effective_cap"],
+		DEFAULT_COMPACT_PLUS_SETTINGS.thresholdMode,
+	);
+
+	let checkpointThresholdTokens = resolveTokenThresholdSetting(
+		env.COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS,
+		firstDefined(
+			fileSettings.checkpointThresholdTokens,
+			fileSettings.thresholds?.checkpointTokens,
+			fileSettings.thresholds?.checkpointCandidateTokens,
+		),
+		DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdTokens,
+	);
+	let standardThresholdTokens = resolveTokenThresholdSetting(
+		env.COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS,
+		firstDefined(
+			fileSettings.standardThresholdTokens,
+			fileSettings.thresholds?.standardTokens,
+		),
+		DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdTokens,
+	);
+	let hardThresholdTokens = resolveTokenThresholdSetting(
+		env.COMPACT_PLUS_HARD_THRESHOLD_TOKENS,
+		firstDefined(
+			fileSettings.hardThresholdTokens,
+			fileSettings.thresholds?.hardTokens,
+		),
+		DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdTokens,
 	);
 	const cooldownMs = resolvePositiveIntegerSetting(
 		env.COMPACT_PLUS_COOLDOWN_MS,
@@ -268,23 +319,32 @@ export function resolveCompactPlusSettings(
 		checkpointThresholdPercent >= standardThresholdPercent ||
 		standardThresholdPercent >= hardThresholdPercent
 	) {
-		return {
-			...DEFAULT_COMPACT_PLUS_SETTINGS,
-			settingsPath,
-			cooldownMs,
-			toolOutputPruneExcludedTools: [
-				...DEFAULT_COMPACT_PLUS_SETTINGS.toolOutputPruneExcludedTools,
-			],
-			toolOutputPruneIncludedTools: [
-				...DEFAULT_COMPACT_PLUS_SETTINGS.toolOutputPruneIncludedTools,
-			],
-		};
+		checkpointThresholdPercent =
+			DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdPercent;
+		standardThresholdPercent =
+			DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdPercent;
+		hardThresholdPercent = DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdPercent;
+	}
+
+	if (
+		checkpointThresholdTokens >= standardThresholdTokens ||
+		standardThresholdTokens >= hardThresholdTokens
+	) {
+		checkpointThresholdTokens =
+			DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdTokens;
+		standardThresholdTokens =
+			DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdTokens;
+		hardThresholdTokens = DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdTokens;
 	}
 
 	return {
+		thresholdMode,
 		checkpointThresholdPercent,
 		standardThresholdPercent,
 		hardThresholdPercent,
+		checkpointThresholdTokens,
+		standardThresholdTokens,
+		hardThresholdTokens,
 		cooldownMs,
 		settingsPath,
 		experimentalToolOutputPruning,
@@ -394,4 +454,19 @@ function resolveStringArraySetting(
 
 function clampPositiveInteger(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, value));
+}
+
+const TOKEN_THRESHOLD_MIN = 50_000;
+const TOKEN_THRESHOLD_MAX = 2_000_000;
+
+function resolveTokenThresholdSetting(
+	envValue: string | undefined,
+	fileValue: unknown,
+	defaultValue: number,
+): number {
+	return clampPositiveInteger(
+		resolvePositiveIntegerSetting(envValue, fileValue, defaultValue),
+		TOKEN_THRESHOLD_MIN,
+		TOKEN_THRESHOLD_MAX,
+	);
 }

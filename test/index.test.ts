@@ -36,8 +36,15 @@ process.env.COMPACT_PLUS_SETTINGS_PATH = defaultSettingsPathForTests;
 const persist = await import("../src/persist.js");
 const piCore = await import("@earendil-works/pi-coding-agent");
 const { completeSimple } = await import("@earendil-works/pi-ai");
-const { formatStatusLines, getModeFromUsage, getUsageBandText, modelKey } =
-	await import("../src/policy.js");
+const {
+	formatStatusLines,
+	getModeFromEffectiveUsage,
+	getModeFromTokenUsage,
+	getModeFromUsage,
+	getTokenBandText,
+	getUsageBandText,
+	modelKey,
+} = await import("../src/policy.js");
 const {
 	buildPersistedFocusEcho,
 	detectCompactionSummary,
@@ -57,12 +64,16 @@ const {
 } = await import("../src/settings.js");
 const {
 	CHECKPOINT_CANDIDATE_PERCENT,
+	CHECKPOINT_CANDIDATE_TOKENS,
 	CHECKPOINT_CUSTOM_TYPE,
 	CONTINUATION_PROMPT,
 	COOLDOWN_MS,
 	HARD_THRESHOLD_PERCENT,
+	HARD_THRESHOLD_TOKENS,
 	REGROWTH_TOKENS,
 	STANDARD_THRESHOLD_PERCENT,
+	STANDARD_THRESHOLD_TOKENS,
+	THRESHOLD_MODE,
 } = await import("../src/types.js");
 const { default: compactPlusExtension, __test__ } = await import(
 	"../src/index.js"
@@ -341,6 +352,126 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 
 		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("auto-compacts a 1M-token model at 20% / 200,000 tokens under effective_cap", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const messageEndHandler = pi.events.get("message_end")?.[0];
+		expect(messageEndHandler).toBeDefined();
+		if (!messageEndHandler) throw new Error("handler not registered");
+
+		const ctx = createMockCtx({
+			contextWindow: 1_000_000,
+			contextUsage: { tokens: 200_000, percent: 20 },
+		});
+
+		await messageEndHandler(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					stopReason: "stop",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			},
+			ctx,
+		);
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(__test__.getSelectedMode()).toBe("standard");
+	});
+
+	it("does not auto-compact a 1M-token model below the token threshold", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const messageEndHandler = pi.events.get("message_end")?.[0];
+		expect(messageEndHandler).toBeDefined();
+		if (!messageEndHandler) throw new Error("handler not registered");
+
+		const ctx = createMockCtx({
+			contextWindow: 1_000_000,
+			contextUsage: { tokens: 180_000, percent: 18 },
+		});
+
+		await messageEndHandler(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					stopReason: "stop",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			},
+			ctx,
+		);
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(__test__.getSelectedMode()).toBeNull();
+	});
+
+	it("triggers hard mode on a 1M-token model at the hard token threshold", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const messageEndHandler = pi.events.get("message_end")?.[0];
+		expect(messageEndHandler).toBeDefined();
+		if (!messageEndHandler) throw new Error("handler not registered");
+
+		const ctx = createMockCtx({
+			contextWindow: 1_000_000,
+			contextUsage: { tokens: 260_000, percent: 26 },
+		});
+
+		await messageEndHandler(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					stopReason: "stop",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			},
+			ctx,
+		);
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(__test__.getSelectedMode()).toBe("hard");
+	});
+
+	it("auto-compacts a 1M-token model with token-only usage (percent null)", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const messageEndHandler = pi.events.get("message_end")?.[0];
+		expect(messageEndHandler).toBeDefined();
+		if (!messageEndHandler) throw new Error("handler not registered");
+
+		const ctx = createMockCtx({
+			contextWindow: 1_000_000,
+			contextUsage: { tokens: 200_000, percent: null },
+		});
+
+		await messageEndHandler(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					stopReason: "stop",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			},
+			ctx,
+		);
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(__test__.getSelectedMode()).toBe("standard");
 	});
 
 	it("extracts manual compaction focus from one captured branch-view message projection", async () => {
@@ -804,8 +935,18 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining(
-				"Thresholds: checkpoint=65% standard=70% hard=90%",
+				"    percent checkpoint=65% standard=70% hard=90%",
 			),
+			"info",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"    tokens checkpoint=185,000 standard=200,000 hard=260,000",
+			),
+			"info",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Threshold mode: effective_cap"),
 			"info",
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -2359,6 +2500,7 @@ Continue pi-compact-plus-d843 in /Users/dave/tools/pi-compact-plus by tightening
 			contextWindow: 272000,
 			usageSource: "unknown",
 			band: "unknown",
+			effectiveBand: null,
 			selectedMode: null,
 			isCompacting: false,
 			cooldownActive: false,
@@ -2438,6 +2580,134 @@ describe("Compact+ threshold logic", () => {
 	});
 });
 
+describe("Compact+ token threshold logic", () => {
+	it("returns null mode below checkpoint candidate token threshold", () => {
+		expect(getModeFromTokenUsage(184_999)).toBeNull();
+	});
+
+	it("returns checkpoint mode at 185,000 tokens", () => {
+		expect(getModeFromTokenUsage(185_000)).toBe("checkpoint");
+	});
+
+	it("returns standard mode at 200,000 tokens", () => {
+		expect(getModeFromTokenUsage(200_000)).toBe("standard");
+	});
+
+	it("returns hard mode at 260,000 tokens", () => {
+		expect(getModeFromTokenUsage(260_000)).toBe("hard");
+	});
+
+	it("returns null for unknown token usage", () => {
+		expect(getModeFromTokenUsage(null)).toBeNull();
+	});
+
+	it("token band text matches configured thresholds", () => {
+		expect(getTokenBandText(100_000)).toBe("normal (< 185,000 tokens)");
+		expect(getTokenBandText(190_000)).toBe(
+			"checkpoint candidate (185,000-199,999 tokens)",
+		);
+		expect(getTokenBandText(220_000)).toBe("standard (200,000-259,999 tokens)");
+		expect(getTokenBandText(300_000)).toBe("hard (>= 260,000 tokens)");
+	});
+});
+
+describe("Compact+ effective-cap threshold policy", () => {
+	const nativeUsage = (overrides: {
+		percent: number;
+		tokens: number;
+		contextWindow: number;
+	}) => ({
+		percent: overrides.percent,
+		tokens: overrides.tokens,
+		contextWindow: overrides.contextWindow,
+		source: "native" as const,
+	});
+
+	it("triggers standard compaction on a 1M model at 20% / 200,000 tokens", () => {
+		expect(
+			getModeFromEffectiveUsage(
+				nativeUsage({ percent: 20, tokens: 200_000, contextWindow: 1_000_000 }),
+			),
+		).toBe("standard");
+	});
+
+	it("triggers standard compaction on a small model by percent alone", () => {
+		expect(
+			getModeFromEffectiveUsage(
+				nativeUsage({ percent: 70, tokens: 90_000, contextWindow: 128_000 }),
+			),
+		).toBe("standard");
+	});
+
+	it("triggers hard compaction when token band is more severe than percent", () => {
+		expect(
+			getModeFromEffectiveUsage(
+				nativeUsage({ percent: 26, tokens: 260_000, contextWindow: 1_000_000 }),
+			),
+		).toBe("hard");
+	});
+
+	it("returns null when neither band crosses a threshold", () => {
+		expect(
+			getModeFromEffectiveUsage(
+				nativeUsage({ percent: 18, tokens: 180_000, contextWindow: 1_000_000 }),
+			),
+		).toBeNull();
+	});
+
+	it("preserves percent behaviour on a 272k model at 70%", () => {
+		expect(
+			getModeFromEffectiveUsage(
+				nativeUsage({ percent: 70, tokens: 190_400, contextWindow: 272_000 }),
+			),
+		).toBe("standard");
+	});
+});
+
+describe("Compact+ threshold mode dispatch", () => {
+	// Usage where percent and token bands disagree: percent is below any
+	// threshold, tokens are at standard. Each mode should pick its own band.
+	const usage = {
+		percent: 20,
+		tokens: 200_000,
+		contextWindow: 1_000_000,
+		source: "native" as const,
+	};
+
+	it("percent mode ignores token thresholds and returns null below 65%", () => {
+		expect(getModeFromEffectiveUsage(usage, "percent")).toBeNull();
+	});
+
+	it("percent mode triggers by percent even when tokens are well below threshold", () => {
+		const highPercentLowTokens = {
+			percent: 85,
+			tokens: 50_000,
+			contextWindow: 200_000,
+			source: "native" as const,
+		};
+		expect(getModeFromEffectiveUsage(highPercentLowTokens, "percent")).toBe(
+			"standard",
+		);
+	});
+
+	it("tokens mode ignores percent and triggers on token count alone", () => {
+		expect(getModeFromEffectiveUsage(usage, "tokens")).toBe("standard");
+	});
+
+	it("effective_cap picks the more severe of the two bands", () => {
+		expect(getModeFromEffectiveUsage(usage, "effective_cap")).toBe("standard");
+		const percentOnlyStandard = {
+			percent: 75,
+			tokens: 10_000,
+			contextWindow: 200_000,
+			source: "native" as const,
+		};
+		expect(
+			getModeFromEffectiveUsage(percentOnlyStandard, "effective_cap"),
+		).toBe("standard");
+	});
+});
+
 describe("Compact+ model key", () => {
 	it("builds model key from provider/id", () => {
 		expect(modelKey({ provider: "anthropic", id: "claude-4" })).toBe(
@@ -2452,9 +2722,13 @@ describe("Compact+ model key", () => {
 
 describe("Compact+ constants", () => {
 	it("exports expected threshold constants", () => {
+		expect(THRESHOLD_MODE).toBe("effective_cap");
 		expect(CHECKPOINT_CANDIDATE_PERCENT).toBe(65);
 		expect(STANDARD_THRESHOLD_PERCENT).toBe(70);
 		expect(HARD_THRESHOLD_PERCENT).toBe(90);
+		expect(CHECKPOINT_CANDIDATE_TOKENS).toBe(185_000);
+		expect(STANDARD_THRESHOLD_TOKENS).toBe(200_000);
+		expect(HARD_THRESHOLD_TOKENS).toBe(260_000);
 		expect(COOLDOWN_MS).toBe(120_000);
 		expect(REGROWTH_TOKENS).toBe(1000);
 	});
@@ -2563,6 +2837,103 @@ describe("Compact+ constants", () => {
 			standardThresholdPercent: 70,
 			hardThresholdPercent: 90,
 			cooldownMs: 90_000,
+		});
+	});
+
+	it("defaults threshold mode to effective_cap and token thresholds to sensible values", () => {
+		const settings = resolveCompactPlusSettings({}, {});
+
+		expect(settings).toMatchObject({
+			thresholdMode: "effective_cap",
+			checkpointThresholdTokens: 185_000,
+			standardThresholdTokens: 200_000,
+			hardThresholdTokens: 260_000,
+		});
+	});
+
+	it("parses threshold mode and token thresholds from environment", () => {
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_THRESHOLD_MODE: "tokens",
+				COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS: "100000",
+				COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS: "123456",
+				COMPACT_PLUS_HARD_THRESHOLD_TOKENS: "150000",
+			},
+			{},
+		);
+
+		expect(settings.thresholdMode).toBe("tokens");
+		expect(settings.checkpointThresholdTokens).toBe(100_000);
+		expect(settings.standardThresholdTokens).toBe(123_456);
+		expect(settings.hardThresholdTokens).toBe(150_000);
+	});
+
+	it("parses token thresholds from settings.json-style config", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{
+				thresholdMode: "percent",
+				thresholds: {
+					checkpointTokens: 160_000,
+					standardTokens: 175_000,
+					hardTokens: 240_000,
+				},
+			},
+		);
+
+		expect(settings.thresholdMode).toBe("percent");
+		expect(settings.checkpointThresholdTokens).toBe(160_000);
+		expect(settings.standardThresholdTokens).toBe(175_000);
+		expect(settings.hardThresholdTokens).toBe(240_000);
+	});
+
+	it("falls back to default threshold mode for an unknown mode", () => {
+		const settings = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_THRESHOLD_MODE: "nonsense" },
+			{},
+		);
+
+		expect(settings.thresholdMode).toBe("effective_cap");
+	});
+
+	it("falls back to default token thresholds for an invalid ordering", () => {
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS: "300000",
+				COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS: "200000",
+				COMPACT_PLUS_HARD_THRESHOLD_TOKENS: "260000",
+			},
+			{},
+		);
+
+		expect(settings.checkpointThresholdTokens).toBe(185_000);
+		expect(settings.standardThresholdTokens).toBe(200_000);
+		expect(settings.hardThresholdTokens).toBe(260_000);
+	});
+
+	it("preserves unrelated valid settings when token thresholds are invalid", () => {
+		const settings = resolveCompactPlusSettings(
+			{
+				COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS: "300000",
+				COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS: "200000",
+				COMPACT_PLUS_HARD_THRESHOLD_TOKENS: "260000",
+			},
+			{
+				thresholdMode: "percent",
+				thresholds: { checkpoint: 60, standard: 70, hard: 90 },
+				cooldownMs: 90_000,
+			},
+		);
+
+		expect(settings).toMatchObject({
+			thresholdMode: "percent",
+			checkpointThresholdPercent: 60,
+			standardThresholdPercent: 70,
+			hardThresholdPercent: 90,
+			cooldownMs: 90_000,
+			checkpointThresholdTokens: 185_000,
+			standardThresholdTokens: 200_000,
+			hardThresholdTokens: 260_000,
 		});
 	});
 
