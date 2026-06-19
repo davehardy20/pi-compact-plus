@@ -93,6 +93,63 @@ export const DEFAULT_COMPACT_PLUS_SETTINGS = {
 	toolOutputPruneIncludedTools: [],
 } as const;
 
+export type CompactPlusThresholdSettings = Pick<
+	ResolvedCompactPlusSettings,
+	| "thresholdMode"
+	| "checkpointThresholdPercent"
+	| "standardThresholdPercent"
+	| "hardThresholdPercent"
+	| "checkpointThresholdTokens"
+	| "standardThresholdTokens"
+	| "hardThresholdTokens"
+	| "cooldownMs"
+>;
+
+export const DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS = {
+	thresholdMode: DEFAULT_COMPACT_PLUS_SETTINGS.thresholdMode,
+	checkpointThresholdPercent:
+		DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdPercent,
+	standardThresholdPercent:
+		DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdPercent,
+	hardThresholdPercent: DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdPercent,
+	checkpointThresholdTokens:
+		DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdTokens,
+	standardThresholdTokens:
+		DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdTokens,
+	hardThresholdTokens: DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdTokens,
+	cooldownMs: DEFAULT_COMPACT_PLUS_SETTINGS.cooldownMs,
+} satisfies CompactPlusThresholdSettings;
+
+/**
+ * Explicit threshold/cooldown DEFAULTS.
+ *
+ * These are the frozen baseline values used when no env var or settings-file
+ * value overrides them. They are intentionally separate from
+ * `resolveCompactPlusSettings()` so callers cannot confuse a DEFAULT with a
+ * runtime-resolved value: the defaults never read the environment or the
+ * settings file, while the resolver does.
+ *
+ * Naming convention: every export is prefixed `DEFAULT_` to make the
+ * default-vs-runtime distinction obvious at the call site. Runtime-resolved
+ * values must be obtained from `resolveCompactPlusSettings()`.
+ */
+export const DEFAULT_THRESHOLD_MODE: CompactPlusThresholdMode =
+	DEFAULT_COMPACT_PLUS_SETTINGS.thresholdMode;
+export const DEFAULT_CHECKPOINT_THRESHOLD_PERCENT: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdPercent;
+export const DEFAULT_STANDARD_THRESHOLD_PERCENT: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdPercent;
+export const DEFAULT_HARD_THRESHOLD_PERCENT: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdPercent;
+export const DEFAULT_CHECKPOINT_THRESHOLD_TOKENS: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.checkpointThresholdTokens;
+export const DEFAULT_STANDARD_THRESHOLD_TOKENS: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdTokens;
+export const DEFAULT_HARD_THRESHOLD_TOKENS: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdTokens;
+export const DEFAULT_COOLDOWN_MS: number =
+	DEFAULT_COMPACT_PLUS_SETTINGS.cooldownMs;
+
 export function parseEnvInt(
 	envVar: string | undefined,
 	defaultValue: number,
