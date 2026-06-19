@@ -20,14 +20,13 @@ import {
 	extractCurrentFocusFromBranch,
 	extractTextContent,
 } from "./session-evidence.js";
+import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
-	COOLDOWN_MS,
 	type CompactionMode,
 	type CompactionTelemetry,
 	type EffectiveUsage,
 	REGROWTH_TOKENS,
-	THRESHOLD_MODE,
 	type TriggerSource,
 } from "./types.js";
 
@@ -45,6 +44,7 @@ type SessionBeforeCompactResultLike = {
 export interface CompactionCoordinatorOptions {
 	state: CompactionState;
 	pi: ExtensionAPI;
+	thresholdSettings: CompactPlusThresholdSettings;
 	getEffectiveUsage: (ctx: ExtensionEventContext) => EffectiveUsage | null;
 	persistTelemetrySnapshot: () => void | Promise<void>;
 }
@@ -52,6 +52,7 @@ export interface CompactionCoordinatorOptions {
 export class CompactionCoordinator {
 	private readonly state: CompactionState;
 	private readonly pi: ExtensionAPI;
+	private readonly thresholdSettings: CompactPlusThresholdSettings;
 	private readonly getEffectiveUsage: (
 		ctx: ExtensionEventContext,
 	) => EffectiveUsage | null;
@@ -60,11 +61,13 @@ export class CompactionCoordinator {
 	constructor({
 		state,
 		pi,
+		thresholdSettings,
 		getEffectiveUsage,
 		persistTelemetrySnapshot,
 	}: CompactionCoordinatorOptions) {
 		this.state = state;
 		this.pi = pi;
+		this.thresholdSettings = thresholdSettings;
 		this.getEffectiveUsage = getEffectiveUsage;
 		this.persistTelemetrySnapshot = persistTelemetrySnapshot;
 	}
@@ -105,11 +108,11 @@ export class CompactionCoordinator {
 		// the selected-mode check below handles mode/metric mismatches.
 		if (usage.percent === null && usage.tokens === null) return;
 
-		const mode = getModeFromEffectiveUsage(usage);
+		const mode = getModeFromEffectiveUsage(usage, this.thresholdSettings);
 		if (!mode || mode === "checkpoint") return;
 
 		const now = Date.now();
-		if (this.state.isOnCooldown(COOLDOWN_MS)) return;
+		if (this.state.isOnCooldown(this.thresholdSettings.cooldownMs)) return;
 
 		// Regrowth can only be measured against a token count; without one, rely
 		// on the cooldown guard alone rather than blocking compaction.
@@ -145,7 +148,7 @@ export class CompactionCoordinator {
 			usage.tokens === null ? "unknown" : usage.tokens.toLocaleString();
 
 		ctx.ui.notify(
-			`📦 Compact+ auto-compaction triggered at ${percentText} (${tokensText} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode}, thresholdMode: ${THRESHOLD_MODE} (${triggerSource})`,
+			`📦 Compact+ auto-compaction triggered at ${percentText} (${tokensText} / ${model.contextWindow.toLocaleString()} tokens) — mode: ${mode}, thresholdMode: ${this.thresholdSettings.thresholdMode} (${triggerSource})`,
 			"info",
 		);
 
@@ -183,7 +186,7 @@ export class CompactionCoordinator {
 				: "turn_end"
 			: "command";
 		const triggerReason = this.state.lastTriggerAuto
-			? `auto at ${THRESHOLD_MODE} threshold`
+			? `auto at ${this.thresholdSettings.thresholdMode} threshold`
 			: `manual /compact-plus ${mode}`;
 		const previousSummaryPresent = event.preparation.messagesToSummarize.some(
 			(m) =>

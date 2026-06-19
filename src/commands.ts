@@ -14,7 +14,10 @@ import {
 } from "./policy.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
 import { extractSessionSnapshotFromBranch } from "./session-evidence.js";
-import { resolveCompactPlusSettings } from "./settings.js";
+import {
+	type CompactPlusThresholdSettings,
+	resolveCompactPlusSettings,
+} from "./settings.js";
 import type { CompactionState } from "./state.js";
 import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";
 import type { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
@@ -28,6 +31,7 @@ export interface CompactPlusCommandRegistryOptions {
 	state: CompactionState;
 	toolOutputPruning: ToolOutputPruningCoordinator;
 	compactionCoordinator: CompactionCoordinator;
+	thresholdSettings: CompactPlusThresholdSettings;
 	getEffectiveUsage: (ctx: ExtensionContext) => EffectiveUsage | null;
 	getMetadata: PackageMetadataResolver;
 }
@@ -53,6 +57,7 @@ export function registerCompactPlusCommands(
 		state,
 		toolOutputPruning,
 		compactionCoordinator,
+		thresholdSettings,
 		getEffectiveUsage,
 		getMetadata,
 	}: CompactPlusCommandRegistryOptions,
@@ -97,6 +102,7 @@ export function registerCompactPlusCommands(
 					lastFallbackReason: state.lastFallbackReason,
 					lastInjectedEcho: state.lastInjectedEcho,
 					telemetryPersistenceIssues: state.telemetryPersistenceIssues,
+					settings: thresholdSettings,
 				});
 				const lines = formatStatusLines(status);
 				lines.push(formatToolOutputPruningStatusForState(state));

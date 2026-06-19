@@ -57,9 +57,11 @@ async function persistTelemetrySnapshot(): Promise<void> {
 }
 
 export default function compactPlusExtension(pi: ExtensionAPI) {
+	const thresholdSettings = resolveCompactPlusSettings();
 	const compactionCoordinator = new CompactionCoordinator({
 		state,
 		pi,
+		thresholdSettings,
 		getEffectiveUsage,
 		persistTelemetrySnapshot,
 	});
@@ -75,6 +77,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		state,
 		toolOutputPruning,
 		compactionCoordinator,
+		thresholdSettings,
 		getEffectiveUsage,
 		getMetadata: getPackageMetadata,
 	});

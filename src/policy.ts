@@ -1,41 +1,48 @@
 import {
-	CHECKPOINT_CANDIDATE_PERCENT,
-	CHECKPOINT_CANDIDATE_TOKENS,
+	type CompactPlusThresholdSettings,
+	DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
+} from "./settings.js";
+import {
 	CHECKPOINT_NOTE_MAX_LENGTH,
 	CHECKPOINT_SCHEMA_VERSION,
 	type CheckpointData,
-	COOLDOWN_MS,
 	type CompactionMode,
 	type CompactionTelemetry,
 	type CompactPlusStatus,
-	type CompactPlusThresholdMode,
 	type EffectiveUsage,
-	HARD_THRESHOLD_PERCENT,
-	HARD_THRESHOLD_TOKENS,
 	type SessionSnapshot,
-	STANDARD_THRESHOLD_PERCENT,
-	STANDARD_THRESHOLD_TOKENS,
 	type TelemetryPersistenceIssue,
-	THRESHOLD_MODE,
 } from "./types.js";
+
+function resolveThresholdSettings(
+	settings: CompactPlusThresholdSettings | undefined,
+): CompactPlusThresholdSettings {
+	return settings ?? DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS;
+}
 
 export function getModeFromUsage(
 	percent: number | null,
+	settings?: CompactPlusThresholdSettings,
 ): CompactionMode | null {
+	const resolvedSettings = resolveThresholdSettings(settings);
 	if (percent === null) return null;
-	if (percent >= HARD_THRESHOLD_PERCENT) return "hard";
-	if (percent >= STANDARD_THRESHOLD_PERCENT) return "standard";
-	if (percent >= CHECKPOINT_CANDIDATE_PERCENT) return "checkpoint";
+	if (percent >= resolvedSettings.hardThresholdPercent) return "hard";
+	if (percent >= resolvedSettings.standardThresholdPercent) return "standard";
+	if (percent >= resolvedSettings.checkpointThresholdPercent) {
+		return "checkpoint";
+	}
 	return null;
 }
 
 export function getModeFromTokenUsage(
 	tokens: number | null,
+	settings?: CompactPlusThresholdSettings,
 ): CompactionMode | null {
+	const resolvedSettings = resolveThresholdSettings(settings);
 	if (tokens === null) return null;
-	if (tokens >= HARD_THRESHOLD_TOKENS) return "hard";
-	if (tokens >= STANDARD_THRESHOLD_TOKENS) return "standard";
-	if (tokens >= CHECKPOINT_CANDIDATE_TOKENS) return "checkpoint";
+	if (tokens >= resolvedSettings.hardThresholdTokens) return "hard";
+	if (tokens >= resolvedSettings.standardThresholdTokens) return "standard";
+	if (tokens >= resolvedSettings.checkpointThresholdTokens) return "checkpoint";
 	return null;
 }
 
@@ -61,12 +68,13 @@ export function highestSeverityMode(
 
 export function getModeFromEffectiveUsage(
 	usage: EffectiveUsage,
-	mode: CompactPlusThresholdMode = THRESHOLD_MODE,
+	settings?: CompactPlusThresholdSettings,
 ): CompactionMode | null {
-	const percentMode = getModeFromUsage(usage.percent);
-	const tokenMode = getModeFromTokenUsage(usage.tokens);
+	const resolvedSettings = resolveThresholdSettings(settings);
+	const percentMode = getModeFromUsage(usage.percent, resolvedSettings);
+	const tokenMode = getModeFromTokenUsage(usage.tokens, resolvedSettings);
 
-	switch (mode) {
+	switch (resolvedSettings.thresholdMode) {
 		case "percent":
 			return percentMode;
 		case "tokens":
@@ -76,23 +84,31 @@ export function getModeFromEffectiveUsage(
 	}
 }
 
-export function getUsageBandText(percent: number | null): string {
+export function getUsageBandText(
+	percent: number | null,
+	settings?: CompactPlusThresholdSettings,
+): string {
+	const resolvedSettings = resolveThresholdSettings(settings);
 	return getThresholdBandText(
 		percent,
-		CHECKPOINT_CANDIDATE_PERCENT,
-		STANDARD_THRESHOLD_PERCENT,
-		HARD_THRESHOLD_PERCENT,
+		resolvedSettings.checkpointThresholdPercent,
+		resolvedSettings.standardThresholdPercent,
+		resolvedSettings.hardThresholdPercent,
 		(value) => value.toString(),
 		"%",
 	);
 }
 
-export function getTokenBandText(tokens: number | null): string {
+export function getTokenBandText(
+	tokens: number | null,
+	settings?: CompactPlusThresholdSettings,
+): string {
+	const resolvedSettings = resolveThresholdSettings(settings);
 	return getThresholdBandText(
 		tokens,
-		CHECKPOINT_CANDIDATE_TOKENS,
-		STANDARD_THRESHOLD_TOKENS,
-		HARD_THRESHOLD_TOKENS,
+		resolvedSettings.checkpointThresholdTokens,
+		resolvedSettings.standardThresholdTokens,
+		resolvedSettings.hardThresholdTokens,
 		(value) => value.toLocaleString(),
 		" tokens",
 	);
@@ -166,9 +182,11 @@ export function formatCheckpointSummary(data: CheckpointData): string {
 export function getCooldownRemainingMs(
 	now: number,
 	lastCompactTime: number,
+	settings?: CompactPlusThresholdSettings,
 ): number {
+	const resolvedSettings = resolveThresholdSettings(settings);
 	const elapsed = now - lastCompactTime;
-	const remaining = COOLDOWN_MS - elapsed;
+	const remaining = resolvedSettings.cooldownMs - elapsed;
 	return remaining > 0 ? remaining : 0;
 }
 
@@ -181,25 +199,34 @@ export function buildStatusSnapshot(args: {
 	lastFallbackReason: string | null;
 	lastInjectedEcho: string | null;
 	telemetryPersistenceIssues?: TelemetryPersistenceIssue[];
+	settings?: CompactPlusThresholdSettings;
 }): CompactPlusStatus {
+	const settings = resolveThresholdSettings(args.settings);
 	const now = Date.now();
-	const cooldownRemainingMs = getCooldownRemainingMs(now, args.lastCompactTime);
+	const cooldownRemainingMs = getCooldownRemainingMs(
+		now,
+		args.lastCompactTime,
+		settings,
+	);
 	const usage = args.usage;
 	const effectiveBand =
 		usage === null
 			? null
-			: getModeFromEffectiveUsage({
-					percent: usage.percent,
-					tokens: usage.tokens,
-					contextWindow: usage.contextWindow,
-					source: usage.source,
-				});
+			: getModeFromEffectiveUsage(
+					{
+						percent: usage.percent,
+						tokens: usage.tokens,
+						contextWindow: usage.contextWindow,
+						source: usage.source,
+					},
+					settings,
+				);
 	return {
 		usagePercent: args.usage?.percent ?? null,
 		usageTokens: args.usage?.tokens ?? null,
 		contextWindow: args.usage?.contextWindow ?? null,
 		usageSource: args.usage?.source ?? "unknown",
-		band: getUsageBandText(args.usage?.percent ?? null),
+		band: getUsageBandText(args.usage?.percent ?? null, settings),
 		effectiveBand,
 		selectedMode: args.selectedMode,
 		isCompacting: args.isCompacting,
@@ -209,10 +236,12 @@ export function buildStatusSnapshot(args: {
 		lastFallbackReason: args.lastFallbackReason,
 		lastInjectedEcho: args.lastInjectedEcho,
 		telemetryPersistenceIssues: args.telemetryPersistenceIssues ?? [],
+		thresholdSettings: settings,
 	};
 }
 
 export function formatStatusLines(status: CompactPlusStatus): string[] {
+	const settings = resolveThresholdSettings(status.thresholdSettings);
 	const compactionFallback = status.lastCompaction?.fallbackReason ?? null;
 	const topLevelFallback =
 		status.lastFallbackReason &&
@@ -236,14 +265,14 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 		"📦 Compact+ status",
 		`  Usage: ${usagePercentText} (${usageTokensText} / ${contextWindowText} tokens)`,
 		`  Source: ${status.usageSource}`,
-		`  Threshold mode: ${THRESHOLD_MODE}`,
+		`  Threshold mode: ${settings.thresholdMode}`,
 		`  Percent band: ${status.band}`,
-		`  Token band: ${getTokenBandText(status.usageTokens)}`,
+		`  Token band: ${getTokenBandText(status.usageTokens, settings)}`,
 		`  Effective band: ${status.effectiveBand ?? "none"}`,
 		`  Thresholds:`,
-		`    percent checkpoint=${CHECKPOINT_CANDIDATE_PERCENT}% standard=${STANDARD_THRESHOLD_PERCENT}% hard=${HARD_THRESHOLD_PERCENT}%`,
-		`    tokens checkpoint=${CHECKPOINT_CANDIDATE_TOKENS.toLocaleString()} standard=${STANDARD_THRESHOLD_TOKENS.toLocaleString()} hard=${HARD_THRESHOLD_TOKENS.toLocaleString()}`,
-		`    cooldown=${COOLDOWN_MS / 1000}s`,
+		`    percent checkpoint=${settings.checkpointThresholdPercent}% standard=${settings.standardThresholdPercent}% hard=${settings.hardThresholdPercent}%`,
+		`    tokens checkpoint=${settings.checkpointThresholdTokens.toLocaleString()} standard=${settings.standardThresholdTokens.toLocaleString()} hard=${settings.hardThresholdTokens.toLocaleString()}`,
+		`    cooldown=${settings.cooldownMs / 1000}s`,
 		"  Config reload: threshold/cooldown changes require /reload or restart",
 		`  Selected mode: ${status.selectedMode ?? "none"}`,
 		`  Cooldown: ${status.cooldownActive ? `${Math.ceil(status.cooldownRemainingMs / 1000)}s remaining` : "ready"}`,

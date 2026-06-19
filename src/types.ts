@@ -1,6 +1,16 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CompactionExecutionPath } from "./compatibility.js";
-import { resolveCompactPlusSettings } from "./settings.js";
+import {
+	type CompactPlusThresholdSettings,
+	DEFAULT_CHECKPOINT_THRESHOLD_PERCENT,
+	DEFAULT_CHECKPOINT_THRESHOLD_TOKENS,
+	DEFAULT_COOLDOWN_MS,
+	DEFAULT_HARD_THRESHOLD_PERCENT,
+	DEFAULT_HARD_THRESHOLD_TOKENS,
+	DEFAULT_STANDARD_THRESHOLD_PERCENT,
+	DEFAULT_STANDARD_THRESHOLD_TOKENS,
+	DEFAULT_THRESHOLD_MODE,
+} from "./settings.js";
 
 export type { CompactPlusThresholdMode } from "./settings.js";
 
@@ -50,6 +60,7 @@ export interface CompactPlusStatus {
 	lastFallbackReason: string | null;
 	lastInjectedEcho: string | null;
 	telemetryPersistenceIssues: TelemetryPersistenceIssue[];
+	thresholdSettings?: CompactPlusThresholdSettings;
 }
 
 export interface CurrentFocus {
@@ -112,21 +123,21 @@ export interface CompactionTelemetry {
 	compatibilityReason?: string | null;
 }
 
-const compactPlusSettings = resolveCompactPlusSettings();
-
-export const COMPACT_PLUS_SETTINGS_PATH = compactPlusSettings.settingsPath;
-export const THRESHOLD_MODE = compactPlusSettings.thresholdMode;
+// Threshold/cooldown values are now DEFAULTS re-exported from the settings
+// defaults surface (see src/settings.ts). These are the frozen baseline
+// values only; runtime-resolved values (env/settings-file overrides) must be
+// obtained from resolveCompactPlusSettings(). The legacy names are preserved
+// here as re-exports so existing callers keep compiling while later plan
+// steps migrate policy/compaction/tests to the explicit settings seam.
+export const THRESHOLD_MODE = DEFAULT_THRESHOLD_MODE;
 export const CHECKPOINT_CANDIDATE_PERCENT =
-	compactPlusSettings.checkpointThresholdPercent;
-export const STANDARD_THRESHOLD_PERCENT =
-	compactPlusSettings.standardThresholdPercent;
-export const HARD_THRESHOLD_PERCENT = compactPlusSettings.hardThresholdPercent;
-export const CHECKPOINT_CANDIDATE_TOKENS =
-	compactPlusSettings.checkpointThresholdTokens;
-export const STANDARD_THRESHOLD_TOKENS =
-	compactPlusSettings.standardThresholdTokens;
-export const HARD_THRESHOLD_TOKENS = compactPlusSettings.hardThresholdTokens;
-export const COOLDOWN_MS = compactPlusSettings.cooldownMs;
+	DEFAULT_CHECKPOINT_THRESHOLD_PERCENT;
+export const STANDARD_THRESHOLD_PERCENT = DEFAULT_STANDARD_THRESHOLD_PERCENT;
+export const HARD_THRESHOLD_PERCENT = DEFAULT_HARD_THRESHOLD_PERCENT;
+export const CHECKPOINT_CANDIDATE_TOKENS = DEFAULT_CHECKPOINT_THRESHOLD_TOKENS;
+export const STANDARD_THRESHOLD_TOKENS = DEFAULT_STANDARD_THRESHOLD_TOKENS;
+export const HARD_THRESHOLD_TOKENS = DEFAULT_HARD_THRESHOLD_TOKENS;
+export const COOLDOWN_MS = DEFAULT_COOLDOWN_MS;
 export const CONTINUATION_PROMPT = "Continue with the current task.";
 export const CHECKPOINT_CUSTOM_TYPE = "compact-plus-checkpoint";
 export const REGROWTH_TOKENS = 1000;

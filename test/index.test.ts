@@ -37,6 +37,7 @@ const persist = await import("../src/persist.js");
 const piCore = await import("@earendil-works/pi-coding-agent");
 const { completeSimple } = await import("@earendil-works/pi-ai");
 const {
+	buildStatusSnapshot,
 	formatStatusLines,
 	getModeFromEffectiveUsage,
 	getModeFromTokenUsage,
@@ -58,23 +59,13 @@ const {
 } = await import("../src/prompts.js");
 const { getEffectiveUsage } = await import("../src/usage.js");
 const {
+	DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
 	getDefaultSettingsPath,
 	loadCompactPlusSettingsFile,
 	resolveCompactPlusSettings,
 } = await import("../src/settings.js");
-const {
-	CHECKPOINT_CANDIDATE_PERCENT,
-	CHECKPOINT_CANDIDATE_TOKENS,
-	CHECKPOINT_CUSTOM_TYPE,
-	CONTINUATION_PROMPT,
-	COOLDOWN_MS,
-	HARD_THRESHOLD_PERCENT,
-	HARD_THRESHOLD_TOKENS,
-	REGROWTH_TOKENS,
-	STANDARD_THRESHOLD_PERCENT,
-	STANDARD_THRESHOLD_TOKENS,
-	THRESHOLD_MODE,
-} = await import("../src/types.js");
+const { CHECKPOINT_CUSTOM_TYPE, CONTINUATION_PROMPT, REGROWTH_TOKENS } =
+	await import("../src/types.js");
 const { default: compactPlusExtension, __test__ } = await import(
 	"../src/index.js"
 );
@@ -2682,9 +2673,17 @@ describe("Compact+ threshold mode dispatch", () => {
 		contextWindow: 1_000_000,
 		source: "native" as const,
 	};
+	const thresholdSettingsWithMode = (
+		thresholdMode: "percent" | "tokens" | "effective_cap",
+	) => ({
+		...DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
+		thresholdMode,
+	});
 
 	it("percent mode ignores token thresholds and returns null below 65%", () => {
-		expect(getModeFromEffectiveUsage(usage, "percent")).toBeNull();
+		expect(
+			getModeFromEffectiveUsage(usage, thresholdSettingsWithMode("percent")),
+		).toBeNull();
 	});
 
 	it("percent mode triggers by percent even when tokens are well below threshold", () => {
@@ -2694,17 +2693,27 @@ describe("Compact+ threshold mode dispatch", () => {
 			contextWindow: 200_000,
 			source: "native" as const,
 		};
-		expect(getModeFromEffectiveUsage(highPercentLowTokens, "percent")).toBe(
-			"standard",
-		);
+		expect(
+			getModeFromEffectiveUsage(
+				highPercentLowTokens,
+				thresholdSettingsWithMode("percent"),
+			),
+		).toBe("standard");
 	});
 
 	it("tokens mode ignores percent and triggers on token count alone", () => {
-		expect(getModeFromEffectiveUsage(usage, "tokens")).toBe("standard");
+		expect(
+			getModeFromEffectiveUsage(usage, thresholdSettingsWithMode("tokens")),
+		).toBe("standard");
 	});
 
 	it("effective_cap picks the more severe of the two bands", () => {
-		expect(getModeFromEffectiveUsage(usage, "effective_cap")).toBe("standard");
+		expect(
+			getModeFromEffectiveUsage(
+				usage,
+				thresholdSettingsWithMode("effective_cap"),
+			),
+		).toBe("standard");
 		const percentOnlyStandard = {
 			percent: 75,
 			tokens: 10_000,
@@ -2712,7 +2721,10 @@ describe("Compact+ threshold mode dispatch", () => {
 			source: "native" as const,
 		};
 		expect(
-			getModeFromEffectiveUsage(percentOnlyStandard, "effective_cap"),
+			getModeFromEffectiveUsage(
+				percentOnlyStandard,
+				thresholdSettingsWithMode("effective_cap"),
+			),
 		).toBe("standard");
 	});
 });
@@ -2730,15 +2742,17 @@ describe("Compact+ model key", () => {
 });
 
 describe("Compact+ constants", () => {
-	it("exports expected threshold constants", () => {
-		expect(THRESHOLD_MODE).toBe("effective_cap");
-		expect(CHECKPOINT_CANDIDATE_PERCENT).toBe(65);
-		expect(STANDARD_THRESHOLD_PERCENT).toBe(70);
-		expect(HARD_THRESHOLD_PERCENT).toBe(90);
-		expect(CHECKPOINT_CANDIDATE_TOKENS).toBe(185_000);
-		expect(STANDARD_THRESHOLD_TOKENS).toBe(200_000);
-		expect(HARD_THRESHOLD_TOKENS).toBe(260_000);
-		expect(COOLDOWN_MS).toBe(120_000);
+	it("exports expected explicit threshold defaults", () => {
+		expect(DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS).toEqual({
+			thresholdMode: "effective_cap",
+			checkpointThresholdPercent: 65,
+			standardThresholdPercent: 70,
+			hardThresholdPercent: 90,
+			checkpointThresholdTokens: 185_000,
+			standardThresholdTokens: 200_000,
+			hardThresholdTokens: 260_000,
+			cooldownMs: 120_000,
+		});
 		expect(REGROWTH_TOKENS).toBe(1000);
 	});
 
@@ -2949,6 +2963,232 @@ describe("Compact+ constants", () => {
 	it("exports continuation prompt and checkpoint type", () => {
 		expect(CONTINUATION_PROMPT).toBe("Continue with the current task.");
 		expect(CHECKPOINT_CUSTOM_TYPE).toBe("compact-plus-checkpoint");
+	});
+
+	// --- Threshold/cooldown characterization (behaviour invariants, pl-5660) ---
+	// These tests pin current resolution behaviour BEFORE restructuring so the
+	// later refactor can prove equivalence. No production behaviour is exercised
+	// here beyond re-reading the resolver and the frozen module constants.
+
+	it("accepts the nested checkpointCandidate alias for percent threshold", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{ thresholds: { checkpointCandidate: 63, standard: 70, hard: 90 } },
+		);
+		expect(settings.checkpointThresholdPercent).toBe(63);
+	});
+
+	it("accepts the nested checkpointCandidateTokens alias for token threshold", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{
+				thresholds: {
+					checkpointCandidateTokens: 170_000,
+					standardTokens: 200_000,
+					hardTokens: 260_000,
+				},
+			},
+		);
+		expect(settings.checkpointThresholdTokens).toBe(170_000);
+	});
+
+	it("accepts top-level percent threshold keys as an alternative to nesting", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{
+				checkpointThresholdPercent: 64,
+				standardThresholdPercent: 72,
+				hardThresholdPercent: 88,
+			},
+		);
+		expect(settings).toMatchObject({
+			checkpointThresholdPercent: 64,
+			standardThresholdPercent: 72,
+			hardThresholdPercent: 88,
+		});
+	});
+
+	it("falls back to default cooldown for non-positive or invalid cooldown values", () => {
+		const fromEnv = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_COOLDOWN_MS: "0" },
+			{},
+		);
+		expect(fromEnv.cooldownMs).toBe(120_000);
+
+		const fromFile = resolveCompactPlusSettings({}, { cooldownMs: -5 });
+		expect(fromFile.cooldownMs).toBe(120_000);
+
+		const fromFileString = resolveCompactPlusSettings(
+			{},
+			{ cooldownMs: "not-a-number" },
+		);
+		expect(fromFileString.cooldownMs).toBe(120_000);
+	});
+
+	it("lets env cooldown override file cooldown, and valid values pass through", () => {
+		const settings = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_COOLDOWN_MS: "30000" },
+			{ cooldownMs: 90_000 },
+		);
+		expect(settings.cooldownMs).toBe(30_000);
+	});
+
+	it("falls back to default for a percent threshold outside the 1-100 range", () => {
+		// 0 and 101 are individually rejected by resolvePercentSetting; with the
+		// other two thresholds at their defaults the ordering stays valid, so the
+		// out-of-range value alone resolves to its default rather than forcing a
+		// full-group reset.
+		const zeroCheckpoint = resolveCompactPlusSettings(
+			{},
+			{ thresholds: { checkpoint: 0, standard: 70, hard: 90 } },
+		);
+		expect(zeroCheckpoint.checkpointThresholdPercent).toBe(65);
+
+		const overHard = resolveCompactPlusSettings(
+			{},
+			{ thresholds: { checkpoint: 65, standard: 70, hard: 101 } },
+		);
+		expect(overHard.hardThresholdPercent).toBe(90);
+	});
+
+	it("resets the whole percent group when checkpoint equals standard", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{ thresholds: { checkpoint: 70, standard: 70, hard: 90 } },
+		);
+		expect(settings).toMatchObject({
+			checkpointThresholdPercent: 65,
+			standardThresholdPercent: 70,
+			hardThresholdPercent: 90,
+		});
+	});
+
+	it("resets the whole token group when standard equals hard", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{
+				thresholds: {
+					checkpointTokens: 180_000,
+					standardTokens: 260_000,
+					hardTokens: 260_000,
+				},
+			},
+		);
+		expect(settings).toMatchObject({
+			checkpointThresholdTokens: 185_000,
+			standardThresholdTokens: 200_000,
+			hardThresholdTokens: 260_000,
+		});
+	});
+
+	it("preserves valid percent thresholds when token ordering is invalid", () => {
+		const settings = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS: "300000" },
+			{ thresholds: { checkpoint: 60, standard: 70, hard: 90 } },
+		);
+		expect(settings).toMatchObject({
+			checkpointThresholdPercent: 60,
+			standardThresholdPercent: 70,
+			hardThresholdPercent: 90,
+			checkpointThresholdTokens: 185_000,
+			standardThresholdTokens: 200_000,
+			hardThresholdTokens: 260_000,
+		});
+	});
+
+	it("reflects resolved default threshold/cooldown values in status output", () => {
+		// Status formatting uses the explicit threshold/cooldown settings seam;
+		// with defaults in effect, status text must show the default bands.
+		const status = buildStatusSnapshot({
+			usage: {
+				percent: 72,
+				tokens: 205_000,
+				contextWindow: 300_000,
+				source: "native",
+			},
+			selectedMode: "standard",
+			isCompacting: false,
+			lastCompactTime: 0,
+			lastCompaction: null,
+			lastFallbackReason: null,
+			lastInjectedEcho: null,
+		});
+		const lines = formatStatusLines(status);
+
+		expect(lines).toContain("  Threshold mode: effective_cap");
+		expect(lines).toContain("    percent checkpoint=65% standard=70% hard=90%");
+		expect(lines).toContain(
+			"    tokens checkpoint=185,000 standard=200,000 hard=260,000",
+		);
+		expect(lines).toContain("    cooldown=120s");
+		expect(lines).toContain(
+			"  Config reload: threshold/cooldown changes require /reload or restart",
+		);
+	});
+
+	it("captures threshold/cooldown settings at extension registration", async () => {
+		const prevEnv: Record<string, string | undefined> = {
+			COMPACT_PLUS_THRESHOLD_MODE: process.env.COMPACT_PLUS_THRESHOLD_MODE,
+			COMPACT_PLUS_CHECKPOINT_THRESHOLD:
+				process.env.COMPACT_PLUS_CHECKPOINT_THRESHOLD,
+			COMPACT_PLUS_STANDARD_THRESHOLD:
+				process.env.COMPACT_PLUS_STANDARD_THRESHOLD,
+			COMPACT_PLUS_HARD_THRESHOLD: process.env.COMPACT_PLUS_HARD_THRESHOLD,
+			COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS:
+				process.env.COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS,
+			COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS:
+				process.env.COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS,
+			COMPACT_PLUS_HARD_THRESHOLD_TOKENS:
+				process.env.COMPACT_PLUS_HARD_THRESHOLD_TOKENS,
+			COMPACT_PLUS_COOLDOWN_MS: process.env.COMPACT_PLUS_COOLDOWN_MS,
+		};
+		process.env.COMPACT_PLUS_THRESHOLD_MODE = "percent";
+		process.env.COMPACT_PLUS_CHECKPOINT_THRESHOLD = "55";
+		process.env.COMPACT_PLUS_STANDARD_THRESHOLD = "65";
+		process.env.COMPACT_PLUS_HARD_THRESHOLD = "85";
+		process.env.COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS = "150000";
+		process.env.COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS = "210000";
+		process.env.COMPACT_PLUS_HARD_THRESHOLD_TOKENS = "270000";
+		process.env.COMPACT_PLUS_COOLDOWN_MS = "30000";
+
+		try {
+			const pi = createMockPi();
+			compactPlusExtension(pi as never);
+			process.env.COMPACT_PLUS_THRESHOLD_MODE = "tokens";
+			process.env.COMPACT_PLUS_COOLDOWN_MS = "45000";
+
+			const compactPlusCommand = pi.commands.get("compact-plus");
+			if (!compactPlusCommand) throw new Error("command not registered");
+			const ctx = createMockCtx();
+			await compactPlusCommand.handler("status", ctx);
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("Threshold mode: percent"),
+				"info",
+			);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("percent checkpoint=55% standard=65% hard=85%"),
+				"info",
+			);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"tokens checkpoint=150,000 standard=210,000 hard=270,000",
+				),
+				"info",
+			);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("cooldown=30s"),
+				"info",
+			);
+		} finally {
+			for (const [key, value] of Object.entries(prevEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
 	});
 });
 
