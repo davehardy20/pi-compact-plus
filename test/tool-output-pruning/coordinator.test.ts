@@ -1,11 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("@earendil-works/pi-ai", () => ({
-	completeSimple: vi.fn(),
-}));
-
-import { completeSimple } from "@earendil-works/pi-ai";
 import { ToolOutputPruningCoordinator } from "../../src/tool-output-pruning/coordinator.js";
 import { buildToolPruneSummaryData } from "../../src/tool-output-pruning/metadata.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
@@ -15,6 +9,13 @@ import type {
 	ToolOutputRecord,
 } from "../../src/tool-output-pruning/types.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../../src/types.js";
+
+const piAiMocks = vi.hoisted(() => ({
+	completeSimple: vi.fn(),
+}));
+const { completeSimple } = piAiMocks;
+
+vi.mock("@earendil-works/pi-ai", () => piAiMocks);
 
 const ENABLED_SETTINGS: ToolOutputPruningSettings = {
 	experimentalToolOutputPruning: true,

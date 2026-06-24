@@ -5,6 +5,10 @@ import type {
 	TestAgentMessage,
 } from "./fixtures/extension.js";
 
+const piAiMocks = vi.hoisted(() => ({
+	completeSimple: vi.fn(),
+}));
+
 // Mock Pi core packages before importing the extension
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	estimateTokens: vi.fn(() => 100),
@@ -24,9 +28,7 @@ vi.mock("../src/persist.js", () => ({
 
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
 
-vi.mock("@earendil-works/pi-ai", () => ({
-	completeSimple: vi.fn(),
-}));
+vi.mock("@earendil-works/pi-ai", () => piAiMocks);
 
 const defaultSettingsPathForTests =
 	"/tmp/compact-plus-test-missing-settings.json";
@@ -35,7 +37,7 @@ process.env.COMPACT_PLUS_SETTINGS_PATH = defaultSettingsPathForTests;
 
 const persist = await import("../src/persist.js");
 const piCore = await import("@earendil-works/pi-coding-agent");
-const { completeSimple } = await import("@earendil-works/pi-ai");
+const { completeSimple } = piAiMocks;
 const {
 	buildStatusSnapshot,
 	formatStatusLines,
@@ -1458,7 +1460,7 @@ Fix Seeds issue pi-compact-plus-d843 in /Users/dave/tools/pi-compact-plus by cle
 - pi-compact-plus-d843 remains to be implemented; persisted focus-echo output is still noisy/over-literal in live /compact-plus status; examples seen live include meta-list text in Active files and overly long Blockers / Decisions
 
 ## Dependency Chain
-- **Pi 0.75.0 stream-aware compaction behavior** -> **public extension types do not expose streamFn** -> **Compact+ uses guarded compatibility probing and may route through @earendil-works/pi-ai streamSimple**
+- **Pi 0.75.0 stream-aware compaction behavior** -> **public extension types do not expose streamFn** -> **Compact+ uses guarded compatibility probing and may route through @earendil-works/pi-ai/compat streamSimple**
 - **Custom compaction summary in event.compactionEntry.summary** -> **buildPersistedFocusEcho(summaryText) in /Users/dave/tools/pi-compact-plus/src/reorder.ts** -> **state.lastInjectedEcho persisted during session_compact** -> **/compact-plus status can display Last focus echo immediately after compaction**
 
 ## Next Best Step

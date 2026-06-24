@@ -2,13 +2,12 @@
  * LLM summarizer for tool-output pruning.
  *
  * Adapted from pi-context-prune (MIT-licensed prior art) into Compact+.
- * Uses Compact+ model APIs (completeSimple from @earendil-works/pi-ai)
+ * Uses Compact+ model APIs (completeSimple from @earendil-works/pi-ai/compat)
  * and implements an atomic result contract: either all summaries succeed
  * or the entire batch is treated as a failure with no side effects.
  */
 
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type SummaryResponseParser,
@@ -61,6 +60,45 @@ export interface SummarizeBatchFailure {
 export type SummarizeBatchResult =
 	| SummarizeBatchSuccess
 	| SummarizeBatchFailure;
+
+const PI_AI_ROOT_SPECIFIER = "@earendil-works/pi-ai";
+const PI_AI_COMPAT_SPECIFIER = "@earendil-works/pi-ai/compat";
+
+interface CompleteSimpleResponse {
+	stopReason?: string;
+	errorMessage?: string;
+	content: Array<{ type: string; text?: string }>;
+	usage?: { input: number; output: number; totalTokens: number };
+}
+
+type CompleteSimpleFn = (
+	model: unknown,
+	context: unknown,
+	options: unknown,
+) => Promise<CompleteSimpleResponse>;
+
+let cachedCompleteSimple: CompleteSimpleFn | null = null;
+
+async function loadCompleteSimple(): Promise<CompleteSimpleFn> {
+	if (cachedCompleteSimple) return cachedCompleteSimple;
+
+	const dynamicImport = (specifier: string) =>
+		import(specifier) as Promise<{ completeSimple?: CompleteSimpleFn }>;
+
+	const rootModule = await dynamicImport(PI_AI_ROOT_SPECIFIER);
+	const compatModule = rootModule.completeSimple
+		? null
+		: await dynamicImport(PI_AI_COMPAT_SPECIFIER);
+	const completeSimple =
+		rootModule.completeSimple ?? compatModule?.completeSimple;
+
+	if (!completeSimple) {
+		throw new Error("Pi AI completeSimple API is unavailable.");
+	}
+
+	cachedCompleteSimple = completeSimple;
+	return completeSimple;
+}
 
 export const SUMMARIZER_SYSTEM_PROMPT = `You are a concise technical summarizer. Summarize tool outputs for a coding assistant's context window. Preserve key findings, file paths, error messages, and decisions. Omit noise, repetitive formatting, and overly verbose output.`;
 
@@ -231,6 +269,7 @@ export async function summarizeBatch(
 	};
 
 	try {
+		const completeSimple = await loadCompleteSimple();
 		const response = await completeSimple(model, context, streamOptions);
 
 		if (response.stopReason === "aborted") {

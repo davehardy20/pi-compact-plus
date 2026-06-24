@@ -1,14 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("@earendil-works/pi-ai", () => ({
-	completeSimple: vi.fn(),
-}));
-
-import { completeSimple } from "@earendil-works/pi-ai";
-
-const mockCompleteSimple = vi.mocked(completeSimple);
-
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildSummarizerInputs,
 	captureTurnEndBatch,
@@ -29,6 +20,13 @@ import {
 	makeToolOutputRecord,
 	makeToolResult,
 } from "../fixtures/tool-output-pruning.js";
+
+const piAiMocks = vi.hoisted(() => ({
+	completeSimple: vi.fn(),
+}));
+const mockCompleteSimple = vi.mocked(piAiMocks.completeSimple);
+
+vi.mock("@earendil-works/pi-ai", () => piAiMocks);
 
 const ENABLED_SETTINGS = makeToolOutputPruningSettings({
 	toolOutputPruneMinChars: 10,

@@ -1,4 +1,3 @@
-import { streamSimple } from "@earendil-works/pi-ai";
 import { compact } from "@earendil-works/pi-coding-agent";
 
 export type CompactionExecutionPath = "custom" | "native-fallback";
@@ -14,7 +13,7 @@ export interface CompactionRuntimeCompatibility {
 }
 
 export const STREAM_SIMPLE_SHIM_REASON =
-	"Pi runtime does not expose the live compaction stream function to extensions; Compact+ is using the public @earendil-works/pi-ai streamSimple adapter so custom summaries can still run with stream-aware compaction semantics.";
+	"Pi runtime does not expose the live compaction stream function to extensions; Compact+ is using the public @earendil-works/pi-ai/compat streamSimple adapter so custom summaries can still run with stream-aware compaction semantics.";
 
 export const NATIVE_FALLBACK_REASON =
 	"Pi runtime requires stream-aware compaction summaries but neither a session stream function nor the public streamSimple adapter is available; Compact+ is falling back to native Pi compaction.";
@@ -22,13 +21,45 @@ export const NATIVE_FALLBACK_REASON =
 // Compact+ summaries should stay fast/cheap even when the active session is using high reasoning.
 export const COMPACT_PLUS_COMPACTION_THINKING_LEVEL = "minimal" as const;
 
+const PI_AI_ROOT_SPECIFIER = "@earendil-works/pi-ai";
+const PI_AI_COMPAT_SPECIFIER = "@earendil-works/pi-ai/compat";
+
+type StreamSimpleFn = (
+	model: unknown,
+	context: unknown,
+	options: unknown,
+) => Promise<{ result(): Promise<unknown> }>;
+
+let cachedStreamSimple: StreamSimpleFn | null = null;
+
+async function loadStreamSimple(): Promise<StreamSimpleFn> {
+	if (cachedStreamSimple) return cachedStreamSimple;
+
+	const dynamicImport = (specifier: string) =>
+		import(specifier) as Promise<{ streamSimple?: StreamSimpleFn }>;
+
+	const rootModule = await dynamicImport(PI_AI_ROOT_SPECIFIER);
+	const compatModule = rootModule.streamSimple
+		? null
+		: await dynamicImport(PI_AI_COMPAT_SPECIFIER);
+	const streamSimple = rootModule.streamSimple ?? compatModule?.streamSimple;
+
+	if (!streamSimple) {
+		throw new Error("Pi AI streamSimple API is unavailable.");
+	}
+
+	cachedStreamSimple = streamSimple;
+	return streamSimple;
+}
+
 const PUBLIC_STREAM_SIMPLE_FN: CompactionRuntimeCompatibility["streamFn"] =
 	async (...args: unknown[]) => {
 		const [model, context, options] = args;
+		const streamSimple = await loadStreamSimple();
 		return streamSimple(
-			model as Parameters<typeof streamSimple>[0],
-			context as Parameters<typeof streamSimple>[1],
-			options as Parameters<typeof streamSimple>[2],
+			model as Parameters<StreamSimpleFn>[0],
+			context as Parameters<StreamSimpleFn>[1],
+			options as Parameters<StreamSimpleFn>[2],
 		);
 	};
 
