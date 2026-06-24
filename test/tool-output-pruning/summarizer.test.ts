@@ -1,19 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-// Mock completeSimple before importing the module under test
-vi.mock("@earendil-works/pi-ai", () => ({
-	completeSimple: vi.fn(),
-}));
-
-import { completeSimple } from "@earendil-works/pi-ai";
-
-const mockCompleteSimple = vi.mocked(completeSimple);
-
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
 	ExtensionContext,
 	ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildSummarizerPrompt,
 	resolveSummarizerModel,
@@ -22,6 +12,14 @@ import {
 	type SummarizerInput,
 	summarizeBatch,
 } from "../../src/tool-output-pruning/summarizer.js";
+
+const piAiMocks = vi.hoisted(() => ({
+	completeSimple: vi.fn(),
+}));
+const mockCompleteSimple = vi.mocked(piAiMocks.completeSimple);
+
+// Mock completeSimple before importing the module under test
+vi.mock("@earendil-works/pi-ai", () => piAiMocks);
 
 function makeMockModel(id: string, provider: string): Model<Api> {
 	return {
