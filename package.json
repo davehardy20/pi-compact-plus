@@ -58,9 +58,9 @@
 		}
 	},
 	"devDependencies": {
-		"@earendil-works/pi-agent-core": "^0.75.0",
-		"@earendil-works/pi-coding-agent": "^0.75.0",
-		"@earendil-works/pi-ai": "^0.75.0",
+		"@earendil-works/pi-agent-core": "^0.83.0",
+		"@earendil-works/pi-coding-agent": "^0.83.0",
+		"@earendil-works/pi-ai": "^0.83.0",
 		"@types/node": "^24.7.2",
 		"typescript": "^5.9.3",
 		"vitest": "^3.2.4"
