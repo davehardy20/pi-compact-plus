@@ -64,6 +64,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		thresholdSettings,
 		getEffectiveUsage,
 		persistTelemetrySnapshot,
+		disableAutoCompaction: thresholdSettings.disableAutoCompaction,
 	});
 
 	pi.registerTool(

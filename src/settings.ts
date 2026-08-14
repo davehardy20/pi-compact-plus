@@ -22,6 +22,7 @@ export interface CompactPlusSettingsFile {
 		hardTokens?: unknown;
 	};
 	experimentalToolOutputPruning?: unknown;
+	disableAutoCompaction?: unknown;
 	toolOutputPruningMode?: unknown;
 	toolOutputSummaryStrategy?: unknown;
 	toolOutputPruneStrategy?: unknown;
@@ -47,6 +48,7 @@ export interface ResolvedCompactPlusSettings {
 	cooldownMs: number;
 	settingsPath: string;
 	experimentalToolOutputPruning: boolean;
+	disableAutoCompaction: boolean;
 	toolOutputPruningMode: "off" | "agent-message";
 	toolOutputSummaryStrategy: "llm";
 	toolOutputPruneStrategy: "stub" | "delete";
@@ -76,6 +78,7 @@ export const DEFAULT_COMPACT_PLUS_SETTINGS = {
 	hardThresholdTokens: 260_000,
 	cooldownMs: 120_000,
 	experimentalToolOutputPruning: false,
+	disableAutoCompaction: false,
 	toolOutputPruningMode: "off" as const,
 	toolOutputSummaryStrategy: "llm" as const,
 	toolOutputPruneStrategy: "stub" as const,
@@ -291,6 +294,17 @@ export function resolveCompactPlusSettings(
 					DEFAULT_COMPACT_PLUS_SETTINGS.experimentalToolOutputPruning,
 				);
 
+	const disableAutoCompaction =
+		env.COMPACT_PLUS_DISABLE_AUTO_COMPACTION === undefined
+			? resolveBoolSetting(
+					fileSettings.disableAutoCompaction,
+					DEFAULT_COMPACT_PLUS_SETTINGS.disableAutoCompaction,
+				)
+			: parseEnvBool(
+					env.COMPACT_PLUS_DISABLE_AUTO_COMPACTION,
+					DEFAULT_COMPACT_PLUS_SETTINGS.disableAutoCompaction,
+				);
+
 	const toolOutputPruningMode = resolveEnumSetting(
 		env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE,
 		fileSettings.toolOutputPruningMode,
@@ -405,6 +419,7 @@ export function resolveCompactPlusSettings(
 		cooldownMs,
 		settingsPath,
 		experimentalToolOutputPruning,
+		disableAutoCompaction,
 		toolOutputPruningMode,
 		toolOutputSummaryStrategy,
 		toolOutputPruneStrategy,

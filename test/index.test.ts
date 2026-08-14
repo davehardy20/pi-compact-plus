@@ -2784,6 +2784,34 @@ describe("Compact+ constants", () => {
 			/[\\/]\.pi[\\/]agent[\\/]settings\.json$/,
 		);
 	});
+	it("defaults disableAutoCompaction to false", () => {
+		const settings = resolveCompactPlusSettings({}, {});
+		expect(settings.disableAutoCompaction).toBe(false);
+	});
+
+	it("enables disableAutoCompaction from env kill switch", () => {
+		const settings = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_DISABLE_AUTO_COMPACTION: "true" },
+			{},
+		);
+		expect(settings.disableAutoCompaction).toBe(true);
+	});
+
+	it("enables disableAutoCompaction from settings file", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{ disableAutoCompaction: true },
+		);
+		expect(settings.disableAutoCompaction).toBe(true);
+	});
+
+	it("lets env kill switch override settings file", () => {
+		const settings = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_DISABLE_AUTO_COMPACTION: "false" },
+			{ disableAutoCompaction: true },
+		);
+		expect(settings.disableAutoCompaction).toBe(false);
+	});
 
 	it("loads thresholds from a settings.json file path", () => {
 		const settingsDir = fs.mkdtempSync("/tmp/compact-plus-settings-");

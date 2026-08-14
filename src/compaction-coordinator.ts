@@ -47,6 +47,8 @@ export interface CompactionCoordinatorOptions {
 	thresholdSettings: CompactPlusThresholdSettings;
 	getEffectiveUsage: (ctx: ExtensionEventContext) => EffectiveUsage | null;
 	persistTelemetrySnapshot: () => void | Promise<void>;
+	/** Kill switch: skip all auto-compaction (manual /compact-plus still works). */
+	disableAutoCompaction?: boolean;
 }
 
 export class CompactionCoordinator {
@@ -57,6 +59,7 @@ export class CompactionCoordinator {
 		ctx: ExtensionEventContext,
 	) => EffectiveUsage | null;
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
+	private readonly disableAutoCompaction: boolean;
 
 	constructor({
 		state,
@@ -64,12 +67,14 @@ export class CompactionCoordinator {
 		thresholdSettings,
 		getEffectiveUsage,
 		persistTelemetrySnapshot,
+		disableAutoCompaction = false,
 	}: CompactionCoordinatorOptions) {
 		this.state = state;
 		this.pi = pi;
 		this.thresholdSettings = thresholdSettings;
 		this.getEffectiveUsage = getEffectiveUsage;
 		this.persistTelemetrySnapshot = persistTelemetrySnapshot;
+		this.disableAutoCompaction = disableAutoCompaction;
 	}
 
 	async handleManualCommand(
@@ -93,11 +98,27 @@ export class CompactionCoordinator {
 		});
 	}
 
+	/**
+	 * Ephemeral headless children (e.g. the /pr-review reviewer child runs as
+	 * `pi --mode json -p --no-session`, which can report mode "json",
+	 * "print", or "rpc") gain nothing from auto-compaction: there is no
+	 * long-lived conversation to preserve, and compacting can replace the
+	 * session mid-review. Manual commands are still allowed.
+	 */
+	private isEphemeralHeadlessChild(ctx: ExtensionEventContext): boolean {
+		const headless =
+			ctx.mode === "json" || ctx.mode === "print" || ctx.mode === "rpc";
+		return headless && !ctx.sessionManager.getSessionFile();
+	}
+
 	async maybeAutoCompact(
 		ctx: ExtensionEventContext,
 		triggerSource: AutoTriggerSource,
 		turnIndex?: number,
 	): Promise<void> {
+		if (this.disableAutoCompaction) return;
+		if (this.isEphemeralHeadlessChild(ctx)) return;
+
 		const usage = this.getEffectiveUsage(ctx);
 		const model = ctx.model;
 		if (!usage || !model) return;
