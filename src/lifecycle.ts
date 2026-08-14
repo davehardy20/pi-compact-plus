@@ -12,8 +12,7 @@ type ExtensionEventContext = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
  * may observe a stale ctx or stale extension api. Guard the post-compaction
  * reads so a stale-context error is skipped rather than crashing the host
  * process (observed as /pr-review reviewer child exit-code 1 crashes).
- */
-/**
+ *
  * String-coupled to Pi's stale-context guard message emitted by
  * ExtensionRunner.invalidate() / assertActive() in
  * @earendil-works/pi-coding-agent (verified against 0.83.x;

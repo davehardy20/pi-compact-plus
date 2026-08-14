@@ -71,6 +71,16 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(state.isCompacting).toBe(false);
 	});
 
+	it("skips auto-compaction in an ephemeral rpc child with no session file", async () => {
+		const { coordinator, state } = createCoordinator();
+		const ctx = createMockCtx({ mode: "rpc", sessionFile: undefined });
+
+		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(state.isCompacting).toBe(false);
+	});
+
 	it("skips auto-compaction in an ephemeral print-mode child with no session file", async () => {
 		const { coordinator, state } = createCoordinator();
 		const ctx = createMockCtx({ mode: "print", sessionFile: undefined });

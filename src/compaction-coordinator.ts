@@ -100,13 +100,14 @@ export class CompactionCoordinator {
 
 	/**
 	 * Ephemeral headless children (e.g. the /pr-review reviewer child runs as
-	 * `pi --mode json -p --no-session`, which can report mode "json" or
-	 * "print") gain nothing from auto-compaction: there is no long-lived
-	 * conversation to preserve, and compacting can replace the session
-	 * mid-review. Manual commands are still allowed.
+	 * `pi --mode json -p --no-session`, which can report mode "json",
+	 * "print", or "rpc") gain nothing from auto-compaction: there is no
+	 * long-lived conversation to preserve, and compacting can replace the
+	 * session mid-review. Manual commands are still allowed.
 	 */
 	private isEphemeralHeadlessChild(ctx: ExtensionEventContext): boolean {
-		const headless = ctx.mode === "json" || ctx.mode === "print";
+		const headless =
+			ctx.mode === "json" || ctx.mode === "print" || ctx.mode === "rpc";
 		return headless && !ctx.sessionManager.getSessionFile();
 	}
 
