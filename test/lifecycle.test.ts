@@ -275,3 +275,149 @@ describe("executeCompaction", () => {
 		);
 	});
 });
+
+const STALE_TEST_FOCUS = {
+	objective: "test",
+	blockers: [],
+	decisions: [],
+	activeFiles: [],
+	dependencyChain: [],
+};
+
+function staleExtensionCtxError(): Error {
+	return new Error(
+		"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().",
+	);
+}
+
+describe("executeCompaction stale extension context handling", () => {
+	it("keeps state consistent when onComplete observes a stale extension context", () => {
+		const state = new CompactionState();
+		const persist = vi.fn();
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		Object.defineProperty(ctx, "getContextUsage", {
+			get() {
+				throw staleExtensionCtxError();
+			},
+		});
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onComplete }: { onComplete?: () => void }) => {
+				if (onComplete) onComplete();
+			},
+		);
+
+		expect(() =>
+			executeCompaction(
+				"standard",
+				STALE_TEST_FOCUS,
+				state,
+				ctx as unknown as Parameters<typeof executeCompaction>[3],
+				pi as unknown as Parameters<typeof executeCompaction>[4],
+				{ sendContinuation: true, persist },
+			),
+		).not.toThrow();
+
+		expect(state.isCompacting).toBe(false);
+		expect(state.selectedMode).toBeNull();
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not throw when onError observes a stale extension context", () => {
+		const state = new CompactionState();
+		const persist = vi.fn();
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		Object.defineProperty(ctx, "hasUI", {
+			get() {
+				throw staleExtensionCtxError();
+			},
+		});
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				if (onError) onError(new Error("compaction crashed"));
+			},
+		);
+
+		expect(() =>
+			executeCompaction(
+				"hard",
+				STALE_TEST_FOCUS,
+				state,
+				ctx as unknown as Parameters<typeof executeCompaction>[3],
+				pi as unknown as Parameters<typeof executeCompaction>[4],
+				{ sendContinuation: false, persist },
+			),
+		).not.toThrow();
+
+		expect(state.isCompacting).toBe(false);
+		expect(state.selectedMode).toBeNull();
+		expect(state.lastCompactTokens).toBe(0);
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
+
+	it("skips the continuation prompt when sendUserMessage observes a stale extension api", () => {
+		const state = new CompactionState();
+		const persist = vi.fn();
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		pi.sendUserMessage.mockImplementation(() => {
+			throw staleExtensionCtxError();
+		});
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onComplete }: { onComplete?: () => void }) => {
+				if (onComplete) onComplete();
+			},
+		);
+
+		expect(() =>
+			executeCompaction(
+				"standard",
+				STALE_TEST_FOCUS,
+				state,
+				ctx as unknown as Parameters<typeof executeCompaction>[3],
+				pi as unknown as Parameters<typeof executeCompaction>[4],
+				{ sendContinuation: true, persist },
+			),
+		).not.toThrow();
+
+		expect(state.isCompacting).toBe(false);
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
+
+	it("propagates non-stale getContextUsage errors from onComplete", () => {
+		const state = new CompactionState();
+		const persist = vi.fn();
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		Object.defineProperty(ctx, "getContextUsage", {
+			get() {
+				throw new Error("usage broke");
+			},
+		});
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onComplete }: { onComplete?: () => void }) => {
+				if (onComplete) onComplete();
+			},
+		);
+
+		expect(() =>
+			executeCompaction(
+				"standard",
+				STALE_TEST_FOCUS,
+				state,
+				ctx as unknown as Parameters<typeof executeCompaction>[3],
+				pi as unknown as Parameters<typeof executeCompaction>[4],
+				{ sendContinuation: false, persist },
+			),
+		).toThrow("usage broke");
+	});
+});
