@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 MD031 MD032 -->
+
 # Architecture
 
 > Extension composition root, event wiring, dependency injection, state lifecycle, module ownership seams.
@@ -123,6 +125,7 @@ const compactionCoordinator = new CompactionCoordinator({
 | Settings not applied after edit | Threshold changes don't take effect | Run `/reload`; threshold settings are frozen at module-load time |
 | `streamSimple` unavailable | Custom summary fails, native fallback | Ensure `@earendil-works/pi-ai` peer dep is installed at correct version |
 | Telemetry persistence fails | `telemetryPersistenceIssues` populated | Check `~/.pi/agent/state/` permissions, symlinks, disk space |
+| Stale extension ctx after `ctx.compact()` | Host process crash (e.g. `/pr-review` reviewer child exit 1) | `lifecycle.ts` stale-guard helpers detect Pi's stale message (string-coupled to `runner.js` `invalidate()`/`assertActive()`; re-verify on peer-dep bumps) |
 
 ## Safe-edit guidance
 
