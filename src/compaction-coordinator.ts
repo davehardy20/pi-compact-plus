@@ -11,7 +11,7 @@ import {
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
 import { buildPersistedFocusEcho } from "./focus-echo/index.js";
-import { executeCompaction } from "./lifecycle.js";
+import { executeCompaction, type ExtensionEventContext } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
@@ -30,7 +30,6 @@ import {
 	type TriggerSource,
 } from "./types.js";
 
-type ExtensionEventContext = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
 type ModelSelectEventLike = {
