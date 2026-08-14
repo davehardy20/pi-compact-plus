@@ -1,5 +1,3 @@
-<!-- markdownlint-disable MD013 MD031 MD032 -->
-
 # Architecture
 
 > Extension composition root, event wiring, dependency injection, state lifecycle, module ownership seams.
@@ -8,7 +6,7 @@
 
 The default export `compactPlusExtension(pi: ExtensionAPI)` is the single function Pi calls when loading the extension. It:
 
-1. **Resolves settings once** at extension-load time (inside the exported factory): `resolveCompactPlusSettings()` → `thresholdSettings`. Threshold and cooldown values are frozen after load; changing them requires `/reload` or a Pi restart. See [settings-and-state.md](settings-and-state.md).
+1. **Resolves settings once** at module-load time: `resolveCompactPlusSettings()` → `thresholdSettings`. Threshold and cooldown values are frozen after load; changing them requires `/reload` or a Pi restart. See [settings-and-state.md](settings-and-state.md).
 
 2. **Creates shared state**: A single `CompactionState` instance (module-level `const state`) holds all mutable compaction and tool-output-pruning state. This is the only mutable state container.
 
@@ -38,7 +36,6 @@ const toolOutputPruning = new ToolOutputPruningCoordinator({
 const compactionCoordinator = new CompactionCoordinator({
     state, pi, thresholdSettings,
     getEffectiveUsage, persistTelemetrySnapshot,
-    disableAutoCompaction: thresholdSettings.disableAutoCompaction,
 });
 ```
 
@@ -126,7 +123,6 @@ const compactionCoordinator = new CompactionCoordinator({
 | Settings not applied after edit | Threshold changes don't take effect | Run `/reload`; threshold settings are frozen at module-load time |
 | `streamSimple` unavailable | Custom summary fails, native fallback | Ensure `@earendil-works/pi-ai` peer dep is installed at correct version |
 | Telemetry persistence fails | `telemetryPersistenceIssues` populated | Check `~/.pi/agent/state/` permissions, symlinks, disk space |
-| Stale extension ctx after `ctx.compact()` | Host process crash (e.g. `/pr-review` reviewer child exit 1) | `lifecycle.ts` stale-guard helpers detect Pi's stale message (string-coupled to `runner.js` `invalidate()`/`assertActive()`; re-verify on peer-dep bumps) |
 
 ## Safe-edit guidance
 
