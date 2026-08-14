@@ -76,6 +76,7 @@ Resolution uses `firstDefined()` to check multiple aliases: e.g., `checkpoint` â
 | `standardThresholdTokens` | 200,000 | Same |
 | `hardThresholdTokens` | 260,000 | Same |
 | `cooldownMs` | 120,000 | `resolvePositiveIntegerSetting()` |
+| `disableAutoCompaction` | `false` | `resolveBoolSetting()` (env: `parseEnvBool()`) |
 | `experimentalToolOutputPruning` | `false` | `parseEnvBool()` |
 | `toolOutputPruningMode` | `off` | Enum: `off`/`agent-message` |
 | `toolOutputSummaryStrategy` | `llm` | Enum: `llm` (only option for v1) |
@@ -116,6 +117,7 @@ Runtime-resolved values **must** be obtained from `resolveCompactPlusSettings()`
 | `COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS` | `standardThresholdTokens` |
 | `COMPACT_PLUS_HARD_THRESHOLD_TOKENS` | `hardThresholdTokens` |
 | `COMPACT_PLUS_COOLDOWN_MS` | `cooldownMs` |
+| `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` | `disableAutoCompaction` |
 | `COMPACT_PLUS_SETTINGS_PATH` | Settings file path override |
 | `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `experimentalToolOutputPruning` |
 | `COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE` | `toolOutputPruningMode` |
