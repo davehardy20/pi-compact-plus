@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 MD031 MD032 MD040 -->
+
 # Compaction Policy
 
 > Threshold resolution, band computation, auto-compaction guard cascade, compatibility execution paths, summary generation, and validation.
@@ -36,21 +38,23 @@ Each metric (percent or tokens) maps to one of four bands:
 `CompactionCoordinator.maybeAutoCompact()` (`src/compaction-coordinator.ts`) runs these guards in order. **Any guard that fails causes an early return — no compaction occurs:**
 
 ```
-1. usage exists AND model exists           → else return
-2. at least one metric available            → if percent===null && tokens===null, return
-3. getModeFromEffectiveUsage()              → mode=null or "checkpoint" → return
-4. isOnCooldown(cooldownMs)                 → return (default 120000ms = 2min)
-5. isRegrowthBelowThreshold(tokens, 1000)   → return (only when tokens available)
-6. isCompacting                             → return (prevent concurrent compaction)
-7. toolOutputPruning.isFlushing             → return (prevent race with pruning flush)
-8. isSameTurn(turnIndex)                    → return (prevent double-trigger in same turn)
+1. disableAutoCompaction (kill switch)          → return (env COMPACT_PLUS_DISABLE_AUTO_COMPACTION or settings-file disableAutoCompaction; manual /compact-plus still works)
+2. isEphemeralHeadlessChild                    → return (mode "json"|"print" && no session file, e.g. /pr-review reviewer child)
+3. usage exists AND model exists               → else return
+4. at least one metric available               → if percent===null && tokens===null, return
+5. getModeFromEffectiveUsage()                 → mode=null or "checkpoint" → return
+6. isOnCooldown(cooldownMs)                    → return (default 120000ms = 2min)
+7. isRegrowthBelowThreshold(tokens, 1000)      → return (only when tokens available)
+8. isCompacting                                → return (prevent concurrent compaction)
+9. toolOutputPruning.isFlushing                → return (prevent race with pruning flush)
+10. isSameTurn(turnIndex)                      → return (prevent double-trigger in same turn)
 ```
 
 If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastCompactTime=now`, `lastTriggerAuto=true`) and `executeCompaction(mode, focus, ...)` is called.
 
 **Change-entrypoint:** To add a new guard, add it to this cascade in `maybeAutoCompact`. Order matters — earlier guards short-circuit.
 
-**Common failure mode:** If auto-compaction never triggers, check: (1) is `getEffectiveUsage` returning valid data? (2) Is cooldown too long? (3) Is regrowth guard blocking because `lastCompactTokens` is close to current tokens? (4) Is pruning flush in progress?
+**Common failure mode:** If auto-compaction never triggers, check: (1) is `getEffectiveUsage` returning valid data? (2) Is cooldown too long? (3) Is regrowth guard blocking because `lastCompactTokens` is close to current tokens? (4) Is pruning flush in progress? (5) Is `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` / settings-file `disableAutoCompaction` set? (6) Is this an ephemeral headless child (`mode === "json" | "print"` with no session file)?
 
 ## Usage resolution (`src/usage.ts`)
 
