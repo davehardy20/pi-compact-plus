@@ -196,6 +196,7 @@ compaction at `90%` / `260,000` tokens.
 | `COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS` | 200000 | Standard compaction token threshold |
 | `COMPACT_PLUS_HARD_THRESHOLD_TOKENS` | 260000 | Hard compaction token threshold |
 | `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Auto-compaction cooldown in ms |
+| `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` | `false` | Kill switch: skip auto-compaction (manual works) |
 | `COMPACT_PLUS_SETTINGS_PATH` | `~/.pi/agent/settings.json` | Optional JSON config path |
 | `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `false` | Enable experimental tool-output pruning |
 | `COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE` | `off` | Pruning mode (`off` or `agent-message`) |
@@ -231,6 +232,7 @@ Example `settings.json`:
     "hardTokens": 260000
   },
   "cooldownMs": 120000,
+  "disableAutoCompaction": false,
   "experimentalToolOutputPruning": true,
   "toolOutputPruningMode": "agent-message",
   "toolOutputSummaryStrategy": "llm",
