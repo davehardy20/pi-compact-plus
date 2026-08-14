@@ -4,7 +4,11 @@ import type { CompactionState } from "./state.js";
 import type { CompactionMode, CurrentFocus } from "./types.js";
 import { CONTINUATION_PROMPT } from "./types.js";
 
-type ExtensionEventContext = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
+/** Event-context type passed to Pi extension event handlers. Shared with
+ * compaction-coordinator.ts — import from here rather than re-aliasing. */
+export type ExtensionEventContext = Parameters<
+	Parameters<ExtensionAPI["on"]>[1]
+>[1];
 
 /**
  * Pi invalidates extension contexts after session replacement or reload.
