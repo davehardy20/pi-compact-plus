@@ -8,7 +8,7 @@
 
 The default export `compactPlusExtension(pi: ExtensionAPI)` is the single function Pi calls when loading the extension. It:
 
-1. **Resolves settings once** at module-load time: `resolveCompactPlusSettings()` → `thresholdSettings`. Threshold and cooldown values are frozen after load; changing them requires `/reload` or a Pi restart. See [settings-and-state.md](settings-and-state.md).
+1. **Resolves settings once** at extension-load time (inside the exported factory): `resolveCompactPlusSettings()` → `thresholdSettings`. Threshold and cooldown values are frozen after load; changing them requires `/reload` or a Pi restart. See [settings-and-state.md](settings-and-state.md).
 
 2. **Creates shared state**: A single `CompactionState` instance (module-level `const state`) holds all mutable compaction and tool-output-pruning state. This is the only mutable state container.
 
@@ -38,6 +38,7 @@ const toolOutputPruning = new ToolOutputPruningCoordinator({
 const compactionCoordinator = new CompactionCoordinator({
     state, pi, thresholdSettings,
     getEffectiveUsage, persistTelemetrySnapshot,
+    disableAutoCompaction: thresholdSettings.disableAutoCompaction,
 });
 ```
 

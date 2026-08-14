@@ -50,7 +50,7 @@ Each metric (percent or tokens) maps to one of four bands:
 10. isSameTurn(turnIndex)                      → return (prevent double-trigger in same turn)
 ```
 
-If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastCompactTime=now`, `lastTriggerAuto=true`) and `executeCompaction(mode, focus, ...)` is called.
+If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastCompactTime=now`, `lastTriggerAuto=true`, and `lastCompactTurnIndex` when `turnIndex` is provided) and `executeCompaction(mode, focus, ...)` is called.
 
 **Change-entrypoint:** To add a new guard, add it to this cascade in `maybeAutoCompact`. Order matters — earlier guards short-circuit.
 
@@ -84,7 +84,7 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 1. Set `state.selectedMode = mode`, `state.isCompacting = true`.
 2. Call `ctx.compact({ customInstructions, onComplete, onError })`.
-3. **`onComplete`**: Reset `isCompacting`, `selectedMode`, `lastTriggerAuto`; update `lastCompactTime` and `lastCompactTokens` from `ctx.getContextUsage()`; reset `echoInjected`; persist telemetry; optionally send continuation prompt (`"Continue with the current task."`).
+3. **`onComplete`**: Reset `isCompacting`, `selectedMode`, `lastTriggerAuto`; update `lastCompactTime` from the last compaction timestamp (or now), and `lastCompactTokens` from `ctx.getContextUsage()`; reset `echoInjected`; persist telemetry; optionally send continuation prompt (`"Continue with the current task."`).
 4. **`onError`**: Same cleanup but `lastCompactTokens = 0`; call `clearPendingCompaction()`; notify error.
 
 **Auto-compaction sends a continuation prompt** (`sendContinuation: true`) so Pi resumes the task automatically after compaction. Manual compaction does not.
@@ -114,7 +114,7 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 **Execution paths:**
 1. **Custom with session streamFn**: If `event.streamFn` is a function → use it directly. Reason: null.
 2. **Custom with streamSimple shim**: If no session streamFn but helper supports it (arity ≥ 8) → use `PUBLIC_STREAM_SIMPLE_FN` which dynamically imports `@earendil-works/pi-ai/compat`'s `streamSimple`. Reason: `STREAM_SIMPLE_SHIM_REASON`.
-3. **Native fallback**: If neither streamFn nor streamSimple available → reason: `NATIVE_FALLBACK_REASON`, return undefined from `onSessionBeforeCompact`.
+3. **Legacy runtime (no streamFn param)**: If helper arity < 8 and no session streamFn → `executionPath: "custom"`, `reason: null`; `runCustomCompaction` calls `compact()` without a `streamFn` argument. Native fallback happens in `onSessionBeforeCompact` only when `runCustomCompaction` fails (auth unavailable, compact error, or invalid summary).
 
 **Invariant:** `COMPACT_PLUS_COMPACTION_THINKING_LEVEL = "minimal"` — Compact+ summaries always run at minimal thinking regardless of the session's reasoning level, to keep compaction fast and cheap.
 
