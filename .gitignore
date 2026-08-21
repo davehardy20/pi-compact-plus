@@ -5,6 +5,8 @@ dist/
 *.tgz
 .ruff_cache/
 coverage/
+.stryker-tmp/
+reports/
 
 # Local Pi/Mulch/Seeds workspace state
 .gitattributes
