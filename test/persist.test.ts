@@ -1051,3 +1051,117 @@ describe("Persisted telemetry schema validation", () => {
 		expect(result.issue?.message).toContain("lastCompaction");
 	});
 });
+
+function makeValidCompaction(
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		mode: "standard",
+		triggerSource: "turn_end",
+		triggerReason: "threshold",
+		timestamp: 1_000,
+		focusTags: ["src/index.ts"],
+		previousSummaryPresent: false,
+		splitTurn: false,
+		usageSource: "native",
+		messagesSummarizedCount: 1,
+		executionPath: "custom",
+		fromExtension: true,
+		...overrides,
+	};
+}
+
+it("accepts every required CompactionTelemetry enum variant", async () => {
+	const variants = [
+		{ mode: "hard" },
+		{ triggerSource: "message_end" },
+		{ triggerSource: "command" },
+		{ usageSource: "estimated" },
+		{ usageSource: "unknown" },
+		{ executionPath: "native-fallback" },
+	];
+
+	for (const [index, overrides] of variants.entries()) {
+		const filePath = path.join(makeTempDir(), `enum-${index}.json`);
+		const compaction = makeValidCompaction(overrides);
+		fs.writeFileSync(
+			filePath,
+			JSON.stringify({ version: 3, lastCompaction: compaction }),
+			"utf8",
+		);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		expect(result.issue).toBeNull();
+		expect(result.telemetry?.lastCompaction).toEqual(compaction);
+	}
+});
+
+it("rejects non-object CompactionTelemetry values", async () => {
+	for (const [index, lastCompaction] of [false, 0, "invalid", []].entries()) {
+		const filePath = path.join(makeTempDir(), `non-object-${index}.json`);
+		fs.writeFileSync(
+			filePath,
+			JSON.stringify({ version: 3, lastCompaction }),
+			"utf8",
+		);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		expect(result.telemetry?.lastCompaction).toBeNull();
+		expect(result.issue).toMatchObject({ code: "invalid-schema" });
+	}
+});
+
+it("rejects invalid optional CompactionTelemetry fields", async () => {
+	const invalidOptionals: Record<string, unknown>[] = [
+		{ fallbackReason: null },
+		{ classifiedCounts: null },
+		{ classifiedCounts: [] },
+		{ classifiedCounts: "invalid" },
+		{ classifiedCounts: { critical: 1, contextual: 1 } },
+		{ usagePercentAtTrigger: "50" },
+		{ usageTokensAtTrigger: -1 },
+		{ thinkingLevel: 1 },
+		{ compatibilityReason: false },
+	];
+
+	for (const [index, optional] of invalidOptionals.entries()) {
+		const filePath = path.join(makeTempDir(), `optional-invalid-${index}.json`);
+		fs.writeFileSync(
+			filePath,
+			JSON.stringify({
+				version: 3,
+				lastCompaction: makeValidCompaction(optional),
+			}),
+			"utf8",
+		);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		expect(result.telemetry?.lastCompaction).toBeNull();
+		expect(result.issue).toMatchObject({ code: "invalid-schema" });
+	}
+});
+
+it("preserves valid optional CompactionTelemetry boundary values", async () => {
+	const filePath = path.join(makeTempDir(), "optional-boundaries.json");
+	const compaction = makeValidCompaction({
+		fallbackReason: "",
+		classifiedCounts: { critical: 0, contextual: 0, ephemeral: 0 },
+		usagePercentAtTrigger: 0,
+		usageTokensAtTrigger: 0,
+		thinkingLevel: null,
+		compatibilityReason: "compatible",
+	});
+	fs.writeFileSync(
+		filePath,
+		JSON.stringify({ version: 3, lastCompaction: compaction }),
+		"utf8",
+	);
+
+	const result = await loadTelemetryWithDiagnostics({ filePath });
+
+	expect(result.issue).toBeNull();
+	expect(result.telemetry?.lastCompaction).toEqual(compaction);
+});
