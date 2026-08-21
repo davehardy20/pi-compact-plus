@@ -1097,6 +1097,60 @@ it("accepts every required CompactionTelemetry enum variant", async () => {
 	}
 });
 
+it("rejects invalid required CompactionTelemetry fields", async () => {
+	const invalidRequired: Record<string, unknown>[] = [
+		{ mode: "soft" },
+		{ triggerSource: "timer" },
+		{ triggerReason: 1 },
+		{ timestamp: -1 },
+		{ focusTags: ["valid", 1] },
+		{ previousSummaryPresent: "false" },
+		{ splitTurn: 0 },
+		{ usageSource: "measured" },
+		{ messagesSummarizedCount: -1 },
+		{ executionPath: "other" },
+		{ fromExtension: 1 },
+	];
+
+	for (const [index, required] of invalidRequired.entries()) {
+		const filePath = path.join(makeTempDir(), `required-invalid-${index}.json`);
+		fs.writeFileSync(
+			filePath,
+			JSON.stringify({
+				version: 3,
+				lastCompaction: makeValidCompaction(required),
+			}),
+			"utf8",
+		);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		expect(result.telemetry?.lastCompaction).toBeNull();
+		expect(result.issue).toMatchObject({ code: "invalid-schema" });
+	}
+});
+
+it("treats explicit null CompactionTelemetry as absent", async () => {
+	const filePath = path.join(makeTempDir(), "null-compaction.json");
+	fs.writeFileSync(
+		filePath,
+		JSON.stringify({
+			version: 3,
+			lastCompaction: null,
+			lastCompactTime: 100,
+		}),
+		"utf8",
+	);
+
+	const result = await loadTelemetryWithDiagnostics({ filePath });
+
+	expect(result.issue).toBeNull();
+	expect(result.telemetry).toMatchObject({
+		lastCompaction: null,
+		lastCompactTime: 100,
+	});
+});
+
 it("rejects non-object CompactionTelemetry values", async () => {
 	for (const [index, lastCompaction] of [false, 0, "invalid", []].entries()) {
 		const filePath = path.join(makeTempDir(), `non-object-${index}.json`);
