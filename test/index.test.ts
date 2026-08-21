@@ -1,5 +1,13 @@
 import * as fs from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import type {
 	ContextHandlerResult,
 	TestAgentMessage,
@@ -29,6 +37,44 @@ vi.mock("../src/persist.js", () => ({
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
 
 vi.mock("@earendil-works/pi-ai", () => piAiMocks);
+
+const compactPlusEnvironmentKeys = [
+	"COMPACT_PLUS_CHECKPOINT_THRESHOLD",
+	"COMPACT_PLUS_CHECKPOINT_THRESHOLD_TOKENS",
+	"COMPACT_PLUS_COOLDOWN_MS",
+	"COMPACT_PLUS_DISABLE_AUTO_COMPACTION",
+	"COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING",
+	"COMPACT_PLUS_HARD_THRESHOLD",
+	"COMPACT_PLUS_HARD_THRESHOLD_TOKENS",
+	"COMPACT_PLUS_SETTINGS_PATH",
+	"COMPACT_PLUS_STANDARD_THRESHOLD",
+	"COMPACT_PLUS_STANDARD_THRESHOLD_TOKENS",
+	"COMPACT_PLUS_THRESHOLD_MODE",
+	"COMPACT_PLUS_TOOL_OUTPUT_PRUNE_EXCLUDED_TOOLS",
+	"COMPACT_PLUS_TOOL_OUTPUT_PRUNE_INCLUDED_TOOLS",
+	"COMPACT_PLUS_TOOL_OUTPUT_PRUNE_MIN_CHARS",
+	"COMPACT_PLUS_TOOL_OUTPUT_PRUNE_STRATEGY",
+	"COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE",
+	"COMPACT_PLUS_TOOL_OUTPUT_QUERY_MAX_CHARS",
+	"COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_MODEL",
+	"COMPACT_PLUS_TOOL_OUTPUT_SUMMARIZER_THINKING",
+	"COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_MAX_CHARS",
+	"COMPACT_PLUS_TOOL_OUTPUT_SUMMARY_STRATEGY",
+] as const;
+
+const originalCompactPlusEnvironment = new Map(
+	compactPlusEnvironmentKeys.map((key) => [key, process.env[key]] as const),
+);
+for (const key of compactPlusEnvironmentKeys) {
+	delete process.env[key];
+}
+
+afterAll(() => {
+	for (const [key, value] of originalCompactPlusEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+});
 
 const defaultSettingsPathForTests =
 	"/tmp/compact-plus-test-missing-settings.json";

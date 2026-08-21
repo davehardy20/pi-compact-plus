@@ -474,6 +474,7 @@ function validatePersistedTelemetry(
 	}
 
 	let lastCompaction: CompactionTelemetry | null = null;
+	// JSON null is the persisted "no compaction" sentinel; skip object validation.
 	if ("lastCompaction" in data && data.lastCompaction !== null) {
 		const validated = validateCompactionTelemetry(data.lastCompaction, now);
 		if (validated) {
@@ -497,131 +498,173 @@ function validatePersistedTelemetry(
 	};
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCompactionMode(
+	value: unknown,
+): value is CompactionTelemetry["mode"] {
+	return value === "standard" || value === "hard";
+}
+
+function isTriggerSource(
+	value: unknown,
+): value is CompactionTelemetry["triggerSource"] {
+	return value === "message_end" || value === "turn_end" || value === "command";
+}
+
+function isUsageSource(
+	value: unknown,
+): value is CompactionTelemetry["usageSource"] {
+	return value === "native" || value === "estimated" || value === "unknown";
+}
+
+function isExecutionPath(
+	value: unknown,
+): value is CompactionTelemetry["executionPath"] {
+	return value === "custom" || value === "native-fallback";
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return (
+		Array.isArray(value) && value.every((item) => typeof item === "string")
+	);
+}
+
+function buildRequiredCompactionTelemetry(
+	value: unknown,
+	now: number,
+): CompactionTelemetry | null {
+	if (!isRecord(value)) return null;
+
+	if (
+		!isCompactionMode(value.mode) ||
+		!isTriggerSource(value.triggerSource) ||
+		typeof value.triggerReason !== "string" ||
+		!isValidTimestamp(value.timestamp, now) ||
+		!isStringArray(value.focusTags) ||
+		typeof value.previousSummaryPresent !== "boolean" ||
+		typeof value.splitTurn !== "boolean" ||
+		!isUsageSource(value.usageSource) ||
+		!isValidMessageCount(value.messagesSummarizedCount) ||
+		!isExecutionPath(value.executionPath) ||
+		typeof value.fromExtension !== "boolean"
+	) {
+		return null;
+	}
+
+	return {
+		mode: value.mode,
+		triggerSource: value.triggerSource,
+		triggerReason: value.triggerReason,
+		timestamp: value.timestamp,
+		focusTags: value.focusTags,
+		previousSummaryPresent: value.previousSummaryPresent,
+		splitTurn: value.splitTurn,
+		usageSource: value.usageSource,
+		messagesSummarizedCount: value.messagesSummarizedCount,
+		executionPath: value.executionPath,
+		fromExtension: value.fromExtension,
+	};
+}
+
+function applyOptionalFallbackReason(
+	target: CompactionTelemetry,
+	source: Record<string, unknown>,
+): boolean {
+	const value = source.fallbackReason;
+	if (value === undefined) return true;
+	if (typeof value !== "string") return false;
+	target.fallbackReason = value;
+	return true;
+}
+
+function applyOptionalClassifiedCounts(
+	target: CompactionTelemetry,
+	source: Record<string, unknown>,
+): boolean {
+	const value = source.classifiedCounts;
+	if (value === undefined) return true;
+	if (!isRecord(value)) return false;
+	if (
+		!isValidMessageCount(value.critical) ||
+		!isValidMessageCount(value.contextual) ||
+		!isValidMessageCount(value.ephemeral)
+	) {
+		return false;
+	}
+	target.classifiedCounts = {
+		critical: value.critical,
+		contextual: value.contextual,
+		ephemeral: value.ephemeral,
+	};
+	return true;
+}
+
+type OptionalNumberKey = "usagePercentAtTrigger" | "usageTokensAtTrigger";
+
+function applyOptionalNumber(
+	target: CompactionTelemetry,
+	source: Record<string, unknown>,
+	key: OptionalNumberKey,
+	isValid: (value: unknown) => value is number,
+): boolean {
+	const value = source[key];
+	if (value === undefined) return true;
+	if (!isValid(value)) return false;
+	target[key] = value;
+	return true;
+}
+
+type OptionalNullableStringKey = "thinkingLevel" | "compatibilityReason";
+
+function applyOptionalNullableString(
+	target: CompactionTelemetry,
+	source: Record<string, unknown>,
+	key: OptionalNullableStringKey,
+): boolean {
+	const value = source[key];
+	if (value === undefined) return true;
+	if (value !== null && typeof value !== "string") return false;
+	target[key] = value;
+	return true;
+}
+
+function applyOptionalCompactionTelemetry(
+	target: CompactionTelemetry,
+	source: Record<string, unknown>,
+): boolean {
+	return (
+		applyOptionalFallbackReason(target, source) &&
+		applyOptionalClassifiedCounts(target, source) &&
+		applyOptionalNumber(
+			target,
+			source,
+			"usagePercentAtTrigger",
+			isValidUsagePercent,
+		) &&
+		applyOptionalNumber(
+			target,
+			source,
+			"usageTokensAtTrigger",
+			isValidTokenCount,
+		) &&
+		applyOptionalNullableString(target, source, "thinkingLevel") &&
+		applyOptionalNullableString(target, source, "compatibilityReason")
+	);
+}
+
 function validateCompactionTelemetry(
 	value: unknown,
 	now: number,
 ): CompactionTelemetry | null {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return null;
-	}
-	const v = value as Record<string, unknown>;
-
-	// Required fields
-	if (v.mode !== "standard" && v.mode !== "hard") return null;
-	if (
-		v.triggerSource !== "message_end" &&
-		v.triggerSource !== "turn_end" &&
-		v.triggerSource !== "command"
-	) {
-		return null;
-	}
-	if (typeof v.triggerReason !== "string") return null;
-	if (!isValidTimestamp(v.timestamp, now)) return null;
-	if (
-		!Array.isArray(v.focusTags) ||
-		!v.focusTags.every((t) => typeof t === "string")
-	) {
-		return null;
-	}
-	if (typeof v.previousSummaryPresent !== "boolean") return null;
-	if (typeof v.splitTurn !== "boolean") return null;
-	if (
-		v.usageSource !== "native" &&
-		v.usageSource !== "estimated" &&
-		v.usageSource !== "unknown"
-	) {
-		return null;
-	}
-	if (!isValidMessageCount(v.messagesSummarizedCount)) {
-		return null;
-	}
-	if (v.executionPath !== "custom" && v.executionPath !== "native-fallback") {
-		return null;
-	}
-	if (typeof v.fromExtension !== "boolean") return null;
-
-	const result: CompactionTelemetry = {
-		mode: v.mode,
-		triggerSource: v.triggerSource,
-		triggerReason: v.triggerReason,
-		timestamp: v.timestamp,
-		focusTags: v.focusTags,
-		previousSummaryPresent: v.previousSummaryPresent,
-		splitTurn: v.splitTurn,
-		usageSource: v.usageSource,
-		messagesSummarizedCount: v.messagesSummarizedCount,
-		executionPath: v.executionPath,
-		fromExtension: v.fromExtension,
-	};
-
-	// Optional fields
-	if ("fallbackReason" in v && v.fallbackReason !== undefined) {
-		if (typeof v.fallbackReason === "string") {
-			result.fallbackReason = v.fallbackReason;
-		} else {
-			return null;
-		}
-	}
-
-	if ("classifiedCounts" in v && v.classifiedCounts !== undefined) {
-		if (
-			v.classifiedCounts &&
-			typeof v.classifiedCounts === "object" &&
-			!Array.isArray(v.classifiedCounts)
-		) {
-			const cc = v.classifiedCounts as Record<string, unknown>;
-			if (
-				isValidMessageCount(cc.critical) &&
-				isValidMessageCount(cc.contextual) &&
-				isValidMessageCount(cc.ephemeral)
-			) {
-				result.classifiedCounts = {
-					critical: cc.critical,
-					contextual: cc.contextual,
-					ephemeral: cc.ephemeral,
-				};
-			} else {
-				return null;
-			}
-		} else {
-			return null;
-		}
-	}
-
-	if ("usagePercentAtTrigger" in v && v.usagePercentAtTrigger !== undefined) {
-		if (isValidUsagePercent(v.usagePercentAtTrigger)) {
-			result.usagePercentAtTrigger = v.usagePercentAtTrigger;
-		} else {
-			return null;
-		}
-	}
-
-	if ("usageTokensAtTrigger" in v && v.usageTokensAtTrigger !== undefined) {
-		if (isValidTokenCount(v.usageTokensAtTrigger)) {
-			result.usageTokensAtTrigger = v.usageTokensAtTrigger;
-		} else {
-			return null;
-		}
-	}
-
-	if ("thinkingLevel" in v && v.thinkingLevel !== undefined) {
-		if (v.thinkingLevel === null || typeof v.thinkingLevel === "string") {
-			result.thinkingLevel = v.thinkingLevel;
-		} else {
-			return null;
-		}
-	}
-
-	if ("compatibilityReason" in v && v.compatibilityReason !== undefined) {
-		if (
-			v.compatibilityReason === null ||
-			typeof v.compatibilityReason === "string"
-		) {
-			result.compatibilityReason = v.compatibilityReason;
-		} else {
-			return null;
-		}
-	}
-
-	return result;
+	const result = buildRequiredCompactionTelemetry(value, now);
+	if (!result) return null;
+	return applyOptionalCompactionTelemetry(
+		result,
+		value as Record<string, unknown>,
+	)
+		? result
+		: null;
 }
