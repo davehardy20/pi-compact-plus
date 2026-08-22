@@ -300,8 +300,171 @@ function restoreToolPairs(
 
 export const __test__ = { normalizeStructuredSummary, restoreToolPairs };
 
+type CompactionPreparation = Parameters<typeof compact>[0];
+
+interface PreparedCompactionContext {
+	preparation: CompactionPreparation;
+	focusSource: AgentMessage[];
+	customInstructions: string;
+}
+
+function getCompactionFocusSource(
+	preparation: CompactionPreparation,
+): AgentMessage[] {
+	return preparation.isSplitTurn
+		? [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages]
+		: preparation.messagesToSummarize;
+}
+
+function retainHardModeMessages(
+	messages: AgentMessage[],
+	mode: CompactionMode,
+): AgentMessage[] {
+	const classified = classifyMessages(messages, mode);
+	return restoreToolPairs(
+		[...classified.critical, ...classified.contextual],
+		messages,
+	);
+}
+
+function retainHardModePrefix(
+	preparation: CompactionPreparation,
+	mode: CompactionMode,
+): AgentMessage[] {
+	const original = preparation.turnPrefixMessages;
+	if (!preparation.isSplitTurn || original.length === 0) return original;
+
+	const pruned = retainHardModeMessages(original, mode);
+	// The prefix may contain the only useful clue about the interrupted turn.
+	return pruned.length > 0 ? pruned : original;
+}
+
+function applyHardModePruning(
+	preparation: CompactionPreparation,
+	mode: CompactionMode,
+): CompactionPreparation {
+	if (mode !== "hard") return preparation;
+	return {
+		...preparation,
+		messagesToSummarize: retainHardModeMessages(
+			preparation.messagesToSummarize,
+			mode,
+		),
+		turnPrefixMessages: retainHardModePrefix(preparation, mode),
+	};
+}
+
+function prepareCompactionContext(
+	preparation: CompactionPreparation,
+	mode: CompactionMode,
+): PreparedCompactionContext {
+	const focusSource = getCompactionFocusSource(preparation);
+	const prunedPreparation = applyHardModePruning(preparation, mode);
+	const normalizedPreviousSummary = normalizePreviousSummary(
+		prunedPreparation.previousSummary,
+	);
+	const normalizedPreparation = {
+		...prunedPreparation,
+		previousSummary: normalizedPreviousSummary,
+	};
+	const customInstructions = buildSummaryInstructions(
+		mode,
+		extractCurrentFocus(focusSource),
+		{
+			previousSummary: normalizedPreviousSummary,
+			isSplitTurn: normalizedPreparation.isSplitTurn,
+			turnPrefixCount: normalizedPreparation.turnPrefixMessages?.length ?? 0,
+		},
+	);
+
+	return {
+		preparation: normalizedPreparation,
+		focusSource,
+		customInstructions,
+	};
+}
+
+function createCompactArguments(args: {
+	prepared: PreparedCompactionContext;
+	model: unknown;
+	auth: { apiKey?: string; headers?: unknown };
+	compatibility: CompactionRuntimeCompatibility;
+	signal?: AbortSignal;
+}): unknown[] {
+	const compactArgs: unknown[] = [
+		args.prepared.preparation,
+		args.model,
+		args.auth.apiKey ?? "",
+		args.auth.headers,
+		args.prepared.customInstructions,
+		args.signal,
+	];
+
+	if (args.compatibility.helperSupportsThinkingLevel) {
+		compactArgs.push(args.compatibility.thinkingLevel ?? undefined);
+	}
+	if (args.compatibility.helperSupportsStreamFn) {
+		compactArgs.push(args.compatibility.streamFn);
+	}
+	return compactArgs;
+}
+
+function getCompactionClassifiedCounts(
+	prepared: PreparedCompactionContext,
+	mode: CompactionMode,
+): NonNullable<CompactionAttemptResult["classifiedCounts"]> {
+	const messages =
+		mode === "hard"
+			? prepared.preparation.messagesToSummarize
+			: prepared.focusSource;
+	return classifyCounts(classifyMessages(messages, mode));
+}
+
+function finalizeCompactionAttempt(
+	result: CompactionResult | undefined,
+	classifiedCounts: NonNullable<CompactionAttemptResult["classifiedCounts"]>,
+): CompactionAttemptResult {
+	if (!result) {
+		return {
+			result: undefined,
+			fallbackReason: "compact returned undefined",
+			classifiedCounts,
+		};
+	}
+
+	const normalizedResult = normalizeCompactionResult(result);
+	const validation = validateCompactionResult(normalizedResult);
+	if (!validation.valid) {
+		return {
+			result: undefined,
+			fallbackReason: `compaction summary invalid: ${validation.reason}`,
+			classifiedCounts,
+		};
+	}
+	return { result: normalizedResult, fallbackReason: null, classifiedCounts };
+}
+
+function authUnavailableResult(error: unknown): CompactionAttemptResult {
+	return {
+		result: undefined,
+		fallbackReason: `auth unavailable: ${error ?? "unknown"}`,
+	};
+}
+
+function selectCompactionSignal(
+	signal: AbortSignal | undefined,
+	contextSignal: AbortSignal | undefined,
+): AbortSignal | undefined {
+	return signal ?? contextSignal ?? undefined;
+}
+
+function compactErrorResult(error: unknown): CompactionAttemptResult {
+	const message = error instanceof Error ? error.message : String(error);
+	return { result: undefined, fallbackReason: `compact error: ${message}` };
+}
+
 export async function runCustomCompaction(
-	preparation: Parameters<typeof compact>[0],
+	preparation: CompactionPreparation,
 	mode: CompactionMode,
 	ctx: ExtensionContext,
 	compatibility: CompactionRuntimeCompatibility,
@@ -309,149 +472,31 @@ export async function runCustomCompaction(
 ): Promise<CompactionAttemptResult> {
 	try {
 		const model = ctx.model;
-		if (!model)
+		if (!model) {
 			return { result: undefined, fallbackReason: "model unavailable" };
+		}
 
 		const registry = ctx.modelRegistry as ModelRegistry;
 		const auth = await registry.getApiKeyAndHeaders(model);
-		if (!auth.ok)
-			return {
-				result: undefined,
-				fallbackReason: `auth unavailable: ${auth.error ?? "unknown"}`,
-			};
+		if (!auth.ok) return authUnavailableResult(auth.error);
 
-		// Combine for focus extraction so split-turn prefixes contribute
-		const focusSource = preparation.isSplitTurn
-			? [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages]
-			: preparation.messagesToSummarize;
-		const focus = extractCurrentFocus(focusSource);
-
-		if (mode === "hard") {
-			// Prune ephemeral from main history
-			const classifiedHistory = classifyMessages(
-				preparation.messagesToSummarize,
-				mode,
-			);
-			const prunedHistory = [
-				...classifiedHistory.critical,
-				...classifiedHistory.contextual,
-			];
-			const historyOrderMap = new Map<AgentMessage, number>(
-				preparation.messagesToSummarize.map((m, i) => [m, i]),
-			);
-			prunedHistory.sort((a, b) => {
-				const idxA = historyOrderMap.get(a);
-				const idxB = historyOrderMap.get(b);
-				return (idxA ?? 0) - (idxB ?? 0);
-			});
-			const historyWithPairs = restoreToolPairs(
-				prunedHistory,
-				preparation.messagesToSummarize,
-			);
-
-			// Prune ephemeral from turn prefix when splitting
-			let prunedPrefix: AgentMessage[] | undefined;
-			if (
-				preparation.isSplitTurn &&
-				preparation.turnPrefixMessages.length > 0
-			) {
-				const classifiedPrefix = classifyMessages(
-					preparation.turnPrefixMessages,
-					mode,
-				);
-				const pruned = [
-					...classifiedPrefix.critical,
-					...classifiedPrefix.contextual,
-				];
-				const prefixOrderMap = new Map<AgentMessage, number>(
-					preparation.turnPrefixMessages.map((m, i) => [m, i]),
-				);
-				pruned.sort((a, b) => {
-					const idxA = prefixOrderMap.get(a);
-					const idxB = prefixOrderMap.get(b);
-					return (idxA ?? 0) - (idxB ?? 0);
-				});
-				// Guard: never prune the prefix to empty — it may contain the only
-				// useful clue about what the current turn is doing.
-				prunedPrefix = pruned.length > 0 ? pruned : undefined;
-			}
-
-			const prefixWithPairs =
-				prunedPrefix && preparation.turnPrefixMessages.length > 0
-					? restoreToolPairs(prunedPrefix, preparation.turnPrefixMessages)
-					: prunedPrefix;
-
-			preparation = {
-				...preparation,
-				messagesToSummarize: historyWithPairs,
-				turnPrefixMessages: prefixWithPairs ?? preparation.turnPrefixMessages,
-			};
-		}
-
-		const normalizedPreviousSummary = normalizePreviousSummary(
-			preparation.previousSummary,
-		);
-		preparation = {
-			...preparation,
-			previousSummary: normalizedPreviousSummary,
-		};
-
-		const customInstructions = buildSummaryInstructions(mode, focus, {
-			previousSummary: normalizedPreviousSummary,
-			isSplitTurn: preparation.isSplitTurn,
-			turnPrefixCount: preparation.turnPrefixMessages?.length ?? 0,
+		const prepared = prepareCompactionContext(preparation, mode);
+		const compactArgs = createCompactArguments({
+			prepared,
+			model,
+			auth,
+			compatibility,
+			signal: selectCompactionSignal(signal, ctx.signal),
 		});
-
 		const compactRunner = compact as unknown as (
 			...args: unknown[]
-		) => Promise<CompactionResult>;
-		const compactArgs: unknown[] = [
-			preparation,
-			model,
-			auth.apiKey ?? "",
-			auth.headers,
-			customInstructions,
-			signal ?? ctx.signal ?? undefined,
-		];
-
-		if (compatibility.helperSupportsThinkingLevel) {
-			compactArgs.push(compatibility.thinkingLevel ?? undefined);
-		}
-
-		if (compatibility.helperSupportsStreamFn) {
-			compactArgs.push(compatibility.streamFn);
-		}
-
+		) => Promise<CompactionResult | undefined>;
 		const result = await compactRunner(...compactArgs);
-
-		// Compute classified counts for telemetry
-		const classified = classifyMessages(
-			mode === "hard" ? preparation.messagesToSummarize : focusSource,
-			mode,
+		return finalizeCompactionAttempt(
+			result,
+			getCompactionClassifiedCounts(prepared, mode),
 		);
-		const classifiedCounts = classifyCounts(classified);
-
-		if (!result) {
-			return {
-				result: undefined,
-				fallbackReason: "compact returned undefined",
-				classifiedCounts,
-			};
-		}
-
-		const normalizedResult = normalizeCompactionResult(result);
-		const validation = validateCompactionResult(normalizedResult);
-		if (!validation.valid) {
-			return {
-				result: undefined,
-				fallbackReason: `compaction summary invalid: ${validation.reason}`,
-				classifiedCounts,
-			};
-		}
-
-		return { result: normalizedResult, fallbackReason: null, classifiedCounts };
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		return { result: undefined, fallbackReason: `compact error: ${message}` };
+		return compactErrorResult(err);
 	}
 }
