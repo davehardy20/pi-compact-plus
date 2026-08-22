@@ -170,6 +170,7 @@ describe("formatStatusLines characterization", () => {
 			}),
 		);
 
+		expect(known).toHaveLength(16);
 		expect(known).not.toContain(detail);
 		expect(tokensUnknown).toContain(detail);
 		expect(percentUnknown).toContain(detail);
