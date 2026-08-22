@@ -82,6 +82,53 @@ function truncateAtBoundary(text: string, maxChars: number): string {
 	return `${slice.trimEnd()}…`;
 }
 
+interface SummarySection {
+	heading: string;
+	body: string[];
+}
+
+function renderSummarySectionBody(
+	section: SummarySection,
+	multiplier: number,
+): string[] {
+	const bodyLimit = Math.max(
+		2,
+		Math.floor(
+			(SECTION_BODY_LINE_LIMITS.get(section.heading) ?? 6) * multiplier,
+		),
+	);
+	const body: string[] = [];
+	let pendingBlank = false;
+
+	for (const rawLine of section.body) {
+		if (body.length >= bodyLimit) break;
+
+		const line = truncateLine(rawLine.trimEnd());
+		if (line.length === 0) {
+			pendingBlank = body.length > 0;
+			continue;
+		}
+		if (pendingBlank) {
+			if (body.length + 1 >= bodyLimit) break;
+			body.push("");
+			pendingBlank = false;
+		}
+		body.push(line);
+	}
+
+	return body;
+}
+
+function renderSummarySection(
+	section: SummarySection,
+	multiplier: number,
+): string {
+	return [
+		section.heading,
+		...renderSummarySectionBody(section, multiplier),
+	].join("\n");
+}
+
 function normalizeStructuredSummary(
 	summary: string,
 	maxTokens: number,
@@ -93,8 +140,8 @@ function normalizeStructuredSummary(
 
 	const normalized = summary.replace(/\r/g, "").trim();
 	const lines = normalized.split("\n");
-	const sections: Array<{ heading: string; body: string[] }> = [];
-	let current: { heading: string; body: string[] } | null = null;
+	const sections: SummarySection[] = [];
+	let current: SummarySection | null = null;
 
 	for (const line of lines) {
 		if (/^##\s+/.test(line)) {
@@ -110,41 +157,10 @@ function normalizeStructuredSummary(
 		return truncateAtBoundary(normalized, targetTokens * 4);
 	}
 
-	const rebuild = (multiplier: number): string => {
-		const rendered: string[] = [];
-		for (const section of sections) {
-			rendered.push(section.heading);
-			const bodyLimit = Math.max(
-				2,
-				Math.floor(
-					(SECTION_BODY_LINE_LIMITS.get(section.heading) ?? 6) * multiplier,
-				),
-			);
-			const body: string[] = [];
-			let previousBlank = false;
-			for (const rawLine of section.body) {
-				if (body.length >= bodyLimit) break;
-				const trimmedLine = truncateLine(rawLine.trimEnd());
-				const isBlank = trimmedLine.trim().length === 0;
-				if (isBlank) {
-					if (previousBlank || body.length === 0) continue;
-					previousBlank = true;
-					body.push("");
-					continue;
-				}
-				previousBlank = false;
-				body.push(trimmedLine);
-			}
-			while (body.length > 0 && body.at(-1) === "") {
-				body.pop();
-			}
-			rendered.push(...body, "");
-		}
-		while (rendered.length > 0 && rendered.at(-1) === "") {
-			rendered.pop();
-		}
-		return rendered.join("\n").trimEnd();
-	};
+	const rebuild = (multiplier: number): string =>
+		sections
+			.map((section) => renderSummarySection(section, multiplier))
+			.join("\n\n");
 
 	for (const multiplier of [1, 0.75, 0.5, 0.35]) {
 		const candidate = rebuild(multiplier);
@@ -282,7 +298,7 @@ function restoreToolPairs(
 	return original.filter((message) => restored.has(message));
 }
 
-export const __test__ = { restoreToolPairs };
+export const __test__ = { normalizeStructuredSummary, restoreToolPairs };
 
 export async function runCustomCompaction(
 	preparation: Parameters<typeof compact>[0],
