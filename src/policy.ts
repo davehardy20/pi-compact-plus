@@ -240,118 +240,206 @@ export function buildStatusSnapshot(args: {
 	};
 }
 
-export function formatStatusLines(status: CompactPlusStatus): string[] {
-	const settings = resolveThresholdSettings(status.thresholdSettings);
-	const compactionFallback = status.lastCompaction?.fallbackReason ?? null;
-	const topLevelFallback =
-		status.lastFallbackReason &&
-		status.lastFallbackReason !== compactionFallback
-			? status.lastFallbackReason
-			: null;
-	const usagePercentText =
-		status.usagePercent === null
-			? "unknown"
-			: `${status.usagePercent.toFixed(1)}%`;
-	const usageTokensText =
-		status.usageTokens === null
-			? "unknown"
-			: status.usageTokens.toLocaleString();
-	const contextWindowText =
-		status.contextWindow === null
-			? "unknown"
-			: status.contextWindow.toLocaleString();
+function formatUsagePercent(percent: number | null): string {
+	return percent === null ? "unknown" : `${percent.toFixed(1)}%`;
+}
 
-	const lines = [
+function formatNullableNumber(value: number | null): string {
+	return value === null ? "unknown" : value.toLocaleString();
+}
+
+function formatOptionalMode(mode: CompactionMode | null): string {
+	return mode ?? "none";
+}
+
+function formatCooldown(status: CompactPlusStatus): string {
+	return status.cooldownActive
+		? `${Math.ceil(status.cooldownRemainingMs / 1000)}s remaining`
+		: "ready";
+}
+
+function formatCompacting(isCompacting: boolean): string {
+	return isCompacting ? "in progress" : "idle";
+}
+
+function formatStatusCoreLines(
+	status: CompactPlusStatus,
+	settings: CompactPlusThresholdSettings,
+): string[] {
+	return [
 		"📦 Compact+ status",
-		`  Usage: ${usagePercentText} (${usageTokensText} / ${contextWindowText} tokens)`,
+		`  Usage: ${formatUsagePercent(status.usagePercent)} (${formatNullableNumber(status.usageTokens)} / ${formatNullableNumber(status.contextWindow)} tokens)`,
 		`  Source: ${status.usageSource}`,
 		`  Threshold mode: ${settings.thresholdMode}`,
 		`  Percent band: ${status.band}`,
 		`  Token band: ${getTokenBandText(status.usageTokens, settings)}`,
-		`  Effective band: ${status.effectiveBand ?? "none"}`,
+		`  Effective band: ${formatOptionalMode(status.effectiveBand)}`,
 		`  Thresholds:`,
 		`    percent checkpoint=${settings.checkpointThresholdPercent}% standard=${settings.standardThresholdPercent}% hard=${settings.hardThresholdPercent}%`,
 		`    tokens checkpoint=${settings.checkpointThresholdTokens.toLocaleString()} standard=${settings.standardThresholdTokens.toLocaleString()} hard=${settings.hardThresholdTokens.toLocaleString()}`,
 		`    cooldown=${settings.cooldownMs / 1000}s`,
 		"  Config reload: threshold/cooldown changes require /reload or restart",
-		`  Selected mode: ${status.selectedMode ?? "none"}`,
-		`  Cooldown: ${status.cooldownActive ? `${Math.ceil(status.cooldownRemainingMs / 1000)}s remaining` : "ready"}`,
-		`  Compacting: ${status.isCompacting ? "in progress" : "idle"}`,
+		`  Selected mode: ${formatOptionalMode(status.selectedMode)}`,
+		`  Cooldown: ${formatCooldown(status)}`,
+		`  Compacting: ${formatCompacting(status.isCompacting)}`,
 	];
-	if (
-		status.usageSource === "native" &&
-		(status.usagePercent === null || status.usageTokens === null)
-	) {
+}
+
+function hasUnknownUsage(status: CompactPlusStatus): boolean {
+	return status.usagePercent === null || status.usageTokens === null;
+}
+
+function formatNativeUsageDetail(status: CompactPlusStatus): string[] {
+	if (status.usageSource !== "native") return [];
+	if (!hasUnknownUsage(status)) return [];
+	return [
+		"  Usage detail: Pi reports usage as unknown until the next assistant response after compaction.",
+	];
+}
+
+function pushWhen(lines: string[], condition: boolean, line: string): void {
+	if (condition) lines.push(line);
+}
+
+function formatTelemetryIssueLines(
+	issues: TelemetryPersistenceIssue[],
+): string[] {
+	if (issues.length === 0) return [];
+	const lines = ["  Telemetry persistence warnings:"];
+	for (const issue of issues) {
 		lines.push(
-			"  Usage detail: Pi reports usage as unknown until the next assistant response after compaction.",
+			`    ${issue.operation}/${issue.code}: ${issue.message} (${issue.path})`,
 		);
-	}
-	if (status.telemetryPersistenceIssues.length > 0) {
-		lines.push("  Telemetry persistence warnings:");
-		for (const issue of status.telemetryPersistenceIssues) {
-			lines.push(
-				`    ${issue.operation}/${issue.code}: ${issue.message} (${issue.path})`,
-			);
-			if (issue.quarantinePath) {
-				lines.push(`      Quarantined: ${issue.quarantinePath}`);
-			}
-		}
-	}
-	if (status.lastCompaction) {
-		const lc = status.lastCompaction;
-		const ago = Math.round((Date.now() - lc.timestamp) / 1000);
-		const focusTags = Array.from(new Set(lc.focusTags.filter(Boolean)));
-		lines.push(
-			`  Last compaction: ${lc.mode} mode, ${lc.triggerSource} trigger, ${ago}s ago`,
-		);
-		if (lc.triggerReason) {
-			lines.push(`    Reason: ${lc.triggerReason}`);
-		}
-		lines.push(
-			`    Path: ${lc.executionPath}${lc.fromExtension ? " (Compact+)" : " (native Pi)"}`,
-		);
-		if (lc.thinkingLevel) {
-			lines.push(`    Thinking level: ${lc.thinkingLevel}`);
-		}
-		if (focusTags.length > 0) {
-			lines.push(`    Focus files: ${focusTags.join(", ")}`);
-		}
-		if (lc.previousSummaryPresent) {
-			lines.push("    Prior summary: merged");
-		}
-		if (lc.splitTurn) {
-			lines.push("    Split-turn: yes");
-		}
-		if (
-			lc.compatibilityReason &&
-			lc.compatibilityReason !== lc.fallbackReason
-		) {
-			lines.push(`    Compatibility: ${lc.compatibilityReason}`);
-		}
-		if (lc.fallbackReason) {
-			lines.push(`    Fallback: ${lc.fallbackReason}`);
-		}
-	}
-	if (topLevelFallback) {
-		lines.push(`  Last fallback: ${topLevelFallback}`);
-	}
-	if (status.lastInjectedEcho) {
-		lines.push("  Last focus echo:");
-		for (const echoLine of status.lastInjectedEcho.split("\n")) {
-			lines.push(`    ${echoLine}`);
-		}
-	} else if (compactionFallback || status.lastFallbackReason) {
-		lines.push(
-			"  Last focus echo: (none — last compaction fell back before a custom summary was injected)",
-		);
-	} else if (status.lastCompaction) {
-		lines.push(
-			"  Last focus echo: (none — no persisted focus echo is available for the last compaction)",
-		);
-	} else {
-		lines.push(
-			"  Last focus echo: (none — no compaction summary detected yet)",
+		pushWhen(
+			lines,
+			Boolean(issue.quarantinePath),
+			`      Quarantined: ${issue.quarantinePath}`,
 		);
 	}
 	return lines;
+}
+
+function formatCompactionPath(compaction: CompactionTelemetry): string {
+	return `${compaction.executionPath}${compaction.fromExtension ? " (Compact+)" : " (native Pi)"}`;
+}
+
+function isDistinctCompatibilityReason(
+	compaction: CompactionTelemetry,
+): boolean {
+	return (
+		Boolean(compaction.compatibilityReason) &&
+		compaction.compatibilityReason !== compaction.fallbackReason
+	);
+}
+
+function formatLastCompactionLines(
+	compaction: CompactionTelemetry | null,
+): string[] {
+	if (!compaction) return [];
+	const ago = Math.round((Date.now() - compaction.timestamp) / 1000);
+	const focusTags = Array.from(new Set(compaction.focusTags.filter(Boolean)));
+	const lines = [
+		`  Last compaction: ${compaction.mode} mode, ${compaction.triggerSource} trigger, ${ago}s ago`,
+	];
+	pushWhen(
+		lines,
+		Boolean(compaction.triggerReason),
+		`    Reason: ${compaction.triggerReason}`,
+	);
+	lines.push(`    Path: ${formatCompactionPath(compaction)}`);
+	pushWhen(
+		lines,
+		Boolean(compaction.thinkingLevel),
+		`    Thinking level: ${compaction.thinkingLevel}`,
+	);
+	pushWhen(
+		lines,
+		focusTags.length > 0,
+		`    Focus files: ${focusTags.join(", ")}`,
+	);
+	pushWhen(
+		lines,
+		compaction.previousSummaryPresent,
+		"    Prior summary: merged",
+	);
+	pushWhen(lines, compaction.splitTurn, "    Split-turn: yes");
+	pushWhen(
+		lines,
+		isDistinctCompatibilityReason(compaction),
+		`    Compatibility: ${compaction.compatibilityReason}`,
+	);
+	pushWhen(
+		lines,
+		Boolean(compaction.fallbackReason),
+		`    Fallback: ${compaction.fallbackReason}`,
+	);
+	return lines;
+}
+
+function getCompactionFallback(
+	compaction: CompactionTelemetry | null,
+): string | null {
+	return compaction?.fallbackReason ?? null;
+}
+
+function getTopLevelFallback(
+	status: CompactPlusStatus,
+	compactionFallback: string | null,
+): string | null {
+	return status.lastFallbackReason &&
+		status.lastFallbackReason !== compactionFallback
+		? status.lastFallbackReason
+		: null;
+}
+
+function formatTopLevelFallback(fallback: string | null): string[] {
+	return fallback ? [`  Last fallback: ${fallback}`] : [];
+}
+
+function formatEchoLine(line: string): string {
+	return `    ${line}`;
+}
+
+function hasFallback(
+	compactionFallback: string | null,
+	topLevelFallback: string | null,
+): boolean {
+	return Boolean(compactionFallback || topLevelFallback);
+}
+
+function formatLastFocusEchoLines(
+	status: CompactPlusStatus,
+	compactionFallback: string | null,
+): string[] {
+	if (status.lastInjectedEcho) {
+		return [
+			"  Last focus echo:",
+			...status.lastInjectedEcho.split("\n").map(formatEchoLine),
+		];
+	}
+	if (hasFallback(compactionFallback, status.lastFallbackReason)) {
+		return [
+			"  Last focus echo: (none — last compaction fell back before a custom summary was injected)",
+		];
+	}
+	if (status.lastCompaction) {
+		return [
+			"  Last focus echo: (none — no persisted focus echo is available for the last compaction)",
+		];
+	}
+	return ["  Last focus echo: (none — no compaction summary detected yet)"];
+}
+
+export function formatStatusLines(status: CompactPlusStatus): string[] {
+	const settings = resolveThresholdSettings(status.thresholdSettings);
+	const compactionFallback = getCompactionFallback(status.lastCompaction);
+	const topLevelFallback = getTopLevelFallback(status, compactionFallback);
+	return [
+		...formatStatusCoreLines(status, settings),
+		...formatNativeUsageDetail(status),
+		...formatTelemetryIssueLines(status.telemetryPersistenceIssues),
+		...formatLastCompactionLines(status.lastCompaction),
+		...formatTopLevelFallback(topLevelFallback),
+		...formatLastFocusEchoLines(status, compactionFallback),
+	];
 }
