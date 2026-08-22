@@ -218,6 +218,48 @@ function validateCompactionResult(result: CompactionResult): ValidationResult {
 	return { valid: true };
 }
 
+type ToolPairIndex = {
+	callById: Map<string, AgentMessage>;
+	resultById: Map<string, AgentMessage>;
+};
+
+function indexToolPairs(original: AgentMessage[]): ToolPairIndex {
+	const callById = new Map<string, AgentMessage>();
+	const resultById = new Map<string, AgentMessage>();
+
+	for (const message of original) {
+		for (const block of getAssistantIdBearingToolCallBlocks(message)) {
+			callById.set(block.id, message);
+		}
+		if (message.role !== "toolResult") continue;
+
+		const id = getToolCallId(message);
+		if (id) resultById.set(id, message);
+	}
+
+	return { callById, resultById };
+}
+
+function findToolPairCounterparts(
+	message: AgentMessage,
+	index: ToolPairIndex,
+): AgentMessage[] {
+	const counterparts: AgentMessage[] = [];
+
+	for (const block of getAssistantIdBearingToolCallBlocks(message)) {
+		const result = index.resultById.get(block.id);
+		if (result) counterparts.push(result);
+	}
+
+	if (message.role === "toolResult") {
+		const id = getToolCallId(message);
+		const call = id ? index.callById.get(id) : undefined;
+		if (call) counterparts.push(call);
+	}
+
+	return counterparts;
+}
+
 /**
  * Ensure tool call/result pairs remain atomic after pruning.
  * If a toolResult is kept but its matching assistant toolCall was pruned
@@ -227,47 +269,20 @@ function restoreToolPairs(
 	pruned: AgentMessage[],
 	original: AgentMessage[],
 ): AgentMessage[] {
-	const originalById = new Map<string, AgentMessage>();
-	const resultById = new Map<string, AgentMessage>();
-
-	for (const msg of original) {
-		if (msg.role === "assistant") {
-			for (const block of getAssistantIdBearingToolCallBlocks(msg)) {
-				originalById.set(block.id, msg);
-			}
-		}
-		if (msg.role === "toolResult") {
-			const id = getToolCallId(msg);
-			if (id) resultById.set(id, msg);
-		}
-	}
-
-	const prunedSet = new Set(pruned);
+	const index = indexToolPairs(original);
 	const restored = new Set<AgentMessage>(pruned);
 
-	for (const msg of pruned) {
-		if (msg.role === "assistant") {
-			for (const block of getAssistantIdBearingToolCallBlocks(msg)) {
-				const result = resultById.get(block.id);
-				if (result && !prunedSet.has(result)) {
-					restored.add(result);
-				}
-			}
-		}
-		if (msg.role === "toolResult") {
-			const id = getToolCallId(msg);
-			if (id) {
-				const call = originalById.get(id);
-				if (call && !prunedSet.has(call)) {
-					restored.add(call);
-				}
-			}
+	for (const message of pruned) {
+		for (const counterpart of findToolPairCounterparts(message, index)) {
+			restored.add(counterpart);
 		}
 	}
 
 	// Preserve original order
-	return original.filter((m) => restored.has(m));
+	return original.filter((message) => restored.has(message));
 }
+
+export const __test__ = { restoreToolPairs };
 
 export async function runCustomCompaction(
 	preparation: Parameters<typeof compact>[0],
