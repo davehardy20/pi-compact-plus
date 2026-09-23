@@ -417,6 +417,39 @@ describe("runCustomCompaction characterization", () => {
 		},
 	);
 
+	it.each([
+		"**None**",
+		"_None_",
+		"*None*",
+		"~~None~~",
+		"`None`",
+		"**_None_**",
+		"- **None**",
+		"**N/A**",
+	])(
+		"rejects a formatted placeholder in the critical objective (%s)",
+		async (placeholder) => {
+			compactMock.mockResolvedValueOnce(
+				successfulResult(
+					VALID_STRUCTURED_SUMMARY.replace(
+						"Finish the current repair.",
+						placeholder,
+					),
+				),
+			);
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				context(),
+				compatibility(),
+			);
+			expect(attempt.result).toBeUndefined();
+			expect(attempt.fallbackReason).toContain(
+				"empty critical section: ## Current Objective",
+			);
+		},
+	);
+
 	it.each(["-", "-   ", "*", "*   ", "+", "+   ", "1.", "2)", "-\n*   "])(
 		"rejects critical sections with only empty bullet items (%s)",
 		async (bullet) => {
@@ -562,6 +595,7 @@ describe("runCustomCompaction characterization", () => {
 			[
 				"Finish the current repair.",
 				"```md",
+				"```ts",
 				"## Current Task State",
 				"This is only an example.",
 				"```",

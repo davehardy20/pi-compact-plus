@@ -34,6 +34,19 @@ export type SummaryValidation =
 	| { valid: true }
 	| { valid: false; reason: string };
 
+/** A closing fence permits only whitespace after a matching marker. */
+export function parseSummaryFenceMarker(
+	line: string,
+): { kind: "`" | "~"; length: number; canClose: boolean } | undefined {
+	const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+	if (!match) return undefined;
+	return {
+		kind: match[1][0] as "`" | "~",
+		length: match[1].length,
+		canClose: match[2].trim().length === 0,
+	};
+}
+
 /** Keep fenced examples out of both validation and focus-echo extraction. */
 export function parseSummarySections(summary: string): {
 	sections: Map<string, string[]>;
@@ -51,18 +64,20 @@ export function parseSummarySections(summary: string): {
 	for (const line of lines[0] === STRUCTURED_SUMMARY_TITLE
 		? lines.slice(1)
 		: lines) {
-		const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
-		if (fenceMatch) {
-			const marker = fenceMatch[1];
-			const kind = marker[0] as "`" | "~";
+		const marker = parseSummaryFenceMarker(line);
+		if (marker) {
 			if (!fence) {
-				fence = kind;
+				fence = marker.kind;
 				fenceLength = marker.length;
-			} else if (fence === kind && marker.length >= fenceLength) {
+			} else if (
+				fence === marker.kind &&
+				marker.length >= fenceLength &&
+				marker.canClose
+			) {
 				fence = undefined;
 			}
 		}
-		if (fence || fenceMatch) continue;
+		if (fence || marker) continue;
 		if (/^##\s+/.test(line)) {
 			const heading = line.trimEnd();
 			headings.push(heading);
@@ -124,10 +139,14 @@ export function validateStructuredSummary(summary: string): SummaryValidation {
 				.trim()
 				.replace(/^(?:[-*+]|\d+[.)])(?:\s+|$)/, "")
 				.trim();
+			const plain = text
+				.replace(/^[*_~`]+/, "")
+				.replace(/[*_~`]+$/, "")
+				.trim();
 			return (
-				text.length > 0 &&
-				!/^(?:none\.?|n\/a)$/i.test(text) &&
-				text !== FENCED_EXAMPLE_OMISSION
+				plain.length > 0 &&
+				!/^(?:none\.?|n\/a)$/i.test(plain) &&
+				plain !== FENCED_EXAMPLE_OMISSION
 			);
 		});
 		if (!substantive) {

@@ -16,6 +16,7 @@ import { extractCurrentFocus } from "./session-evidence.js";
 import {
 	CRITICAL_HEADINGS,
 	FENCED_EXAMPLE_OMISSION,
+	parseSummaryFenceMarker,
 	STRUCTURED_SUMMARY_HEADINGS,
 	STRUCTURED_SUMMARY_TITLE,
 	validateStructuredSummary,
@@ -94,17 +95,22 @@ function omitFencedExamples(lines: string[]): string[] {
 	let currentHeading: string | undefined;
 	for (const line of lines) {
 		if (!fence && /^##\s+/.test(line)) currentHeading = line.trimEnd();
-		const match = /^\s*(`{3,}|~{3,})/.exec(line);
-		if (match && !fence) {
-			fence = match[1][0] as "`" | "~";
-			fenceLength = match[1].length;
+		const marker = parseSummaryFenceMarker(line);
+		if (marker && !fence) {
+			fence = marker.kind;
+			fenceLength = marker.length;
 			// Never spend a critical section's line budget on a placeholder.
 			if (!currentHeading || !CRITICAL_HEADING_SET.has(currentHeading)) {
 				retained.push(FENCED_EXAMPLE_OMISSION);
 			}
 			continue;
 		}
-		if (match && fence === match[1][0] && match[1].length >= fenceLength) {
+		if (
+			marker &&
+			fence === marker.kind &&
+			marker.length >= fenceLength &&
+			marker.canClose
+		) {
 			fence = undefined;
 			continue;
 		}
