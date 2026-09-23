@@ -106,16 +106,26 @@ export function executeCompaction(
 
 	ctx.compact({
 		customInstructions: buildSummaryInstructions(mode, focus),
-		onComplete: () => {
+		onComplete: (result) => {
 			state.isCompacting = false;
 			state.selectedMode = null;
 			state.lastTriggerAuto = false;
 			state.lastCompactTime = state.lastCompaction?.timestamp ?? Date.now();
 			state.echoInjected = false;
 			const postUsage = safeGetContextUsage(ctx);
-			if (postUsage && typeof postUsage.tokens === "number") {
-				state.lastCompactTokens = postUsage.tokens;
-			}
+			const tokens = postUsage?.tokens;
+			const estimate = result?.estimatedTokensAfter;
+			// Pi reports unknown native usage just after compaction. Only a valid
+			// post-compaction count may seed the regrowth guard; never retain a
+			// pre-compaction baseline from a previous run.
+			state.lastCompactTokens =
+				typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens > 0
+					? tokens
+					: typeof estimate === "number" &&
+							Number.isSafeInteger(estimate) &&
+							estimate > 0
+						? estimate
+						: 0;
 			options?.persist?.();
 			if (options?.sendContinuation) {
 				safeSendContinuation(pi);

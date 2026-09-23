@@ -17,6 +17,8 @@ export class CompactionState {
 	lastCompactTokens = 0;
 	lastModelKey: string | null = null;
 	lastCompactTurnIndex = -1;
+	/** Latest completed assistant turn awaiting the safe agent_settled boundary. */
+	pendingAutoCompactTurnIndex: number | null = null;
 	lastCompaction: CompactionTelemetry | null = null;
 	pendingCompaction: CompactionTelemetry | null = null;
 	lastFallbackReason: string | null = null;
@@ -34,6 +36,7 @@ export class CompactionState {
 		this.lastCompactTokens = 0;
 		this.lastModelKey = null;
 		this.lastCompactTurnIndex = -1;
+		this.pendingAutoCompactTurnIndex = null;
 		this.lastCompaction = null;
 		this.pendingCompaction = null;
 		this.lastFallbackReason = null;
@@ -58,6 +61,7 @@ export class CompactionState {
 			this.lastTriggerAuto = false;
 			this.lastCompactTokens = 0;
 			this.lastCompactTurnIndex = -1;
+			this.pendingAutoCompactTurnIndex = null;
 			this.lastCompaction = null;
 			this.pendingCompaction = null;
 			this.lastFallbackReason = null;

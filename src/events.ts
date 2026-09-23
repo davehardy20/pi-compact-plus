@@ -42,49 +42,55 @@ export function registerCompactPlusEventHandlers(
 	});
 
 	pi.on("agent_start", async (_event, _ctx) => {
+		// Pi restarts turnIndex at zero for every run. Scope the same-turn
+		// suppression to this run, not the entire session.
+		state.lastCompactTurnIndex = -1;
 		toolOutputPruning.onAgentStart();
 	});
 
-	pi.on("turn_end", async (event, ctx) => {
+	pi.on("turn_end", async (event, _ctx) => {
 		toolOutputPruning.onTurnEnd({
 			message: event.message,
 			toolResults: event.toolResults as AgentMessage[],
 			turnIndex: event.turnIndex,
 		});
 
-		// Let message_end flush captured tool-output batches before auto-compaction.
-		if (toolOutputPruning.hasPendingFlush()) return;
-
-		await compactionCoordinator.maybeAutoCompact(
-			ctx,
-			"turn_end",
-			event.turnIndex,
-		);
+		// turn_end follows tool execution, but the agent may still have another
+		// turn. Only the final successful assistant turn is eligible at idle.
+		state.pendingAutoCompactTurnIndex =
+			event.message.role === "assistant" && event.message.stopReason === "stop"
+				? event.turnIndex
+				: null;
 	});
 
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 
-		const assistant = event.message as Extract<
-			typeof event.message,
-			{ role: "assistant" }
-		>;
-
 		// Flush pending tool-output batches for a completed assistant response.
 		await toolOutputPruning.onMessageEnd(event, ctx, pi, {
 			isCompacting: state.isCompacting,
 		});
+	});
 
-		// Only auto-compact on assistant messages that have valid usage.
-		if (!assistant.usage) return;
-		await compactionCoordinator.maybeAutoCompact(ctx, "message_end");
+	pi.on("agent_settled", async (_event, ctx) => {
+		// Pi emits this only after the run's tools, retries, and queued messages
+		// have settled. Never call ctx.compact() inside message_end/turn_end: it
+		// aborts the active run and can discard or replay tool results.
+		const turnIndex = state.pendingAutoCompactTurnIndex;
+		state.pendingAutoCompactTurnIndex = null;
+		if (turnIndex === null || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+		if (toolOutputPruning.hasPendingFlush()) return;
+		await compactionCoordinator.maybeAutoCompact(ctx, "turn_end", turnIndex);
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		// A manual or native compaction supersedes any queued auto candidate.
+		state.pendingAutoCompactTurnIndex = null;
 		return compactionCoordinator.onSessionBeforeCompact(event, ctx);
 	});
 
 	pi.on("session_compact", async (event, ctx) => {
+		state.pendingAutoCompactTurnIndex = null;
 		await compactionCoordinator.onSessionCompact(event, ctx);
 	});
 
