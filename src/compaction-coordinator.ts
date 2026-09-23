@@ -11,7 +11,7 @@ import {
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
 import { buildPersistedFocusEcho } from "./focus-echo/index.js";
-import { executeCompaction, type ExtensionEventContext } from "./lifecycle.js";
+import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
 import { createCurrentSessionBranchView } from "./session-branch-view.js";
