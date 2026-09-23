@@ -133,12 +133,14 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 ### Summary schema and validation (`src/summary-schema.ts`)
 
+Both validation and focus-echo draft extraction (`src/focus-echo/draft.ts`) parse summaries through the shared fence-aware `parseSummarySections()`: it normalizes newlines, skips the title line, tracks ``` and ~~~ fences (a fence closes only on the same marker kind with at least the opening length), and returns top-level `## ` headings, per-section body lines, a `contentBeforeFirstSection` flag, and an `unterminatedFence` flag. Only out-of-fence lines are collected — fenced lines (and the fence-marker lines themselves) are neither headings nor section body.
+
 `validateStructuredSummary(summary)` enforces the full schema on one string:
 
 - **Title**: line 1 must equal `STRUCTURED_SUMMARY_TITLE` exactly (`Compaction Summary — Compact+ memory`).
-- **Headings**: every one of the 13 `STRUCTURED_SUMMARY_HEADINGS` must appear exactly once at top level; unknown or duplicate `## ` headings are rejected.
-- **Fenced blocks**: lines inside ``` or ~~~ fences (including unterminated fences) are treated as section body, never as headings — quoted examples cannot spoof or duplicate schema sections.
-- **Critical sections**: `## Current Objective`, `## Current Task State`, `## Next Best Step`, and `## Continuity Instruction` must have non-empty bodies that are not just `None`/`N/A`.
+- **Headings**: every one of the 13 `STRUCTURED_SUMMARY_HEADINGS` must appear exactly once at top level; unknown or duplicate `## ` headings are rejected. Headings inside code fences never count, so quoted example summaries cannot spoof or duplicate schema sections.
+- **Structure**: out-of-fence content before the first section, or an unterminated fence, is rejected.
+- **Critical sections**: `## Current Objective`, `## Current Task State`, `## Next Best Step`, and `## Continuity Instruction` require substantive text outside fences — their out-of-fence section lines, joined and trimmed, must be non-empty and not just `None`/`N/A` (an optional list marker is tolerated). A critical section whose only content sits inside a fence fails validation.
 
 ### Summary normalization (`src/compact.ts`)
 

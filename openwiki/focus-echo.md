@@ -68,7 +68,7 @@ A malformed persisted summary is rejected even when other messages quote valid m
 | `dependencyChain` | `## Dependency Chain` | All non-empty lines |
 | `nextStep` | `## Next Best Step` | First non-empty line |
 
-`extractSectionContent()` finds the heading, reads until the next `## ` heading, and returns the body text.
+The draft is built from the parsed section lines of the shared fence-aware `parseSummarySections()` in `src/summary-schema.ts` — the same parser behind `validateStructuredSummary`. Each field reads from its section's out-of-fence lines (first non-empty line, `- `/`* ` list items, or all non-empty lines per the table above). There is no substring extraction over the raw summary text, and fenced content — including example headings inside code fences — can never be picked up as a field value.
 
 ## Normalization (`src/focus-echo/normalizer.ts` → `rules/`)
 

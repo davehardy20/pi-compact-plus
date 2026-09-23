@@ -409,6 +409,27 @@ describe("runCustomCompaction characterization", () => {
 		},
 	);
 
+	it("rejects a critical section containing only a fenced example", async () => {
+		compactMock.mockResolvedValueOnce(
+			successfulResult(
+				VALID_STRUCTURED_SUMMARY.replace(
+					"Finish the current repair.",
+					"```md\nAn example, not the current objective.\n```",
+				),
+			),
+		);
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.result).toBeUndefined();
+		expect(attempt.fallbackReason).toContain(
+			"empty critical section: ## Current Objective",
+		);
+	});
+
 	it("rejects an unbounded raw summary before normalization", async () => {
 		compactMock.mockResolvedValueOnce(
 			successfulResult(

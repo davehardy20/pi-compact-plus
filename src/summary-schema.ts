@@ -32,22 +32,23 @@ export type SummaryValidation =
 	| { valid: true }
 	| { valid: false; reason: string };
 
-/** Validate only top-level headings outside code fences; never trust quoted examples. */
-export function validateStructuredSummary(summary: string): SummaryValidation {
-	if (summary.length > MAX_RAW_SUMMARY_CHARS) {
-		return { valid: false, reason: "raw summary too large" };
-	}
+/** Content outside fences only. Shared by validation and focus-echo extraction. */
+export function parseSummarySections(summary: string): {
+	sections: Map<string, string[]>;
+	headings: string[];
+	contentBeforeFirstSection: boolean;
+	unterminatedFence: boolean;
+} {
 	const lines = summary.replace(/\r\n?/g, "\n").split("\n");
-	if (lines[0] !== STRUCTURED_SUMMARY_TITLE) {
-		return { valid: false, reason: "canonical summary title missing" };
-	}
-
-	const sections = new Map<StructuredSummaryHeading, string[]>();
-	const allowed = new Set<string>(STRUCTURED_SUMMARY_HEADINGS);
-	let current: StructuredSummaryHeading | undefined;
+	const sections = new Map<string, string[]>();
+	const headings: string[] = [];
+	let current: string | undefined;
 	let fence: "`" | "~" | undefined;
 	let fenceLength = 0;
-	for (const line of lines.slice(1)) {
+	let contentBeforeFirstSection = false;
+	for (const line of lines[0] === STRUCTURED_SUMMARY_TITLE
+		? lines.slice(1)
+		: lines) {
 		const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
 		if (fenceMatch) {
 			const marker = fenceMatch[1];
@@ -59,35 +60,63 @@ export function validateStructuredSummary(summary: string): SummaryValidation {
 				fence = undefined;
 			}
 		}
-		if (fence || fenceMatch) {
-			if (current) sections.get(current)?.push(line);
-			continue;
-		}
+		if (fence || fenceMatch) continue;
 		if (/^##\s+/.test(line)) {
 			const heading = line.trimEnd();
-			if (!allowed.has(heading)) {
-				return { valid: false, reason: `unknown heading: ${heading}` };
-			}
-			const key = heading as StructuredSummaryHeading;
-			if (sections.has(key)) {
-				return { valid: false, reason: `duplicate heading: ${key}` };
-			}
-			sections.set(key, []);
-			current = key;
+			headings.push(heading);
+			if (!sections.has(heading)) sections.set(heading, []);
+			current = heading;
 		} else if (current) {
 			sections.get(current)?.push(line);
 		} else if (line.trim()) {
-			return { valid: false, reason: "content before first section" };
+			contentBeforeFirstSection = true;
 		}
 	}
-	if (fence) return { valid: false, reason: "unterminated code fence" };
+	return {
+		sections,
+		headings,
+		contentBeforeFirstSection,
+		unterminatedFence: !!fence,
+	};
+}
+
+/** Reject malformed structure and critical content absent outside fences. */
+export function validateStructuredSummary(summary: string): SummaryValidation {
+	if (summary.length > MAX_RAW_SUMMARY_CHARS) {
+		return { valid: false, reason: "raw summary too large" };
+	}
+	if (
+		summary.replace(/\r\n?/g, "\n").split("\n", 1)[0] !==
+		STRUCTURED_SUMMARY_TITLE
+	) {
+		return { valid: false, reason: "canonical summary title missing" };
+	}
+
+	const parsed = parseSummarySections(summary);
+	const allowed = new Set<string>(STRUCTURED_SUMMARY_HEADINGS);
+	const seen = new Set<string>();
+	for (const heading of parsed.headings) {
+		if (!allowed.has(heading)) {
+			return { valid: false, reason: `unknown heading: ${heading}` };
+		}
+		if (seen.has(heading)) {
+			return { valid: false, reason: `duplicate heading: ${heading}` };
+		}
+		seen.add(heading);
+	}
+	if (parsed.contentBeforeFirstSection) {
+		return { valid: false, reason: "content before first section" };
+	}
+	if (parsed.unterminatedFence) {
+		return { valid: false, reason: "unterminated code fence" };
+	}
 	for (const heading of STRUCTURED_SUMMARY_HEADINGS) {
-		if (!sections.has(heading)) {
+		if (!parsed.sections.has(heading)) {
 			return { valid: false, reason: `missing heading: ${heading}` };
 		}
 	}
 	for (const heading of CRITICAL_HEADINGS) {
-		const body = sections.get(heading)?.join("\n").trim() ?? "";
+		const body = parsed.sections.get(heading)?.join("\n").trim() ?? "";
 		if (!body || /^(?:[-*]\s*)?(?:none\.?|n\/a)$/i.test(body)) {
 			return { valid: false, reason: `empty critical section: ${heading}` };
 		}
