@@ -589,6 +589,76 @@ describe("runCustomCompaction characterization", () => {
 		);
 	});
 
+	it("keeps substantive critical lines instead of spending a tight budget on blanks", async () => {
+		const padding = Array.from(
+			{ length: 16 },
+			(_, index) => `- detail ${index} ${"x".repeat(215)}`,
+		).join("\n");
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Preserve first objective line.\n\nPreserve second objective line.",
+		).replace(/\n\n## (?!Current Objective)/g, `\n${padding}\n\n## `);
+		compactMock.mockResolvedValueOnce(successfulResult(summary));
+
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBeNull();
+		expect(attempt.result?.summary).not.toBe(summary);
+		expect(attempt.result?.summary).toContain("Preserve first objective line.");
+		expect(attempt.result?.summary).toContain(
+			"Preserve second objective line.",
+		);
+	});
+
+	it("does not trade a real optional line for a fenced-example marker", async () => {
+		const files = Array.from(
+			{ length: 14 },
+			(_, index) => `- src/file-${index}.ts`,
+		);
+		const summary = `${VALID_STRUCTURED_SUMMARY.replace(
+			"- src/compact.ts",
+			["```md", "- example-only.ts", "```", ...files].join("\n"),
+		)}\n${Array.from({ length: 400 }, () => `- ${"x".repeat(60)}`).join("\n")}`;
+		compactMock.mockResolvedValueOnce(successfulResult(summary));
+
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBeNull();
+		expect(attempt.result?.summary).not.toBe(summary);
+		expect(attempt.result?.summary).toContain(files.at(-1));
+		expect(attempt.result?.summary).not.toContain("example-only.ts");
+
+		const withBlank = summary.replace(
+			["```md", "- example-only.ts", "```", ...files].join("\n"),
+			[
+				files[0],
+				"",
+				"```md",
+				"- example-only.ts",
+				"```",
+				"",
+				...files.slice(1),
+			].join("\n"),
+		);
+		compactMock.mockResolvedValueOnce(successfulResult(withBlank));
+		const blankAttempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(blankAttempt.fallbackReason).toBeNull();
+		expect(blankAttempt.result?.summary).toContain(files.at(-1));
+	});
+
 	it("normalizes a fenced heading example without turning it into a duplicate section", async () => {
 		const summary = VALID_STRUCTURED_SUMMARY.replace(
 			"Finish the current repair.",

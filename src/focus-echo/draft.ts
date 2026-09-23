@@ -1,4 +1,5 @@
 import {
+	FENCED_EXAMPLE_OMISSION,
 	isSubstantiveCriticalLine,
 	parseSummarySections,
 } from "../summary-schema.js";
@@ -86,5 +87,5 @@ function extractRawSectionLines(
 ): string[] {
 	return (sections.get(heading) ?? [])
 		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
+		.filter((line) => line.length > 0 && line !== FENCED_EXAMPLE_OMISSION);
 }

@@ -119,6 +119,10 @@ describe("Pi-shaped compaction summary provenance", () => {
 			.replace(
 				"## Dependency Chain\n",
 				"## Dependency Chain\n[Code example omitted during normalization]\n",
+			)
+			.replace(
+				"- Tests → implementation → review.",
+				"- Tests → implementation → review.\n[Code example omitted during normalization]",
 			);
 		const messages = [piSummary(summary, 1), user("Continue.")];
 

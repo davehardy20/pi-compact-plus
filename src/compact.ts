@@ -131,23 +131,33 @@ function renderSummarySectionBody(
 	);
 	const body: string[] = [];
 	let pendingBlank = false;
+	let markerIncluded = false;
 
 	for (const rawLine of section.body) {
-		if (body.length >= bodyLimit) break;
+		const isMarker = rawLine.trim() === FENCED_EXAMPLE_OMISSION;
 		if (
 			CRITICAL_HEADING_SET.has(section.heading) &&
 			rawLine.trim().replace(/^[-*]\s*/, "") === FENCED_EXAMPLE_OMISSION
 		)
 			continue;
+		// Keep at most one informational marker without taking a real line's slot.
+		if (isMarker && markerIncluded) continue;
+		if (body.length >= bodyLimit + Number(markerIncluded)) break;
+		if (isMarker) {
+			markerIncluded = true;
+			pendingBlank = false;
+			body.push(FENCED_EXAMPLE_OMISSION);
+			continue;
+		}
 
 		const line = truncateLine(rawLine.trimEnd());
 		if (line.length === 0) {
-			pendingBlank = body.length > 0;
+			pendingBlank = body.length > 0 && body.at(-1) !== FENCED_EXAMPLE_OMISSION;
 			continue;
 		}
 		if (pendingBlank) {
-			if (body.length + 1 >= bodyLimit) break;
-			body.push("");
+			// Prefer the next substantive line when only one slot remains.
+			if (body.length + 2 <= bodyLimit + Number(markerIncluded)) body.push("");
 			pendingBlank = false;
 		}
 		body.push(line);

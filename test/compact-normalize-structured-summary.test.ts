@@ -62,11 +62,11 @@ describe("normalizeStructuredSummary rebuild characterization", () => {
 		);
 	});
 
-	it("drops a pending blank and following line when the blank fills the limit", () => {
+	it("drops a pending blank but preserves the following critical line", () => {
 		const summary = ["## Current Objective", "a", "b", "c", "", "d"].join("\n");
 
 		expect(normalizeStructuredSummary(summary, 1, 100)).toBe(
-			"## Current Objective\na\nb\nc",
+			"## Current Objective\na\nb\nc\nd",
 		);
 	});
 
