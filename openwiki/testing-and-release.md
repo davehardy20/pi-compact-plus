@@ -73,7 +73,7 @@ npm run typecheck      # tsc --noEmit (no output)
 **Steps:**
 1. Checkout (Node 22, npm cache).
 2. Detect repository capabilities (package.json, lockfile, scripts).
-3. Install: `npm install --no-audit --package-lock=false` (install from package.json, not lockfile, to handle iterating extension deps).
+3. Install: `npm ci --no-audit` — installs exactly the committed `package-lock.json`; `npm ci` fails closed on manifest/lockfile drift.
 4. Lockfile consistency check: `npm ci --dry-run --package-lock-only` — fails if lockfile is out of sync.
 5. Typecheck: `npm run typecheck` (if `typecheck` script or `tsconfig.json` exists).
 6. Test: `npm test` (if `test` script or vitest config exists).
