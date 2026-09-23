@@ -25,6 +25,7 @@ const piAiMocks = vi.hoisted(() => ({
 	completeSimple: vi.fn(),
 }));
 const mockCompleteSimple = vi.mocked(piAiMocks.completeSimple);
+type AppendEntry = (customType: string, data?: unknown) => void;
 
 vi.mock("@earendil-works/pi-ai", () => piAiMocks);
 
@@ -238,11 +239,11 @@ describe("captureTurnEndBatch", () => {
 
 describe("flushPendingBatches", () => {
 	let state: ToolOutputPruningState;
-	let pi: { appendEntry: ReturnType<typeof vi.fn> };
+	let pi: { appendEntry: ReturnType<typeof vi.fn<AppendEntry>> };
 
 	beforeEach(() => {
 		state = new ToolOutputPruningState();
-		pi = { appendEntry: vi.fn() };
+		pi = { appendEntry: vi.fn<AppendEntry>() };
 		mockCompleteSimple.mockReset();
 	});
 
@@ -696,11 +697,11 @@ describe("buildSummarizerInputs atomic resolution", () => {
 
 describe("flushPendingBatches multi-record atomicity", () => {
 	let state: ToolOutputPruningState;
-	let pi: { appendEntry: ReturnType<typeof vi.fn> };
+	let pi: { appendEntry: ReturnType<typeof vi.fn<AppendEntry>> };
 
 	beforeEach(() => {
 		state = new ToolOutputPruningState();
-		pi = { appendEntry: vi.fn() };
+		pi = { appendEntry: vi.fn<AppendEntry>() };
 		mockCompleteSimple.mockReset();
 	});
 
