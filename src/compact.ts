@@ -13,6 +13,11 @@ import {
 } from "./pi-messages.js";
 import { buildSummaryInstructions } from "./prompts.js";
 import { extractCurrentFocus } from "./session-evidence.js";
+import {
+	STRUCTURED_SUMMARY_HEADINGS,
+	STRUCTURED_SUMMARY_TITLE,
+	validateStructuredSummary,
+} from "./summary-schema.js";
 import type { CompactionMode } from "./types.js";
 
 export interface CompactionAttemptResult {
@@ -47,21 +52,12 @@ const TARGET_NORMALIZED_SUMMARY_TOKENS = 3200;
 const MAX_PREVIOUS_SUMMARY_TOKENS = 1600;
 const TARGET_PREVIOUS_SUMMARY_TOKENS = 1200;
 const MAX_SUMMARY_LINE_CHARS = 240;
-const SECTION_BODY_LINE_LIMITS = new Map<string, number>([
-	["## Current Objective", 4],
-	["## Current Task State", 8],
-	["## Active File Set", 14],
-	["## Repository State", 8],
-	["## Decisions Made", 10],
-	["## Completed Work", 12],
-	["## Open Problems", 10],
-	["## Current Errors", 8],
-	["## Known Constraints", 8],
-	["## Failed Attempts", 8],
-	["## Next Best Step", 4],
-	["## Continuity Instruction", 6],
-	["## Dependency Chain", 8],
-]);
+const SECTION_BODY_LINE_LIMITS = new Map<string, number>(
+	STRUCTURED_SUMMARY_HEADINGS.map(
+		(heading, index) =>
+			[heading, [4, 8, 14, 8, 10, 12, 10, 8, 8, 8, 4, 6, 8][index]] as const,
+	),
+);
 
 function estimateSummaryTokens(text: string): number {
 	return text.length / 4;
@@ -85,6 +81,28 @@ function truncateAtBoundary(text: string, maxChars: number): string {
 interface SummarySection {
 	heading: string;
 	body: string[];
+}
+
+/** Oversized structured summaries drop fenced examples atomically, not mid-fence. */
+function omitFencedExamples(lines: string[]): string[] {
+	const retained: string[] = [];
+	let fence: "`" | "~" | undefined;
+	let fenceLength = 0;
+	for (const line of lines) {
+		const match = /^\s*(`{3,}|~{3,})/.exec(line);
+		if (match && !fence) {
+			fence = match[1][0] as "`" | "~";
+			fenceLength = match[1].length;
+			retained.push("[Code example omitted during normalization]");
+			continue;
+		}
+		if (match && fence === match[1][0] && match[1].length >= fenceLength) {
+			fence = undefined;
+			continue;
+		}
+		if (!fence) retained.push(line);
+	}
+	return retained;
 }
 
 function renderSummarySectionBody(
@@ -139,7 +157,12 @@ function normalizeStructuredSummary(
 	}
 
 	const normalized = summary.replace(/\r/g, "").trim();
-	const lines = normalized.split("\n");
+	const title = normalized.startsWith(`${STRUCTURED_SUMMARY_TITLE}\n`)
+		? `${STRUCTURED_SUMMARY_TITLE}\n\n`
+		: "";
+	const lines = title
+		? omitFencedExamples(normalized.split("\n"))
+		: normalized.split("\n");
 	const sections: SummarySection[] = [];
 	let current: SummarySection | null = null;
 
@@ -158,6 +181,7 @@ function normalizeStructuredSummary(
 	}
 
 	const rebuild = (multiplier: number): string =>
+		title +
 		sections
 			.map((section) => renderSummarySection(section, multiplier))
 			.join("\n\n");
@@ -169,7 +193,8 @@ function normalizeStructuredSummary(
 		}
 	}
 
-	return truncateAtBoundary(rebuild(0.25), targetTokens * 4);
+	const minimal = rebuild(0.25);
+	return title ? minimal : truncateAtBoundary(minimal, targetTokens * 4);
 }
 
 function normalizePreviousSummary(
@@ -197,33 +222,14 @@ function normalizeCompactionResult(result: CompactionResult): CompactionResult {
 	};
 }
 
-/**
- * Lightweight validation that the compaction summary is coherent.
- * Checks for expected headings, non-empty content, and reasonable size.
- */
+/** Enforce the same full schema before and after lossy normalization. */
 function validateCompactionResult(result: CompactionResult): ValidationResult {
 	const summary = result.summary ?? "";
 	if (summary.length === 0) {
 		return { valid: false, reason: "summary is empty" };
 	}
-	// Only enforce heading checks for substantial summaries (>100 chars)
-	if (summary.length > 100) {
-		const expectedHeadings = [
-			"## Current Objective",
-			"## Active File Set",
-			"## Decisions Made",
-			"## Next Best Step",
-		];
-		const foundHeadings = expectedHeadings.filter((h) =>
-			summary.includes(h),
-		).length;
-		if (foundHeadings < 2) {
-			return {
-				valid: false,
-				reason: `only ${foundHeadings}/${expectedHeadings.length} expected headings found`,
-			};
-		}
-	}
+	const structure = validateStructuredSummary(summary);
+	if (!structure.valid) return structure;
 	const estimatedTokens = estimateSummaryTokens(summary);
 	if (estimatedTokens > MAX_VALID_SUMMARY_TOKENS) {
 		return {
@@ -432,6 +438,16 @@ function finalizeCompactionAttempt(
 		};
 	}
 
+	const initialValidation = result.summary
+		? validateStructuredSummary(result.summary)
+		: { valid: false as const, reason: "summary is empty" };
+	if (!initialValidation.valid) {
+		return {
+			result: undefined,
+			fallbackReason: `compaction summary invalid: ${initialValidation.reason}`,
+			classifiedCounts,
+		};
+	}
 	const normalizedResult = normalizeCompactionResult(result);
 	const validation = validateCompactionResult(normalizedResult);
 	if (!validation.valid) {

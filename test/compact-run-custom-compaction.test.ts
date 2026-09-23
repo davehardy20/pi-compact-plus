@@ -10,6 +10,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 
 import { runCustomCompaction } from "../src/compact.js";
 import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 function message(role: string, text: string): AgentMessage {
 	return {
@@ -91,7 +92,7 @@ function context(options?: {
 	} as unknown as ExtensionContext;
 }
 
-function successfulResult(summary = "short valid summary") {
+function successfulResult(summary = VALID_STRUCTURED_SUMMARY) {
 	return {
 		summary,
 		firstKeptEntryId: "entry-1",
@@ -369,29 +370,82 @@ describe("runCustomCompaction characterization", () => {
 		});
 
 		compactMock.mockResolvedValueOnce(successfulResult("x".repeat(101)));
-		await expect(
-			runCustomCompaction(prep, "standard", context(), compatibility()),
-		).resolves.toEqual({
-			result: undefined,
-			fallbackReason:
-				"compaction summary invalid: only 0/4 expected headings found",
-			classifiedCounts: { critical: 1, contextual: 0, ephemeral: 0 },
-		});
+		const invalid = await runCustomCompaction(
+			prep,
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(invalid.result).toBeUndefined();
+		expect(invalid.fallbackReason).toMatch(/^compaction summary invalid:/);
+	});
+
+	it.each([
+		"OK",
+		"Compaction Summary — Compact+ memory\n\n## Current Objective\nObjective\n\n## Next Best Step\nGo",
+		VALID_STRUCTURED_SUMMARY.replace(
+			"## Current Task State",
+			"## Other Heading",
+		),
+		VALID_STRUCTURED_SUMMARY.replace("Finish the current repair.", "   "),
+		VALID_STRUCTURED_SUMMARY.replace(
+			"## Current Errors",
+			"## Current Objective",
+		),
+		VALID_STRUCTURED_SUMMARY.replace("Run focused validation.", " "),
+		`\`\`\`md\n${VALID_STRUCTURED_SUMMARY}\n\`\`\``,
+	])(
+		"rejects malformed structured summary %s before committing",
+		async (summary) => {
+			compactMock.mockResolvedValueOnce(successfulResult(summary));
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				context(),
+				compatibility(),
+			);
+			expect(attempt.result).toBeUndefined();
+			expect(attempt.fallbackReason).toMatch(/^compaction summary invalid:/);
+		},
+	);
+
+	it("rejects an unbounded raw summary before normalization", async () => {
+		compactMock.mockResolvedValueOnce(
+			successfulResult(
+				VALID_STRUCTURED_SUMMARY.replace(
+					"Finish the current repair.",
+					"x".repeat(128_001),
+				),
+			),
+		);
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.result).toBeUndefined();
+		expect(attempt.fallbackReason).toContain("raw summary too large");
+	});
+
+	it("accepts the full canonical schema with explicit None markers", async () => {
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.result?.summary).toBe(VALID_STRUCTURED_SUMMARY);
+		expect(attempt.fallbackReason).toBeNull();
 	});
 
 	it("normalizes an oversized valid result while retaining result metadata", async () => {
 		const summary = [
-			"## Current Objective",
+			VALID_STRUCTURED_SUMMARY,
 			...Array.from(
 				{ length: 500 },
 				(_, index) => `- objective ${index} ${"x".repeat(50)}`,
 			),
-			"## Active File Set",
-			"- src/compact.ts",
-			"## Decisions Made",
-			"- characterize first",
-			"## Next Best Step",
-			"- refactor later",
 		].join("\n");
 		compactMock.mockResolvedValueOnce({
 			...successfulResult(summary),
@@ -415,6 +469,36 @@ describe("runCustomCompaction characterization", () => {
 		expect(attempt.result?.summary.length).toBeLessThan(summary.length);
 		expect(attempt.result?.summary).toContain("## Current Objective");
 		expect(attempt.result?.summary).toContain("## Active File Set");
+		expect(attempt.result?.summary).toMatch(
+			/^Compaction Summary — Compact\+ memory\n/,
+		);
+		expect(attempt.result?.summary).toContain("## Dependency Chain");
+	});
+
+	it("normalizes a fenced heading example without turning it into a duplicate section", async () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			[
+				"Finish the current repair.",
+				"```md",
+				"## Current Task State",
+				"This is only an example.",
+				"```",
+				...Array.from({ length: 400 }, () => `- ${"x".repeat(60)}`),
+			].join("\n"),
+		);
+		compactMock.mockResolvedValueOnce(successfulResult(summary));
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBeNull();
+		expect(attempt.result?.summary).toContain("## Dependency Chain");
+		expect(
+			attempt.result?.summary.match(/## Current Task State/g),
+		).toHaveLength(1);
 	});
 
 	it.each([

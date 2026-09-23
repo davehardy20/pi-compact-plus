@@ -23,8 +23,8 @@ context event
 positioning.ts: reorderForPositioning(messages)
     │
     ├── detection.ts: detectCompactionSummary(messages)
-    │       │  Scans newest→oldest assistant messages for summary signature
-    │       │  Requires: 4 signature headings + title line outside fenced blocks
+    │       │  Scans newest→oldest for Pi's persisted compactionSummary role
+    │       │  Requires: full schema valid (title + all 13 headings via summary-schema.ts)
     │       ▼
     ├── rendering.ts: buildPersistedFocusEcho(summaryText)
     │       │  parser.ts: parseFocusEcho(summaryText)
@@ -41,20 +41,18 @@ positioning.ts: reorderForPositioning(messages)
 
 ## Detection (`src/focus-echo/detection.ts`)
 
-`detectCompactionSummary(messages)` scans messages newest→oldest for the **newest** assistant message that is a Compact+ compaction summary.
+`detectCompactionSummary(messages)` scans messages newest→oldest and returns the **newest genuine persisted summary**.
 
-**Signature requirements** (all must be met):
-1. Message role is `assistant`.
-2. Text contains all 4 `SUMMARY_SIGNATURE_HEADINGS` outside fenced code blocks:
-   - `## Current Objective`
-   - `## Active File Set`
-   - `## Decisions Made`
-   - `## Next Best Step`
-3. Text contains the title line `Compaction Summary — Compact+ memory` (case-insensitive, multiline).
+**Requirements** (all must be met):
+1. Message role is `compactionSummary` — Pi's own persisted compaction memory, never assistant or user text. An assistant message that merely quotes a valid summary (or a context snapshot converted via `convertToLlm`, where persisted summaries become ordinary `user` text) is not memory and never matches. This is the provenance guarantee: assistant-lookalike prose cannot spoof the echo.
+2. `msg.summary` is a string (a malformed `compactionSummary` with a non-string summary is skipped).
+3. `msg.summary` passes `validateStructuredSummary()` from `src/summary-schema.ts`: exact `STRUCTURED_SUMMARY_TITLE` first line, all 13 unique `STRUCTURED_SUMMARY_HEADINGS` present exactly once at top level (headings inside code fences don't count), no unknown/duplicate headings, no unterminated fence, and non-empty critical sections (Objective, Task State, Next Best Step, Continuity Instruction).
 
-**Fenced block stripping:** `stripFencedBlocks()` removes both closed (```...```) and unterminated (```...```) fenced blocks before signature matching, so pasted examples or code snippets cannot spoof memory.
+A malformed persisted summary is rejected even when other messages quote valid memory — if no message qualifies, detection returns `{ found: false }`.
 
-**Invariant:** Using the newest matching summary ensures the echo is built from current memory, not stale memory.
+**Invariant:** Using the newest valid persisted summary ensures the echo is built from current memory, not stale memory.
+
+`extractSimpleText(msg)` remains in this module and is used only for echo-marker dedupe across context message roles (see positioning).
 
 ## Draft extraction (`src/focus-echo/draft.ts`)
 

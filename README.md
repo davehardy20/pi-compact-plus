@@ -78,6 +78,11 @@ Compact+ produces structured compaction summaries with these sections:
 - Continuity Instruction
 - Dependency Chain
 
+The exact title (`Compaction Summary — Compact+ memory`) and all 13 headings
+must be present once; malformed custom output falls back to native Pi
+compaction. Only a genuine persisted Pi `compactionSummary` can seed a focus
+echo—assistant messages quoting a summary cannot.
+
 ### Focus echo
 
 After compaction, a compact "focus echo" is injected at the recency position
