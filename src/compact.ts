@@ -16,6 +16,7 @@ import { extractCurrentFocus } from "./session-evidence.js";
 import {
 	CRITICAL_HEADINGS,
 	FENCED_EXAMPLE_OMISSION,
+	isSubstantiveCriticalLine,
 	parseSummaryFenceMarker,
 	STRUCTURED_SUMMARY_HEADINGS,
 	STRUCTURED_SUMMARY_TITLE,
@@ -129,38 +130,45 @@ function renderSummarySectionBody(
 			(SECTION_BODY_LINE_LIMITS.get(section.heading) ?? 6) * multiplier,
 		),
 	);
+	const critical = CRITICAL_HEADING_SET.has(section.heading);
+	const isNonSubstantiveCritical = (line: string): boolean =>
+		critical && line.trim().length > 0 && !isSubstantiveCriticalLine(line);
+	const realLineCount = section.body.filter(
+		(line) =>
+			line.trim().length > 0 &&
+			line.trim() !== FENCED_EXAMPLE_OMISSION &&
+			!isNonSubstantiveCritical(line),
+	).length;
+	// Decorative blanks and an informational marker never displace real lines.
+	let blankSlots = Math.max(0, bodyLimit - realLineCount);
 	const body: string[] = [];
+	let realLinesIncluded = 0;
 	let pendingBlank = false;
 	let markerIncluded = false;
 
 	for (const rawLine of section.body) {
+		if (isNonSubstantiveCritical(rawLine)) continue;
 		const isMarker = rawLine.trim() === FENCED_EXAMPLE_OMISSION;
-		if (
-			CRITICAL_HEADING_SET.has(section.heading) &&
-			rawLine.trim().replace(/^[-*]\s*/, "") === FENCED_EXAMPLE_OMISSION
-		)
-			continue;
-		// Keep at most one informational marker without taking a real line's slot.
-		if (isMarker && markerIncluded) continue;
-		if (body.length >= bodyLimit + Number(markerIncluded)) break;
 		if (isMarker) {
+			if (markerIncluded) continue;
 			markerIncluded = true;
 			pendingBlank = false;
 			body.push(FENCED_EXAMPLE_OMISSION);
 			continue;
 		}
-
 		const line = truncateLine(rawLine.trimEnd());
 		if (line.length === 0) {
 			pendingBlank = body.length > 0 && body.at(-1) !== FENCED_EXAMPLE_OMISSION;
 			continue;
 		}
-		if (pendingBlank) {
-			// Prefer the next substantive line when only one slot remains.
-			if (body.length + 2 <= bodyLimit + Number(markerIncluded)) body.push("");
-			pendingBlank = false;
+		if (realLinesIncluded >= bodyLimit) break;
+		if (pendingBlank && blankSlots > 0) {
+			body.push("");
+			blankSlots--;
 		}
+		pendingBlank = false;
 		body.push(line);
+		realLinesIncluded++;
 	}
 
 	return body;

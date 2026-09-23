@@ -596,7 +596,7 @@ describe("runCustomCompaction characterization", () => {
 		).join("\n");
 		const summary = VALID_STRUCTURED_SUMMARY.replace(
 			"Finish the current repair.",
-			"Preserve first objective line.\n\nPreserve second objective line.",
+			"**None**\nPreserve first objective line.\n\nPreserve second objective line.",
 		).replace(/\n\n## (?!Current Objective)/g, `\n${padding}\n\n## `);
 		compactMock.mockResolvedValueOnce(successfulResult(summary));
 
@@ -657,6 +657,28 @@ describe("runCustomCompaction characterization", () => {
 		);
 		expect(blankAttempt.fallbackReason).toBeNull();
 		expect(blankAttempt.result?.summary).toContain(files.at(-1));
+
+		const withSeparatedBlank = summary.replace(
+			["```md", "- example-only.ts", "```", ...files].join("\n"),
+			[
+				files[0],
+				"",
+				files[1],
+				"```md",
+				"- example-only.ts",
+				"```",
+				...files.slice(2),
+			].join("\n"),
+		);
+		compactMock.mockResolvedValueOnce(successfulResult(withSeparatedBlank));
+		const separatedAttempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(separatedAttempt.fallbackReason).toBeNull();
+		expect(separatedAttempt.result?.summary).toContain(files.at(-1));
 	});
 
 	it("normalizes a fenced heading example without turning it into a duplicate section", async () => {

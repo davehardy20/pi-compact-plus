@@ -62,6 +62,18 @@ describe("normalizeStructuredSummary rebuild characterization", () => {
 		);
 	});
 
+	it("does not spend optional section slots on blanks between real lines", () => {
+		const lines = Array.from({ length: 14 }, (_, index) => `file-${index}`);
+		const summary = [
+			"## Active File Set",
+			...lines.flatMap((line) => [line, ""]),
+		].join("\n");
+
+		expect(normalizeStructuredSummary(summary, 1, 10_000)).toBe(
+			["## Active File Set", ...lines].join("\n"),
+		);
+	});
+
 	it("drops a pending blank but preserves the following critical line", () => {
 		const summary = ["## Current Objective", "a", "b", "c", "", "d"].join("\n");
 
