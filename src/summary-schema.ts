@@ -32,7 +32,7 @@ export type SummaryValidation =
 	| { valid: true }
 	| { valid: false; reason: string };
 
-/** Content outside fences only. Shared by validation and focus-echo extraction. */
+/** Keep fenced examples out of both validation and focus-echo extraction. */
 export function parseSummarySections(summary: string): {
 	sections: Map<string, string[]>;
 	headings: string[];
