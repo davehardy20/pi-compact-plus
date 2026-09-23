@@ -60,10 +60,8 @@ jobs:
         if: steps.detect.outputs.has_package_json == 'true'
         run: |
           set -euo pipefail
-          # The config repo can carry a stale lockfile while extension dependencies
-          # are iterating. Install from package.json for the PR smoke gate; a
-          # separate lockfile-sync PR should restore npm ci once the lock is current.
-          npm install --no-audit --package-lock=false
+          # Install exactly the reviewed lockfile; npm ci fails closed on drift.
+          npm ci --no-audit
 
       - name: Lockfile consistency check
         if: steps.detect.outputs.has_lockfile == 'true'
