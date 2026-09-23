@@ -13,6 +13,8 @@ export interface MockCtx {
 	};
 	compact: ReturnType<typeof vi.fn>;
 	getContextUsage: ReturnType<typeof vi.fn>;
+	isIdle: ReturnType<typeof vi.fn>;
+	hasPendingMessages: ReturnType<typeof vi.fn>;
 	sessionManager: {
 		getBranch: ReturnType<typeof vi.fn>;
 	};
@@ -99,6 +101,8 @@ export function createMockCtx(options?: {
 						percent: 50,
 					},
 		),
+		isIdle: vi.fn(() => true),
+		hasPendingMessages: vi.fn(() => false),
 		sessionManager: {
 			getBranch: vi.fn(
 				() =>

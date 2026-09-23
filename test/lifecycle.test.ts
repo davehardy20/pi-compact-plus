@@ -70,6 +70,66 @@ describe("executeCompaction", () => {
 		expect(persist).toHaveBeenCalledTimes(1);
 	});
 
+	it("uses Pi's completion estimate when post-compaction usage is unavailable", () => {
+		const state = new CompactionState();
+		const ctx = createMockCtx({ contextUsage: undefined });
+		const pi = createMockPi();
+		ctx.compact.mockImplementation(
+			({ onComplete }: { onComplete: (result: unknown) => void }) => {
+				onComplete({ estimatedTokensAfter: 42_000 });
+			},
+		);
+
+		executeCompaction(
+			"standard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+		);
+
+		expect(state.lastCompactTokens).toBe(42_000);
+		expect(state.isRegrowthBelowThreshold(42_999, 1_000)).toBe(true);
+		expect(state.isRegrowthBelowThreshold(43_000, 1_000)).toBe(false);
+		state.resetOnModelChange("old-model");
+		state.resetOnModelChange("new-model");
+		expect(state.lastCompactTokens).toBe(0);
+	});
+
+	it.each([undefined, null, -1, 0, 42.5, Number.NaN, Infinity])(
+		"rejects an invalid completion estimate %s for regrowth",
+		(estimate) => {
+			const state = new CompactionState();
+			state.lastCompactTokens = 80_000;
+			const ctx = createMockCtx({ contextUsage: undefined });
+			ctx.compact.mockImplementation(
+				({ onComplete }: { onComplete: (result: unknown) => void }) => {
+					onComplete({ estimatedTokensAfter: estimate });
+				},
+			);
+			executeCompaction(
+				"standard",
+				{
+					objective: "test",
+					blockers: [],
+					decisions: [],
+					activeFiles: [],
+					dependencyChain: [],
+				},
+				state,
+				ctx as unknown as Parameters<typeof executeCompaction>[3],
+				createMockPi() as unknown as Parameters<typeof executeCompaction>[4],
+			);
+			expect(state.lastCompactTokens).toBe(0);
+		},
+	);
+
 	it("leaves lastCompactTokens at default 0 when getContextUsage returns no tokens for fresh state", () => {
 		const state = new CompactionState();
 		const persist = vi.fn();
@@ -101,7 +161,7 @@ describe("executeCompaction", () => {
 		expect(persist).toHaveBeenCalledTimes(1);
 	});
 
-	it("preserves existing lastCompactTokens when getContextUsage returns no tokens", () => {
+	it("clears stale regrowth baseline when completion has no valid estimate", () => {
 		const state = new CompactionState();
 		state.lastCompactTokens = 42000;
 		const persist = vi.fn();
@@ -129,7 +189,7 @@ describe("executeCompaction", () => {
 			{ sendContinuation: false, persist },
 		);
 
-		expect(state.lastCompactTokens).toBe(42000);
+		expect(state.lastCompactTokens).toBe(0);
 		expect(persist).toHaveBeenCalledTimes(1);
 	});
 

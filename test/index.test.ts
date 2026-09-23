@@ -129,6 +129,27 @@ const packageJson = JSON.parse(
 	dependencies?: Record<string, string>;
 };
 
+async function settleAutoTurn(
+	pi: ReturnType<typeof createMockPi>,
+	ctx: ReturnType<typeof createMockCtx>,
+	turnIndex = 0,
+): Promise<void> {
+	const turnEnd = pi.events.get("turn_end")?.[0];
+	const settled = pi.events.get("agent_settled")?.[0];
+	if (!turnEnd || !settled) {
+		throw new Error("auto-compaction handlers not registered");
+	}
+	await turnEnd(
+		{
+			message: { role: "assistant", stopReason: "stop", content: [] },
+			toolResults: [],
+			turnIndex,
+		},
+		ctx,
+	);
+	await settled({}, ctx);
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("@davehardy20/pi-compact-plus", () => {
@@ -308,6 +329,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		const expectedEvents = [
 			"session_start",
 			"agent_start",
+			"agent_settled",
 			"turn_end",
 			"message_end",
 			"session_tree",
@@ -390,7 +412,172 @@ describe("@davehardy20/pi-compact-plus", () => {
 			ctx,
 		);
 
+		await settleAutoTurn(pi, ctx);
 		expect(ctx.compact).not.toHaveBeenCalled();
+
+		const pruning = __test__.getToolOutputPruningState();
+		pruning.isFlushing = false;
+		pruning.pendingBatches.push({
+			batchId: "still-pending",
+			turnIndex: 1,
+			timestamp: Date.now(),
+			recordIds: ["record-1"],
+		});
+		await settleAutoTurn(pi, ctx, 1);
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("does not compact before tool execution and session persistence settle", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+		const messageEnd = pi.events.get("message_end")?.[0];
+		const turnEnd = pi.events.get("turn_end")?.[0];
+		const settled = pi.events.get("agent_settled")?.[0];
+		const ctx = createMockCtx({
+			contextWindow: 100_000,
+			contextUsage: { tokens: 80_000, percent: 80 },
+		});
+		const message = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "tc1", name: "bash" }],
+			stopReason: "toolUse",
+			usage: { input: 80_000, output: 1, totalTokens: 80_001 },
+		};
+		if (!messageEnd || !turnEnd || !settled) {
+			throw new Error("auto-compaction handlers not registered");
+		}
+		await messageEnd({ message }, ctx);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		await turnEnd({ message, toolResults: [], turnIndex: 0 }, ctx);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		const finalMessage = {
+			...message,
+			content: [{ type: "text", text: "done" }],
+			stopReason: "stop",
+		};
+		await messageEnd({ message: finalMessage }, ctx);
+		await turnEnd(
+			{ message: finalMessage, toolResults: [], turnIndex: 1 },
+			ctx,
+		);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		await settled({}, ctx);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		await settled({}, ctx);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows a later run to compact after cooldown and regrowth even when its turn index repeats", async () => {
+		vi.useFakeTimers();
+		try {
+			const pi = createMockPi();
+			compactPlusExtension(pi as never);
+			__test__.resetState();
+			const ctx = createMockCtx({
+				contextWindow: 100_000,
+				contextUsage: { tokens: 80_000, percent: 80 },
+			});
+			const agentStart = pi.events.get("agent_start")?.[0];
+			if (!agentStart) throw new Error("agent_start handler missing");
+			await agentStart({}, ctx);
+			await settleAutoTurn(pi, ctx, 0);
+			expect(ctx.compact).toHaveBeenCalledTimes(1);
+			ctx.getContextUsage.mockReturnValue(undefined);
+			ctx.compact.mock.calls[0]?.[0]?.onComplete?.({
+				estimatedTokensAfter: 40_000,
+			} as never);
+			expect(__test__.getLastCompactTokens()).toBe(40_000);
+			ctx.getContextUsage.mockReturnValue({
+				tokens: 80_000,
+				percent: 80,
+				contextWindow: 100_000,
+			});
+			vi.setSystemTime(Date.now() + 180_000);
+			await agentStart({}, ctx);
+			await settleAutoTurn(pi, ctx, 0);
+			expect(ctx.compact).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("drops the pending candidate when the model or session changes", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+		const ctx = createMockCtx({
+			contextWindow: 100_000,
+			contextUsage: { tokens: 80_000, percent: 80 },
+		});
+		const turnEnd = pi.events.get("turn_end")?.[0];
+		const settled = pi.events.get("agent_settled")?.[0];
+		const modelSelect = pi.events.get("model_select")?.[0];
+		const sessionStart = pi.events.get("session_start")?.[0];
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (
+			!turnEnd ||
+			!settled ||
+			!modelSelect ||
+			!sessionStart ||
+			!beforeCompact
+		) {
+			throw new Error("missing lifecycle handler");
+		}
+		const finalTurn = (index: number) => ({
+			message: { role: "assistant", stopReason: "stop", content: [] },
+			toolResults: [],
+			turnIndex: index,
+		});
+		await modelSelect({ model: { provider: "test", id: "old" } }, ctx);
+		await turnEnd(finalTurn(0), ctx);
+		await modelSelect({ model: { provider: "test", id: "new" } }, ctx);
+		await settled({}, ctx);
+		await turnEnd(finalTurn(1), ctx);
+		await sessionStart({}, ctx);
+		await settled({}, ctx);
+		await turnEnd(finalTurn(2), ctx);
+		await beforeCompact({}, ctx);
+		await settled({}, ctx);
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("skips queued, busy, failed and manually compacting runs at settlement", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+		const ctx = createMockCtx({
+			contextWindow: 100_000,
+			contextUsage: { tokens: 80_000, percent: 80 },
+		});
+		const turnEnd = pi.events.get("turn_end")?.[0];
+		const settled = pi.events.get("agent_settled")?.[0];
+		const manual = pi.commands.get("compact-plus");
+		if (!turnEnd || !settled || !manual) {
+			throw new Error("missing handler");
+		}
+		const finalTurn = (index: number, stopReason = "stop") => ({
+			message: { role: "assistant", stopReason, content: [] },
+			toolResults: [],
+			turnIndex: index,
+		});
+		const finish = async (index: number, stopReason = "stop") => {
+			await turnEnd(finalTurn(index, stopReason), ctx);
+			await settled({}, ctx);
+		};
+
+		ctx.isIdle.mockReturnValue(false);
+		await finish(0);
+		ctx.isIdle.mockReturnValue(true);
+		ctx.hasPendingMessages.mockReturnValue(true);
+		await finish(1);
+		ctx.hasPendingMessages.mockReturnValue(false);
+		await finish(2, "error");
+		expect(ctx.compact).not.toHaveBeenCalled();
+		await turnEnd(finalTurn(3), ctx);
+		await manual.handler("standard", ctx);
+		await settled({}, ctx);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
 	});
 
 	it("auto-compacts a 1M-token model at 20% / 200,000 tokens under effective_cap", async () => {
@@ -419,6 +606,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			ctx,
 		);
 
+		await settleAutoTurn(pi, ctx);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(__test__.getSelectedMode()).toBe("standard");
 	});
@@ -449,6 +637,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			ctx,
 		);
 
+		await settleAutoTurn(pi, ctx);
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(__test__.getSelectedMode()).toBeNull();
 	});
@@ -479,6 +668,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			ctx,
 		);
 
+		await settleAutoTurn(pi, ctx);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(__test__.getSelectedMode()).toBe("hard");
 	});
@@ -509,6 +699,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			ctx,
 		);
 
+		await settleAutoTurn(pi, ctx);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(__test__.getSelectedMode()).toBe("standard");
 	});
@@ -602,6 +793,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			ctx,
 		);
 
+		await settleAutoTurn(pi, ctx);
 		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		const instructions = ctx.compact.mock.calls[0]?.[0]?.customInstructions;
@@ -762,6 +954,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 				0,
 			);
 			expect(pi.appendEntry).toHaveBeenCalled();
+			await settleAutoTurn(pi, ctx, 8);
 			expect(ctx.compact).toHaveBeenCalledTimes(1);
 		} finally {
 			for (const [key, value] of Object.entries(prevEnv)) {

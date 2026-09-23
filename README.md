@@ -55,7 +55,10 @@ practical working-memory range. A 1M-token model at 20% usage still hits the
 200,000 standard token threshold, so Compact+ standard-compacts there instead of
 waiting for 70% (~700k tokens).
 
-Auto-compaction is triggered at `message_end` and `turn_end` with cooldown and regrowth guards to avoid thrashing.
+Auto-compaction is evaluated after a successful assistant turn at `agent_settled`,
+once tools, queued messages, retries, and pruning flushes have finished.
+Cooldown and post-compaction token regrowth guards avoid thrashing; if Pi cannot
+report a valid post-compaction token count, only cooldown applies.
 
 ### Structured summaries
 

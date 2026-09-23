@@ -82,7 +82,9 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 1. Set `state.selectedMode = mode`, `state.isCompacting = true`.
 2. Call `ctx.compact({ customInstructions, onComplete, onError })`.
-3. **`onComplete`**: Reset `isCompacting`, `selectedMode`, `lastTriggerAuto`; update `lastCompactTime` and `lastCompactTokens` from `ctx.getContextUsage()`; reset `echoInjected`; persist telemetry; optionally send continuation prompt (`"Continue with the current task."`).
+3. **`onComplete`**: Reset `isCompacting`, `selectedMode`, `lastTriggerAuto`; set `lastCompactTime` from the compaction telemetry timestamp (fallback: now); reset `echoInjected`; resolve the regrowth baseline `lastCompactTokens`; persist telemetry; optionally send continuation prompt (`"Continue with the current task."`).
+
+   Baseline resolution — first valid positive safe integer wins, else 0: (a) native `ctx.getContextUsage().tokens` (Pi may report unknown usage just after compaction); (b) `result.estimatedTokensAfter` from the compaction result; (c) `0`. A stale/invalid native reading never retains a pre-compaction baseline from a previous run. `0` disables the regrowth guard (`isRegrowthBelowThreshold` requires `lastCompactTokens > 0`); the cooldown guard still applies.
 4. **`onError`**: Same cleanup but `lastCompactTokens = 0`; call `clearPendingCompaction()`; notify error.
 
 **Auto-compaction sends a continuation prompt** (`sendContinuation: true`) so Pi resumes the task automatically after compaction. Manual compaction does not.

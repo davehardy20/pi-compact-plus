@@ -72,18 +72,19 @@ const compactionCoordinator = new CompactionCoordinator({
 | Event | Handler | Purpose |
 |---|---|---|
 | `session_start` | Load persisted telemetry, reset state | Restore cross-session compaction history |
-| `agent_start` | `toolOutputPruning.onAgentStart()` | Reset pending pruning captures |
-| `turn_end` | Capture tool batch → maybe auto-compact | If pruning has pending flush, skip auto-compaction |
-| `message_end` | Flush pending pruning → maybe auto-compact | Only on assistant messages with valid usage |
-| `session_before_compact` | `compactionCoordinator.onSessionBeforeCompact()` | Custom summary generation or native fallback |
-| `session_compact` | `compactionCoordinator.onSessionCompact()` | Record final telemetry |
+| `agent_start` | Reset `lastCompactTurnIndex`, `toolOutputPruning.onAgentStart()` | Pi restarts `turnIndex` per run, so same-turn suppression is run-scoped |
+| `turn_end` | Capture tool batch, record auto-compact candidate | Candidate only when assistant message has `stopReason: "stop"` |
+| `message_end` | Flush pending pruning | Assistant messages only; never compacts |
+| `agent_settled` | Maybe auto-compact — the **only** auto-compaction boundary | Requires recorded candidate, `ctx.isIdle()`, no pending messages, no pending pruning flush |
+| `session_before_compact` | Clear pending auto-compact candidate, `compactionCoordinator.onSessionBeforeCompact()` | Manual/native compaction supersedes a queued auto candidate; custom summary generation or native fallback |
+| `session_compact` | Clear pending auto-compact candidate, `compactionCoordinator.onSessionCompact()` | Record final telemetry |
 | `session_before_tree` | Build branch instructions from focus | Custom instructions for session-tree compaction |
 | `session_tree` | `toolOutputPruning.onSessionTree()` | Reconcile/reconstruct pruning records for new branch |
 | `session_shutdown` | `toolOutputPruning.onSessionShutdown()` | Full pruning state reset |
 | `context` | Pruning transform → focus-echo reorder | Applied to every context snapshot sent to the model |
 | `model_select` | `compactionCoordinator.onModelSelect()` | Reset model-scoped state on model change |
 
-**Key sequencing invariant:** On `turn_end`, if `toolOutputPruning.hasPendingFlush()` returns true, auto-compaction is **skipped** — pruning flush takes priority via `message_end`. This prevents compaction and pruning from racing.
+**Key sequencing invariant:** Auto-compaction runs **only** in the `agent_settled` handler — never inside `message_end`/`turn_end`, where `ctx.compact()` would abort the active run and could discard or replay tool results. `turn_end` only records `state.pendingAutoCompactTurnIndex` for the final successful assistant turn (`stopReason: "stop"`); `agent_settled` consumes it and returns early unless `ctx.isIdle()` and `ctx.hasPendingMessages()` is false. If `toolOutputPruning.hasPendingFlush()` is true at settlement, auto-compaction is skipped. A manual or native compaction (`session_before_compact`/`session_compact`) clears the pending candidate.
 
 **The `context` event pipeline:** Pruning stubs first (`toolOutputPruning.transformContext`), then focus-echo reordering (`reorderForPositioning`). Both are no-ops when their respective conditions aren't met.
 
@@ -99,6 +100,8 @@ const compactionCoordinator = new CompactionCoordinator({
 | `isCompacting` | `boolean` | Set true on trigger, false on complete/error |
 | `lastCompactTime` | `number` | Updated after each compaction; used by cooldown |
 | `lastCompactTokens` | `number` | Updated post-compaction; used by regrowth guard |
+| `lastCompactTurnIndex` | `number` | Reset to -1 on `agent_start` (turnIndex is run-scoped); set on auto-compaction |
+| `pendingAutoCompactTurnIndex` | `number \| null` | Set by `turn_end`; consumed by `agent_settled`; cleared on reset/model change/manual-native compaction |
 | `lastModelKey` | `string \| null` | Set on model_select; never reset |
 | `lastCompaction` | `CompactionTelemetry \| null` | Set on session_compact |
 | `echoInjected` | `boolean` | Set true after context reorder; false on compaction |
