@@ -1,4 +1,7 @@
-import { parseSummarySections } from "../summary-schema.js";
+import {
+	isSubstantiveCriticalLine,
+	parseSummarySections,
+} from "../summary-schema.js";
 
 export const FOCUS_ECHO_SECTION_HEADINGS = {
 	objective: "## Current Objective",
@@ -62,7 +65,10 @@ function extractFirstNonEmptyLine(
 	sections: Map<string, string[]>,
 	heading: string,
 ): string {
-	return extractRawSectionLines(sections, heading)[0] ?? "";
+	return (
+		extractRawSectionLines(sections, heading).find(isSubstantiveCriticalLine) ??
+		""
+	);
 }
 
 function extractRawListSection(

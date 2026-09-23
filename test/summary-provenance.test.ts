@@ -110,6 +110,28 @@ describe("Pi-shaped compaction summary provenance", () => {
 		},
 	);
 
+	it("selects substantive focus lines after leading placeholders in accepted memory", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"[Code example omitted during normalization]\nFinish the current repair.",
+		)
+			.replace("Run focused validation.", "**None**\nRun focused validation.")
+			.replace(
+				"## Dependency Chain\n",
+				"## Dependency Chain\n[Code example omitted during normalization]\n",
+			);
+		const messages = [piSummary(summary, 1), user("Continue.")];
+
+		expect(detectCompactionSummary(messages)).toMatchObject({ found: true });
+		const positioned = reorderForPositioning(messages);
+		expect(positioned?.echoText).toContain("Finish the current repair.");
+		expect(positioned?.echoText).toContain("Run focused validation.");
+		expect(positioned?.echoText).not.toContain(
+			"[Code example omitted during normalization]",
+		);
+		expect(positioned?.echoText).not.toContain("**None**");
+	});
+
 	it("rejects malformed persisted summaries even when an assistant quotes valid memory", () => {
 		const malformed = piSummary(
 			VALID_STRUCTURED_SUMMARY.replace("## Continuity Instruction", "## Other"),

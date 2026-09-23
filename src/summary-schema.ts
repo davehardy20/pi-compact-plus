@@ -97,6 +97,24 @@ export function parseSummarySections(summary: string): {
 	};
 }
 
+/** Use the same substantive-line rule for acceptance and focus-echo selection. */
+export function isSubstantiveCriticalLine(line: string): boolean {
+	// A bare Markdown list marker is not substantive memory.
+	const text = line
+		.trim()
+		.replace(/^(?:[-*+]|\d+[.)])(?:\s+|$)/, "")
+		.trim();
+	const plain = text
+		.replace(/^[*_~`]+/, "")
+		.replace(/[*_~`]+$/, "")
+		.trim();
+	return (
+		plain.length > 0 &&
+		!/^(?:none\.?|n\/a)$/i.test(plain) &&
+		plain !== FENCED_EXAMPLE_OMISSION
+	);
+}
+
 /** Reject malformed structure and critical content absent outside fences. */
 export function validateStructuredSummary(summary: string): SummaryValidation {
 	if (summary.length > MAX_RAW_SUMMARY_CHARS) {
@@ -133,22 +151,9 @@ export function validateStructuredSummary(summary: string): SummaryValidation {
 		}
 	}
 	for (const heading of CRITICAL_HEADINGS) {
-		const substantive = parsed.sections.get(heading)?.some((line) => {
-			// A bare Markdown list marker is not substantive memory.
-			const text = line
-				.trim()
-				.replace(/^(?:[-*+]|\d+[.)])(?:\s+|$)/, "")
-				.trim();
-			const plain = text
-				.replace(/^[*_~`]+/, "")
-				.replace(/[*_~`]+$/, "")
-				.trim();
-			return (
-				plain.length > 0 &&
-				!/^(?:none\.?|n\/a)$/i.test(plain) &&
-				plain !== FENCED_EXAMPLE_OMISSION
-			);
-		});
+		const substantive = parsed.sections
+			.get(heading)
+			?.some(isSubstantiveCriticalLine);
 		if (!substantive) {
 			return { valid: false, reason: `empty critical section: ${heading}` };
 		}
