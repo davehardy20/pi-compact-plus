@@ -42,8 +42,8 @@ describe("Pi-shaped compaction summary provenance", () => {
 		} as unknown as AgentMessage;
 		const messages = [
 			old,
-			newest,
 			malformed,
+			newest,
 			lookalike,
 			user("Continue the task."),
 		];
@@ -51,7 +51,7 @@ describe("Pi-shaped compaction summary provenance", () => {
 		expect(detectCompactionSummary(messages)).toEqual({
 			found: true,
 			summaryText: VALID_STRUCTURED_SUMMARY,
-			summaryIndex: 1,
+			summaryIndex: 2,
 		});
 		const converted = convertToLlm([
 			old,
@@ -73,6 +73,26 @@ describe("Pi-shaped compaction summary provenance", () => {
 		expect(positioned?.echoText).toContain("Finish the current repair.");
 		expect(reorderForPositioning(positioned?.messages ?? [])).toBeUndefined();
 	});
+
+	it.each([
+		"OK",
+		VALID_STRUCTURED_SUMMARY.replace(
+			"## Current Objective",
+			"## Unknown Heading",
+		),
+		null,
+	])(
+		"does not revive an older valid focus after a newer invalid Pi compaction",
+		(invalid) => {
+			const messages = [
+				piSummary(VALID_STRUCTURED_SUMMARY, 1),
+				{ ...piSummary("", 2), summary: invalid } as unknown as AgentMessage,
+				user("Continue."),
+			];
+			expect(detectCompactionSummary(messages)).toEqual({ found: false });
+			expect(reorderForPositioning(messages)).toBeUndefined();
+		},
+	);
 
 	it("ignores fenced headings before real sections when building a persisted focus echo", () => {
 		const summary = VALID_STRUCTURED_SUMMARY.replace(

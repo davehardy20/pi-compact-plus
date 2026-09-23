@@ -13,10 +13,14 @@ export function detectCompactionSummary(messages: AgentMessage[]):
 	  } {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
-		if (msg.role !== "compactionSummary" || typeof msg.summary !== "string") {
-			continue;
+		if (msg.role !== "compactionSummary") continue;
+		// A newer invalid compaction supersedes older memory; never revive stale focus.
+		if (
+			typeof msg.summary !== "string" ||
+			!validateStructuredSummary(msg.summary).valid
+		) {
+			return { found: false };
 		}
-		if (!validateStructuredSummary(msg.summary).valid) continue;
 		return { found: true, summaryText: msg.summary, summaryIndex: i };
 	}
 	return { found: false };

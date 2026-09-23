@@ -389,6 +389,14 @@ describe("runCustomCompaction characterization", () => {
 		),
 		VALID_STRUCTURED_SUMMARY.replace("Finish the current repair.", "   "),
 		VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"[Code example omitted during normalization]",
+		),
+		VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"- [Code example omitted during normalization]\n- None",
+		),
+		VALID_STRUCTURED_SUMMARY.replace(
 			"## Current Errors",
 			"## Current Objective",
 		),
@@ -494,6 +502,34 @@ describe("runCustomCompaction characterization", () => {
 			/^Compaction Summary — Compact\+ memory\n/,
 		);
 		expect(attempt.result?.summary).toContain("## Dependency Chain");
+	});
+
+	it("preserves the real objective when an oversized section starts with a fence", async () => {
+		const padding = Array.from(
+			{ length: 16 },
+			(_, index) => `- detail ${index} ${"x".repeat(215)}`,
+		).join("\n");
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"```md\n## Current Objective\nExample only.\n```\nKeep the real objective.",
+		).replace(/\n\n## (?!Current Objective)/g, `\n${padding}\n\n## `);
+		compactMock.mockResolvedValueOnce(successfulResult(summary));
+
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBeNull();
+		expect(attempt.result?.summary).not.toBe(summary);
+		expect(attempt.result?.summary).toContain(
+			"## Current Objective\nKeep the real objective.",
+		);
+		expect(attempt.result?.summary).not.toContain("Example only.");
+		expect(attempt.result?.summary).not.toMatch(
+			/## Current Objective\n\[Code example omitted during normalization\]/,
+		);
 	});
 
 	it("normalizes a fenced heading example without turning it into a duplicate section", async () => {

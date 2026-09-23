@@ -1,5 +1,7 @@
 export const STRUCTURED_SUMMARY_TITLE = "Compaction Summary — Compact+ memory";
 const MAX_RAW_SUMMARY_CHARS = 128_000;
+export const FENCED_EXAMPLE_OMISSION =
+	"[Code example omitted during normalization]";
 
 /** The complete schema used by generation, acceptance and persisted-memory detection. */
 export const STRUCTURED_SUMMARY_HEADINGS = [
@@ -21,7 +23,7 @@ export const STRUCTURED_SUMMARY_HEADINGS = [
 export type StructuredSummaryHeading =
 	(typeof STRUCTURED_SUMMARY_HEADINGS)[number];
 
-const CRITICAL_HEADINGS: readonly StructuredSummaryHeading[] = [
+export const CRITICAL_HEADINGS: readonly StructuredSummaryHeading[] = [
 	"## Current Objective",
 	"## Current Task State",
 	"## Next Best Step",
@@ -116,8 +118,15 @@ export function validateStructuredSummary(summary: string): SummaryValidation {
 		}
 	}
 	for (const heading of CRITICAL_HEADINGS) {
-		const body = parsed.sections.get(heading)?.join("\n").trim() ?? "";
-		if (!body || /^(?:[-*]\s*)?(?:none\.?|n\/a)$/i.test(body)) {
+		const substantive = parsed.sections.get(heading)?.some((line) => {
+			const text = line.trim().replace(/^[-*]\s*/, "");
+			return (
+				text.length > 0 &&
+				!/^(?:none\.?|n\/a)$/i.test(text) &&
+				text !== FENCED_EXAMPLE_OMISSION
+			);
+		});
+		if (!substantive) {
 			return { valid: false, reason: `empty critical section: ${heading}` };
 		}
 	}

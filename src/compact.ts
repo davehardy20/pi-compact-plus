@@ -14,6 +14,8 @@ import {
 import { buildSummaryInstructions } from "./prompts.js";
 import { extractCurrentFocus } from "./session-evidence.js";
 import {
+	CRITICAL_HEADINGS,
+	FENCED_EXAMPLE_OMISSION,
 	STRUCTURED_SUMMARY_HEADINGS,
 	STRUCTURED_SUMMARY_TITLE,
 	validateStructuredSummary,
@@ -52,6 +54,7 @@ const TARGET_NORMALIZED_SUMMARY_TOKENS = 3200;
 const MAX_PREVIOUS_SUMMARY_TOKENS = 1600;
 const TARGET_PREVIOUS_SUMMARY_TOKENS = 1200;
 const MAX_SUMMARY_LINE_CHARS = 240;
+const CRITICAL_HEADING_SET = new Set<string>(CRITICAL_HEADINGS);
 const SECTION_BODY_LINE_LIMITS = new Map<string, number>(
 	STRUCTURED_SUMMARY_HEADINGS.map(
 		(heading, index) =>
@@ -88,12 +91,17 @@ function omitFencedExamples(lines: string[]): string[] {
 	const retained: string[] = [];
 	let fence: "`" | "~" | undefined;
 	let fenceLength = 0;
+	let currentHeading: string | undefined;
 	for (const line of lines) {
+		if (!fence && /^##\s+/.test(line)) currentHeading = line.trimEnd();
 		const match = /^\s*(`{3,}|~{3,})/.exec(line);
 		if (match && !fence) {
 			fence = match[1][0] as "`" | "~";
 			fenceLength = match[1].length;
-			retained.push("[Code example omitted during normalization]");
+			// Never spend a critical section's line budget on a placeholder.
+			if (!currentHeading || !CRITICAL_HEADING_SET.has(currentHeading)) {
+				retained.push(FENCED_EXAMPLE_OMISSION);
+			}
 			continue;
 		}
 		if (match && fence === match[1][0] && match[1].length >= fenceLength) {
@@ -120,6 +128,11 @@ function renderSummarySectionBody(
 
 	for (const rawLine of section.body) {
 		if (body.length >= bodyLimit) break;
+		if (
+			CRITICAL_HEADING_SET.has(section.heading) &&
+			rawLine.trim().replace(/^[-*]\s*/, "") === FENCED_EXAMPLE_OMISSION
+		)
+			continue;
 
 		const line = truncateLine(rawLine.trimEnd());
 		if (line.length === 0) {
