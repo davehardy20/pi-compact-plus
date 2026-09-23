@@ -119,7 +119,11 @@ export function validateStructuredSummary(summary: string): SummaryValidation {
 	}
 	for (const heading of CRITICAL_HEADINGS) {
 		const substantive = parsed.sections.get(heading)?.some((line) => {
-			const text = line.trim().replace(/^[-*]\s*/, "");
+			// A bare Markdown list marker is not substantive memory.
+			const text = line
+				.trim()
+				.replace(/^(?:[-*+]|\d+[.)])(?:\s+|$)/, "")
+				.trim();
 			return (
 				text.length > 0 &&
 				!/^(?:none\.?|n\/a)$/i.test(text) &&

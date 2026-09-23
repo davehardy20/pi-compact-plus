@@ -417,6 +417,30 @@ describe("runCustomCompaction characterization", () => {
 		},
 	);
 
+	it.each(["-", "-   ", "*", "*   ", "+", "+   ", "1.", "2)", "-\n*   "])(
+		"rejects critical sections with only empty bullet items (%s)",
+		async (bullet) => {
+			compactMock.mockResolvedValueOnce(
+				successfulResult(
+					VALID_STRUCTURED_SUMMARY.replace(
+						"Finish the current repair.",
+						bullet,
+					),
+				),
+			);
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				context(),
+				compatibility(),
+			);
+			expect(attempt.result).toBeUndefined();
+			expect(attempt.fallbackReason).toContain(
+				"empty critical section: ## Current Objective",
+			);
+		},
+	);
+
 	it("rejects a critical section containing only a fenced example", async () => {
 		compactMock.mockResolvedValueOnce(
 			successfulResult(
