@@ -289,11 +289,17 @@ settings are resolved when pruning commands and lifecycle events run, but
 ## Notes
 
 - Compact+ hooks into Pi's `session_before_compact` event to provide custom summarization.
-- On Pi runtimes that support stream-aware compaction but do not expose the
-  live session `streamFn` to extensions, Compact+ uses the public
-  `@earendil-works/pi-ai` `streamSimple` adapter so custom summaries can still
-  run.
-- If custom summarization still fails after that, Compact+ falls back to Pi's default compaction.
+- When Pi does not expose the live session stream to extensions, Compact+ uses
+  `ctx.modelRegistry.streamSimple` if available. This keeps configured provider
+  routing, request transforms, and request-time authentication in Pi's registry.
+  On older Pi runtimes without that API (including 0.83.0), Compact+ defers
+  summarization to native Pi instead of sending credentials through a generic
+  stream adapter that may bypass custom provider routes.
+- With a live session stream, custom summaries forward Pi's resolved headers,
+  environment, and base URL (when available). Registry-backed streams instead
+  resolve authentication at request time, avoiding stale credential overrides.
+  Authentication or request failures fall back to native compaction without
+  including provider error text or credentials in telemetry.
 - The extension persists telemetry to `~/.pi/agent/state/compact-plus-telemetry.json`.
 - State resets when the model changes to avoid stale compaction context from a different model.
 

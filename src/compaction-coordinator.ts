@@ -75,6 +75,15 @@ export class CompactionCoordinator {
 		this.disableAutoCompaction = disableAutoCompaction;
 	}
 
+	private cancelAbortedCompaction(): { cancel: true } {
+		this.state.selectedMode = null;
+		this.state.isCompacting = false;
+		this.state.lastTriggerAuto = false;
+		this.state.clearPendingCompaction();
+		this.state.lastFallbackReason = "compaction aborted";
+		return { cancel: true };
+	}
+
 	async handleManualCommand(
 		mode: ManualCompactionMode,
 		ctx: ExtensionEventContext,
@@ -196,6 +205,10 @@ export class CompactionCoordinator {
 			return undefined;
 		}
 
+		if (event.signal?.aborted || ctx.signal?.aborted) {
+			return this.cancelAbortedCompaction();
+		}
+
 		// Pi omits retained messages from preparation.messagesToSummarize.
 		// The active projection includes them while honoring context edits and
 		// prior compactions. An empty projection is authoritative: never revive
@@ -213,6 +226,7 @@ export class CompactionCoordinator {
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,
+			modelRegistry: ctx.modelRegistry as { streamSimple?: unknown },
 		});
 
 		const triggerSource: TriggerSource = this.state.lastTriggerAuto
@@ -275,6 +289,9 @@ export class CompactionCoordinator {
 			event.signal,
 			{ focus, customInstructions: event.customInstructions },
 		);
+		if (event.signal?.aborted || ctx.signal?.aborted) {
+			return this.cancelAbortedCompaction();
+		}
 
 		if (attempt.result) {
 			this.state.pendingCompaction = {

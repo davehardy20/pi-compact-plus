@@ -437,15 +437,28 @@ function prepareCompactionContext(
 function createCompactArguments(args: {
 	prepared: PreparedCompactionContext;
 	model: unknown;
-	auth: { apiKey?: string; headers?: unknown };
+	auth: {
+		apiKey?: string;
+		headers?: Record<string, string | null>;
+		baseUrl?: string;
+		env?: Record<string, string>;
+	};
 	compatibility: CompactionRuntimeCompatibility;
 	signal?: AbortSignal;
 }): unknown[] {
 	const compactArgs: unknown[] = [
 		args.prepared.preparation,
-		args.model,
-		args.auth.apiKey ?? "",
-		args.auth.headers,
+		args.auth.baseUrl
+			? { ...(args.model as object), baseUrl: args.auth.baseUrl }
+			: args.model,
+		args.auth.apiKey,
+		args.auth.headers
+			? Object.fromEntries(
+					Object.entries(args.auth.headers).filter(
+						(entry): entry is [string, string] => typeof entry[1] === "string",
+					),
+				)
+			: undefined,
 		args.prepared.customInstructions,
 		args.signal,
 	];
@@ -455,6 +468,7 @@ function createCompactArguments(args: {
 	}
 	if (args.compatibility.helperSupportsStreamFn) {
 		compactArgs.push(args.compatibility.streamFn);
+		compactArgs.push(args.auth.env);
 	}
 	return compactArgs;
 }
@@ -504,11 +518,8 @@ function finalizeCompactionAttempt(
 	return { result: normalizedResult, fallbackReason: null, classifiedCounts };
 }
 
-function authUnavailableResult(error: unknown): CompactionAttemptResult {
-	return {
-		result: undefined,
-		fallbackReason: `auth unavailable: ${error ?? "unknown"}`,
-	};
+function authUnavailableResult(): CompactionAttemptResult {
+	return { result: undefined, fallbackReason: "auth unavailable" };
 }
 
 function selectCompactionSignal(
@@ -518,9 +529,11 @@ function selectCompactionSignal(
 	return signal ?? contextSignal ?? undefined;
 }
 
-function compactErrorResult(error: unknown): CompactionAttemptResult {
-	const message = error instanceof Error ? error.message : String(error);
-	return { result: undefined, fallbackReason: `compact error: ${message}` };
+function compactErrorResult(): CompactionAttemptResult {
+	return {
+		result: undefined,
+		fallbackReason: "compact error: provider request failed",
+	};
 }
 
 export async function runCustomCompaction(
@@ -531,6 +544,7 @@ export async function runCustomCompaction(
 	signal?: AbortSignal,
 	intent?: CompactionIntent,
 ): Promise<CompactionAttemptResult> {
+	const requestSignal = selectCompactionSignal(signal, ctx.signal);
 	try {
 		const model = ctx.model;
 		if (!model) {
@@ -547,9 +561,20 @@ export async function runCustomCompaction(
 			};
 		}
 
+		if (requestSignal?.aborted) {
+			return { result: undefined, fallbackReason: "compaction aborted" };
+		}
 		const registry = ctx.modelRegistry as ModelRegistry;
-		const auth = await registry.getApiKeyAndHeaders(model);
-		if (!auth.ok) return authUnavailableResult(auth.error);
+		// The registry stream resolves provider auth at request time. Forwarding an
+		// earlier key/header snapshot could override rotated credentials or routing.
+		const auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>> =
+			compatibility.streamRoute === "registry"
+				? { ok: true }
+				: await registry.getApiKeyAndHeaders(model);
+		if (requestSignal?.aborted) {
+			return { result: undefined, fallbackReason: "compaction aborted" };
+		}
+		if (!auth.ok) return authUnavailableResult();
 
 		const prepared = prepareCompactionContext(preparation, mode, {
 			...intent,
@@ -560,7 +585,7 @@ export async function runCustomCompaction(
 			model,
 			auth,
 			compatibility,
-			signal: selectCompactionSignal(signal, ctx.signal),
+			signal: requestSignal,
 		});
 		const compactRunner = compact as unknown as (
 			...args: unknown[]
@@ -570,7 +595,9 @@ export async function runCustomCompaction(
 			result,
 			getCompactionClassifiedCounts(prepared, mode),
 		);
-	} catch (err) {
-		return compactErrorResult(err);
+	} catch {
+		return requestSignal?.aborted
+			? { result: undefined, fallbackReason: "compaction aborted" }
+			: compactErrorResult();
 	}
 }
