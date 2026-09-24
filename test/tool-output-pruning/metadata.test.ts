@@ -341,7 +341,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 		expect(includeResult.records).toHaveLength(0);
 
 		const records = [
-			makeRecord(),
+			makeRecord({ shortRef: "t9" }),
 			makeRecord({
 				recordId: "rec-tc2",
 				entryId: "entry-2",
@@ -366,6 +366,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 		);
 		expect(result.ok).toBe(true);
 		expect(result.records.map((record) => record.shortRef)).toEqual(["t2"]);
+		expect(result.maxValidatedShortRefNumber).toBe(9);
 	});
 
 	it("fails atomically for non-text current branch tool results", () => {

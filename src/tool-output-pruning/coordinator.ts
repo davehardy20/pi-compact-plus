@@ -255,7 +255,10 @@ export class ToolOutputPruningCoordinator {
 			: [];
 		this.state.replaceFinalizedRecords(records);
 		if (result.ok) {
-			this.state.advanceShortRefCounterFromRecords(records);
+			this.state.advanceShortRefCounterFromRecords(
+				records,
+				result.maxValidatedShortRefNumber,
+			);
 		}
 	}
 

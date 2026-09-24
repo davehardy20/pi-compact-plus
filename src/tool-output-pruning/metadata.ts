@@ -66,6 +66,8 @@ export interface BuildToolPruneSummaryDataOptions {
 export interface ToolOutputMetadataReconstructionResult {
 	ok: boolean;
 	records: ToolOutputRecord[];
+	/** Highest safe short-ref number validated, including policy-filtered history. */
+	maxValidatedShortRefNumber: number;
 	inspectedEntries: number;
 	scannedEntries: number;
 	scannedBytes: number;
@@ -232,6 +234,7 @@ function fail(
 	return {
 		ok: false,
 		records: [],
+		maxValidatedShortRefNumber: 0,
 		inspectedEntries,
 		scannedEntries,
 		scannedBytes,
@@ -431,9 +434,11 @@ function validateMetadataHeader(
 /**
  * Reconstruct bounded pruning metadata from current-branch summary entries.
  *
- * This never reconstructs or persists original tool output. Recovered records
- * become usable only when their metadata matches an active branch tool-result
- * entry by entryId, toolCallId, toolName, role, and text-only content.
+ * This never reconstructs or persists original tool output. Protected/internal
+ * exclusions remain errors. Records disallowed by the current user include or
+ * exclude policy are validated and skipped; their refs remain reserved.
+ * Recovered records require matching active-branch entryId, toolCallId,
+ * toolName, role, and text-only content.
  */
 export function reconstructToolOutputRecordsFromBranch(
 	view: SessionBranchView,
@@ -457,6 +462,7 @@ export function reconstructToolOutputRecordsFromBranch(
 
 	const records: ToolOutputRecord[] = [];
 	let validatedRecordCount = 0;
+	let maxValidatedShortRefNumber = 0;
 	const seenRecordIds = new Set<string>();
 	const seenEntryIds = new Set<string>();
 	const seenShortRefs = new Set<string>();
@@ -579,6 +585,13 @@ export function reconstructToolOutputRecordsFromBranch(
 				seenEntryIds.add(result.record.entryId);
 			}
 			seenShortRefs.add(result.record.shortRef);
+			const refNumber = Number.parseInt(result.record.shortRef.slice(1), 10);
+			if (Number.isSafeInteger(refNumber)) {
+				maxValidatedShortRefNumber = Math.max(
+					maxValidatedShortRefNumber,
+					refNumber,
+				);
+			}
 			if (!result.policyExcluded) records.push(result.record);
 		}
 		validatedRecordCount += header.records.length;
@@ -587,6 +600,7 @@ export function reconstructToolOutputRecordsFromBranch(
 	return {
 		ok: true,
 		records,
+		maxValidatedShortRefNumber,
 		inspectedEntries,
 		scannedEntries,
 		scannedBytes,

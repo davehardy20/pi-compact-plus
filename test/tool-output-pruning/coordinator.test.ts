@@ -416,9 +416,9 @@ describe("ToolOutputPruningCoordinator", () => {
 	});
 
 	it("keeps allowed records and new flushes usable after a policy change", async () => {
-		const bash = makeRecord("tc1", "t1", "entry-1");
+		const bash = makeRecord("tc1", "t2", "entry-1");
 		const python = {
-			...makeRecord("tc2", "t2", "entry-2"),
+			...makeRecord("tc2", "t1", "entry-2"),
 			toolName: "python",
 		};
 		const data = buildToolPruneSummaryData({
@@ -465,10 +465,16 @@ describe("ToolOutputPruningCoordinator", () => {
 		};
 		coordinator.onSessionTree(ctx);
 		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
-			"t2",
+			"t1",
 		]);
 		expect(state.statusSnapshot().lastReconstructionStatus).toBe("ok");
-		expect(coordinator.query({ ref: "t1" }, ctx).matches).toHaveLength(0);
+		expect(coordinator.query({ ref: "t2" }, ctx).matches).toHaveLength(0);
+		state.reset(); // Simulate reload after the excluded record owned t2.
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(state.generateShortRef()).toBe("t3");
 
 		entries.push({
 			type: "message",
@@ -486,7 +492,7 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(flush.ok).toBe(true);
 		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
-			"t2",
+			"t1",
 			"t3",
 		]);
 	});
