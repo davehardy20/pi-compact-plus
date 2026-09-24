@@ -1088,6 +1088,9 @@ describe("@davehardy20/pi-compact-plus", () => {
 			"Objective: Cancel deployment and repair login.",
 		);
 		expect(helperPrompt).toContain("Keep current login-test guidance.");
+		expect(helperPrompt).not.toContain(
+			"Objective: deploy the retired service.",
+		);
 		expect(helperPrompt).not.toContain("Task: poison prompt.");
 	});
 
