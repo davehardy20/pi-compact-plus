@@ -17,6 +17,8 @@ export interface MockCtx {
 	hasPendingMessages: ReturnType<typeof vi.fn>;
 	sessionManager: {
 		getBranch: ReturnType<typeof vi.fn>;
+		buildSessionProjection: ReturnType<typeof vi.fn>;
+		buildContextEntries: ReturnType<typeof vi.fn>;
 	};
 	ui: {
 		notify: ReturnType<typeof vi.fn>;
@@ -105,6 +107,17 @@ export function createMockCtx(options?: {
 		hasPendingMessages: vi.fn(() => false),
 		sessionManager: {
 			getBranch: vi.fn(
+				() =>
+					options?.messages?.map((m, i) => ({
+						type: "message",
+						id: `entry-${i}`,
+						message: m,
+					})) ?? [],
+			),
+			buildSessionProjection: vi.fn(() => ({
+				messages: options?.messages ?? [],
+			})),
+			buildContextEntries: vi.fn(
 				() =>
 					options?.messages?.map((m, i) => ({
 						type: "message",

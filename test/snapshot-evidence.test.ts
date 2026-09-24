@@ -116,6 +116,15 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it("takes a new instruction after a status-only line in the same message", () => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage("Looks good, thanks.\nActually, repair login instead."),
+			]).objective,
+		).toBe("Actually, repair login instead.");
+	});
+
 	it.each([
 		"Looks good, thank you!",
 		"That works now, thanks.",

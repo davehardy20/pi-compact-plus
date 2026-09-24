@@ -80,9 +80,10 @@ Compact+ produces structured compaction summaries with these sections:
 
 The exact title (`Compaction Summary — Compact+ memory`) and all 13 headings
 must be present once; malformed custom output falls back to native Pi
-compaction. The summarizer uses the complete current branch, including recent
-messages Pi retains outside the summarized slice, so the latest substantive
-user request takes precedence over older `Task:` labels. The extension's exact
+compaction. The summarizer uses Pi's active session projection, including
+recent messages retained outside the summarized slice while excluding
+superseded or context-edited messages, so the latest substantive user request
+takes precedence over older `Task:` labels. The extension's exact
 "Continue with the current task." follow-up is not treated as a new objective;
 previous summaries and split turns remain continuity context. Additional
 compaction guidance is bounded and subordinate to the current user request.

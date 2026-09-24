@@ -263,12 +263,16 @@ export function extractObjective(allMessages: AgentMessage[]): string {
 function firstObjectiveLine(msg: AgentMessage): string | undefined {
 	if (msg.role !== "user") return undefined;
 	const text = extractTextContent(msg);
-	// Pi's own follow-up is not a new user direction. A genuine instruction
-	// alongside it is still eligible as the objective.
+	// Skip generated continuations and status-only lines, but keep scanning
+	// this message for a genuine instruction on a later line.
 	return text
 		.split(/\n/)
 		.map((line) => line.trim())
-		.find((line) => line.length > 0 && line !== CONTINUATION_PROMPT);
+		.find((line) => {
+			if (!line || line === CONTINUATION_PROMPT) return false;
+			const labeled = line.match(/^(?:task|goal|objective|mission):\s*(.*)/i);
+			return !isStatusOnlyReply(labeled ? labeled[1].trim() : line);
+		});
 }
 
 // Acknowledgements and successful status updates are evidence about progress,

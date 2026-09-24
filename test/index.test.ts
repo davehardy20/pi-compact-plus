@@ -22,6 +22,10 @@ const piAiMocks = vi.hoisted(() => ({
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	estimateTokens: vi.fn(() => 100),
 	compact: vi.fn(),
+	sessionEntryToContextMessages: vi.fn(
+		(entry: { type: string; message?: TestAgentMessage }) =>
+			entry.type === "message" && entry.message ? [entry.message] : [],
+	),
 }));
 
 vi.mock("../src/persist.js", () => ({
@@ -705,7 +709,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(__test__.getSelectedMode()).toBe("standard");
 	});
 
-	it("extracts manual compaction focus from one captured branch-view message projection", async () => {
+	it("extracts manual compaction focus from Pi's projected context", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
 		__test__.resetState();
@@ -734,16 +738,51 @@ describe("@davehardy20/pi-compact-plus", () => {
 			},
 		]);
 
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "## Decisions Made\n- Keep manual focus" },
+					],
+				},
+			],
+		});
 		await compactPlusCommand.handler("hard", ctx);
 
-		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
+		expect(ctx.sessionManager.buildSessionProjection).toHaveBeenCalledTimes(1);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		const instructions = ctx.compact.mock.calls[0]?.[0]?.customInstructions;
 		expect(instructions).toContain("Keep manual focus");
 		expect(instructions).not.toContain("Poisoned custom decision");
 	});
 
-	it("extracts auto compaction focus from one captured branch-view message projection", async () => {
+	it("uses compaction-aware entries on Pi runtimes without a projection API", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		if (!command) throw new Error("command not registered");
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		Object.defineProperty(ctx.sessionManager, "buildSessionProjection", {
+			value: undefined,
+		});
+		ctx.sessionManager.buildContextEntries.mockReturnValue([
+			{
+				type: "message",
+				id: "current-request",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Task: repair login." }],
+				},
+			},
+		]);
+		await command.handler("", ctx);
+		expect(ctx.compact.mock.calls[0]?.[0]?.customInstructions).toContain(
+			"Objective: repair login.",
+		);
+	});
+
+	it("extracts auto compaction focus from Pi's projected context", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
 		__test__.resetState();
@@ -782,6 +821,16 @@ describe("@davehardy20/pi-compact-plus", () => {
 			},
 		]);
 
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "## Decisions Made\n- Keep auto focus" },
+					],
+				},
+			],
+		});
 		await messageEndHandler(
 			{
 				message: {
@@ -795,7 +844,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 
 		await settleAutoTurn(pi, ctx);
-		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
+		expect(ctx.sessionManager.buildSessionProjection).toHaveBeenCalledTimes(1);
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		const instructions = ctx.compact.mock.calls[0]?.[0]?.customInstructions;
 		expect(instructions).toContain("Keep auto focus");
@@ -989,6 +1038,9 @@ describe("@davehardy20/pi-compact-plus", () => {
 			{ type: "message", id: "old-task", message: oldTask },
 			{ type: "message", id: "retained-task", message: retainedTask },
 		]);
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [oldTask, retainedTask],
+		});
 		const compactMock = vi.mocked(piCore.compact);
 		compactMock.mockResolvedValue({
 			summary: VALID_STRUCTURED_SUMMARY,
@@ -1028,7 +1080,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 	});
 
-	it("prefers Pi's captured branch over stale context and keeps manual guidance", async () => {
+	it("prefers projected intent over edited-away raw entries and keeps manual guidance", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
 		const command = pi.commands.get("compact-plus");
@@ -1047,6 +1099,9 @@ describe("@davehardy20/pi-compact-plus", () => {
 		ctx.sessionManager.getBranch.mockReturnValue([
 			{ type: "message", id: "old-task", message: oldTask },
 		]);
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [newTask],
+		});
 		const compactMock = vi.mocked(piCore.compact);
 		compactMock.mockResolvedValue({
 			summary: VALID_STRUCTURED_SUMMARY,
@@ -1076,7 +1131,6 @@ describe("@davehardy20/pi-compact-plus", () => {
 							content: [{ type: "text", text: "Task: poison prompt." }],
 						},
 					},
-					{ type: "message", id: "new-task", message: newTask },
 				],
 				customInstructions: "Keep current login-test guidance.",
 				signal: ctx.signal,

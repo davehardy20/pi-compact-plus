@@ -1,8 +1,10 @@
-import type {
-	CompactionResult,
-	ExtensionAPI,
-	SessionBeforeCompactEvent,
-	SessionCompactEvent,
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	type CompactionResult,
+	type ExtensionAPI,
+	type SessionBeforeCompactEvent,
+	type SessionCompactEvent,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 
 import { runCustomCompaction } from "./compact.js";
@@ -14,15 +16,7 @@ import { buildPersistedFocusEcho } from "./focus-echo/index.js";
 import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
-import {
-	createCurrentSessionBranchView,
-	createSessionBranchView,
-} from "./session-branch-view.js";
-import {
-	extractCurrentFocus,
-	extractCurrentFocusFromBranch,
-	extractTextContent,
-} from "./session-evidence.js";
+import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
@@ -32,6 +26,21 @@ import {
 	REGROWTH_TOKENS,
 	type TriggerSource,
 } from "./types.js";
+
+// Newer Pi runtimes expose the canonical context-edit-aware projection. The
+// pinned 0.83 peer only has compaction-aware context entries; use those when
+// the newer method is absent rather than scanning raw branch history.
+function currentProjectedMessages(ctx: ExtensionEventContext): AgentMessage[] {
+	const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+		buildSessionProjection?: () => { messages: AgentMessage[] };
+	};
+	if (typeof sessionManager.buildSessionProjection === "function") {
+		return sessionManager.buildSessionProjection().messages;
+	}
+	return sessionManager
+		.buildContextEntries()
+		.flatMap(sessionEntryToContextMessages);
+}
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
@@ -90,8 +99,7 @@ export class CompactionCoordinator {
 
 		this.state.lastTriggerAuto = false;
 
-		const cmdBranchView = createCurrentSessionBranchView(ctx);
-		const cmdFocus = extractCurrentFocusFromBranch(cmdBranchView);
+		const cmdFocus = extractCurrentFocus(currentProjectedMessages(ctx));
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
@@ -162,8 +170,7 @@ export class CompactionCoordinator {
 			this.state.lastCompactTurnIndex = turnIndex;
 		}
 
-		const autoBranchView = createCurrentSessionBranchView(ctx);
-		const autoFocus = extractCurrentFocusFromBranch(autoBranchView);
+		const autoFocus = extractCurrentFocus(currentProjectedMessages(ctx));
 
 		const percentText =
 			usage.percent === null ? "unknown" : `${usage.percent.toFixed(0)}%`;
@@ -198,17 +205,11 @@ export class CompactionCoordinator {
 				]
 			: event.preparation.messagesToSummarize;
 		// Pi omits retained messages from preparation.messagesToSummarize.
-		// Use the complete branch for current intent, falling back to preparation
-		// only when no session branch messages are available.
-		const eventMessages = createSessionBranchView(
-			event.branchEntries,
-		).messages();
-		const branchMessages =
-			eventMessages.length > 0
-				? eventMessages
-				: createCurrentSessionBranchView(ctx).messages();
+		// The session projection includes them while honoring context edits and
+		// prior compactions; raw branchEntries can contain edited-away objectives.
+		const projectedMessages = currentProjectedMessages(ctx);
 		const focus = extractCurrentFocus(
-			branchMessages.length > 0 ? branchMessages : focusMessages,
+			projectedMessages.length > 0 ? projectedMessages : focusMessages,
 		);
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({

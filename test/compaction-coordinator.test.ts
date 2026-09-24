@@ -33,6 +33,7 @@ function createMockCtx(options?: {
 		sessionManager: {
 			getSessionFile: vi.fn(() => options?.sessionFile),
 			getBranch: vi.fn(() => []),
+			buildSessionProjection: vi.fn(() => ({ messages: [] })),
 		},
 	} as unknown as ExtensionEventContext;
 }
