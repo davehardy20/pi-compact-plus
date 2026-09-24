@@ -143,6 +143,9 @@ describe("evidence-weighted session snapshot extraction", () => {
 			"Switch to repairing login instead.",
 			"Instead, focus on the login bug.",
 			"I'd rather investigate login.",
+			"Please take another look at login.",
+			"Wait—never mind.",
+			"No—stop the deployment.",
 		]) {
 			expect(
 				extractCurrentFocus([
@@ -210,6 +213,17 @@ describe("evidence-weighted session snapshot extraction", () => {
 			).toBe("Repair the login flow instead.");
 		},
 	);
+
+	it("takes the last actionable line over an earlier Task label in one message", () => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage(
+					"Task: deploy the retired service.\nActually, repair login instead.",
+				),
+			]).objective,
+		).toBe("Actually, repair login instead.");
+	});
 
 	it("takes a new instruction after a status-only line in the same message", () => {
 		expect(

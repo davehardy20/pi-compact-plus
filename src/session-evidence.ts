@@ -292,10 +292,10 @@ function firstObjectiveLine(msg: AgentMessage): string | undefined {
 			const content = objectiveLineContent(line);
 			return content.length > 0 && !isStatusOnlyReply(content);
 		});
-	return (
-		candidates.find((line) => isClearRequest(objectiveLineContent(line))) ??
-		candidates[0]
+	const actionable = candidates.filter((line) =>
+		isClearRequest(objectiveLineContent(line)),
 	);
+	return actionable.at(-1) ?? candidates[0];
 }
 
 // Acknowledgements and successful status updates are evidence about progress,
@@ -347,12 +347,15 @@ function isClearRequest(text: string): boolean {
 		.replace(/\u2019/g, "'");
 	if (isShortCancellation(normalized) || normalized.endsWith("?")) return true;
 	return normalized
-		.split(/[,;.!]\s*(?:and|but)?\s*|\s+(?:and|but)\s+/)
-		.some((clause) =>
-			/^(?:(?:please|actually|instead|now|next|no)\b[,:]?\s*)*(?:(?:stop|cancel|abort|repair|fix|investigate|update|build|implement|run|test|check|add|remove|create|move|change|use|find|review|explain|help|research|write|deploy|start|continue|complete|summarize|show|tell|debug|improve|refactor|look|analyze|focus|switch|pivot|forget|drop|do|don't)\b|(?:can|could|would|will)\s+you\b|(?:i|we)\s+(?:need|want|should|would like)\b|i(?:'d| would)\s+rather\b|(?:let's|let us|you\s+(?:should|need to))\b)/.test(
-				clause.trim(),
-			),
-		);
+		.split(/[,;.!?:—–]\s*(?:and|but)?\s*|\s+(?:and|but)\s+/)
+		.some((part) => {
+			const clause = part.trim();
+			if (isShortCancellation(clause)) return true;
+			if (/^(?:please|kindly)\s+\S/.test(clause)) return true;
+			return /^(?:(?:actually|instead|now|next|no)\b[,:]?\s*)*(?:(?:stop|cancel|abort|repair|fix|investigate|update|build|implement|run|test|check|add|remove|create|move|change|use|find|review|explain|help|research|write|deploy|start|continue|complete|summarize|show|tell|debug|improve|refactor|look|analyze|focus|switch|pivot|forget|drop|do|don't)\b|(?:can|could|would|will|shall)\s+(?:you|we|i)\b|(?:i|we)\s+(?:need|want|should|would like)\b|i(?:'d| would)\s+rather\b|(?:let's|let us|you\s+(?:should|need to))\b)/.test(
+				clause,
+			);
+		});
 }
 
 export function findExplicitObjective(
