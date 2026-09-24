@@ -139,6 +139,15 @@ describe("evidence-weighted session snapshot extraction", () => {
 				userMessage("All tests passed."),
 			]).intentEvidence?.certainty,
 		).toBe("provisional");
+		const sameMessage = extractCurrentFocus([
+			userMessage(
+				"Task: deploy the retired service.\nI'd like to investigate login instead.",
+			),
+		]);
+		expect(sameMessage.intentEvidence?.certainty).toBe("provisional");
+		expect(sameMessage.intentEvidence?.recentUserTurns).toContain(
+			"Task: deploy the retired service.\nI'd like to investigate login instead.",
+		);
 	});
 
 	it("caps and filters evidence without trusting generated continuation", () => {

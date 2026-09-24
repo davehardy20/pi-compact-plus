@@ -287,7 +287,7 @@ function extractIntentEvidence(
 	messages: AgentMessage[],
 	priorObjective: string,
 ): IntentEvidence | undefined {
-	const recentUserTurns = messages
+	const userTurns = messages
 		.filter((message) => message.role === "user")
 		.map((message) =>
 			extractTextContent(message)
@@ -296,7 +296,8 @@ function extractIntentEvidence(
 				.filter((line) => line && line !== CONTINUATION_PROMPT)
 				.join("\n"),
 		)
-		.filter(Boolean)
+		.filter(Boolean);
+	const recentUserTurns = userTurns
 		.slice(-MAX_INTENT_TURNS)
 		.map(boundIntentTurn);
 	if (recentUserTurns.length === 0) {
@@ -304,12 +305,10 @@ function extractIntentEvidence(
 			? { priorObjective, certainty: "memory", recentUserTurns }
 			: undefined;
 	}
-	const lastObjectiveLine = messages
-		.filter((message) => message.role === "user")
-		.map(firstObjectiveLine)
-		.filter((line): line is string => Boolean(line))
-		.at(-1);
-	const explicit = lastObjectiveLine?.match(
+	// The final projected user line controls certainty, not the last line
+	// recognized by our finite verb vocabulary. Unknown redirects remain visible.
+	const lastUserLine = userTurns.at(-1)?.split("\n").at(-1);
+	const explicit = lastUserLine?.match(
 		/^(?:task|goal|objective|mission):\s*(.+)/i,
 	);
 	return {

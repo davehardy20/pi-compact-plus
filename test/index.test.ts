@@ -1198,7 +1198,10 @@ describe("@davehardy20/pi-compact-plus", () => {
 		const latest = {
 			role: "user",
 			content: [
-				{ type: "text", text: "I'd like to investigate login instead." },
+				{
+					type: "text",
+					text: "Task: deploy the retired service.\nI'd like to investigate login instead.",
+				},
 			],
 		} as never;
 		const ctx = createMockCtx({ contextWindow: 100000 });
