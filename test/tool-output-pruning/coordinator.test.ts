@@ -1,7 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolOutputPruningCoordinator } from "../../src/tool-output-pruning/coordinator.js";
-import { buildToolPruneSummaryData } from "../../src/tool-output-pruning/metadata.js";
+import {
+	buildToolPruneSummaryData,
+	MAX_RECONSTRUCTION_SCAN_ENTRIES,
+} from "../../src/tool-output-pruning/metadata.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
 import type {
 	PendingToolOutputBatch,
@@ -660,6 +663,86 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(state.finalizedSnapshot()).toHaveLength(0);
 		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
 		expect(pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("admits the last metadata slot but refuses a flush that would erase the index", async () => {
+		const entries: Parameters<typeof makeCtxFromEntries>[0] = Array.from(
+			{ length: MAX_RECONSTRUCTION_SCAN_ENTRIES - 1 },
+			(_, index) => {
+				const ref = index + 1;
+				const record = makeRecord(`tc${ref}`, `t${ref}`, `entry-${ref}`);
+				return [
+					{
+						type: "message",
+						id: `entry-${ref}`,
+						message: makeToolResultMessage(`tc${ref}`),
+					},
+					{
+						type: "custom",
+						id: `summary-${ref}`,
+						customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+						data: buildToolPruneSummaryData({
+							allRecords: [record],
+							metadataRecords: [record],
+							settings: ENABLED_SETTINGS,
+							summaryChars: 10,
+							timestamp: ref,
+						}),
+					},
+				];
+			},
+		).flat();
+		const ctx = makeCtxFromEntries(entries);
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		const pi = {
+			appendEntry: vi.fn((customType: string, data?: unknown) => {
+				entries.push({
+					type: "custom",
+					id: `summary-${entries.length}`,
+					customType,
+					data,
+				});
+			}),
+		};
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot()).toHaveLength(
+			MAX_RECONSTRUCTION_SCAN_ENTRIES - 1,
+		);
+
+		for (const ref of [
+			MAX_RECONSTRUCTION_SCAN_ENTRIES,
+			MAX_RECONSTRUCTION_SCAN_ENTRIES + 1,
+		]) {
+			entries.push({
+				type: "message",
+				id: `entry-${ref}`,
+				message: makeToolResultMessage(`tc${ref}`),
+			});
+			state.addPendingBatch(makeBatch([`rec-tc${ref}`]), [
+				makeRecord(`tc${ref}`, `t${ref}`, null),
+			]);
+			mockCompleteSimple.mockResolvedValueOnce(
+				makeSummarizerResponse(`## t${ref}\nSummary ${ref}.`),
+			);
+			const result = await coordinator.manualFlush(ctx, pi);
+			if (ref === MAX_RECONSTRUCTION_SCAN_ENTRIES) {
+				expect(result.ok).toBe(true);
+				expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+			} else {
+				expect(result.ok).toBe(false);
+				expect(result.message).toContain("too many metadata entries");
+				expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+			}
+			coordinator.onSessionTree(ctx);
+			expect(state.finalizedSnapshot()).toHaveLength(
+				MAX_RECONSTRUCTION_SCAN_ENTRIES,
+			);
+		}
+		expect(coordinator.query({ ref: "t1" }, ctx).matches).toHaveLength(1);
 	});
 
 	it("manual flush delegates with current branch entries", async () => {

@@ -2,8 +2,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createCurrentSessionBranchView,
+	createSessionBranchView,
 	type SessionBranchEntryLike,
 } from "../session-branch-view.js";
+import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
 import type { CaptureBatchResult } from "./capture.js";
 import {
 	buildPruningStatusDetail,
@@ -17,7 +19,10 @@ import {
 	isFinalAssistantMessageForToolPrune,
 	shouldFlushOnMessageEnd,
 } from "./lifecycle.js";
-import { reconstructToolOutputRecordsFromBranch } from "./metadata.js";
+import {
+	MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES,
+	reconstructToolOutputRecordsFromBranch,
+} from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
 import { type ApplyPruningResult, applyToolOutputPruning } from "./pruner.js";
 import { recordMatchesBranchEntry } from "./record-identity.js";
@@ -80,6 +85,45 @@ export class ToolOutputPruningCoordinator {
 		this.state.resetPending();
 	}
 
+	/** Reject an append if the resulting branch could not restore its index. */
+	private guardedAppendEntry(
+		ctx: BranchProviderContext,
+		pi: AppendEntryPort,
+		settings: ToolOutputPruningSettings,
+	): AppendEntryPort {
+		return {
+			appendEntry: (customType, data) => {
+				if (customType !== TOOL_PRUNE_SUMMARY_CUSTOM_TYPE) {
+					throw new Error("unexpected pruning metadata entry type");
+				}
+				const entries = ctx.sessionManager.getBranch();
+				if (entries.length >= MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES) {
+					throw new Error("pruning metadata branch scan limit reached");
+				}
+				// Simulate the append against a fresh branch: this enforces the
+				// entry/byte limits, identity and duplicate rules atomically before
+				// persistence. A failed flush rolls back its in-memory additions.
+				const candidate = createSessionBranchView([
+					...entries,
+					{
+						type: "custom",
+						id: "compact-plus-pending-prune-summary",
+						customType,
+						data,
+					},
+				]);
+				const result = reconstructToolOutputRecordsFromBranch(
+					candidate,
+					settings,
+				);
+				if (!result.ok) {
+					throw new Error(`pruning metadata admission failed: ${result.error}`);
+				}
+				pi.appendEntry(customType, data);
+			},
+		};
+	}
+
 	/** Hydrate the active branch after the session state has been reset. */
 	onSessionStart(ctx: BranchProviderContext): void {
 		this.onSessionTree(ctx);
@@ -120,7 +164,7 @@ export class ToolOutputPruningCoordinator {
 			settings,
 			ctx,
 			view.messageEntries(),
-			pi,
+			this.guardedAppendEntry(ctx as BranchProviderContext, pi, settings),
 		);
 	}
 
@@ -186,13 +230,15 @@ export class ToolOutputPruningCoordinator {
 		ctx: ExtensionContext,
 		pi: AppendEntryPort,
 	): Promise<FlushResult & { message: string }> {
-		const view = createCurrentSessionBranchView(ctx as BranchProviderContext);
+		const branchCtx = ctx as BranchProviderContext;
+		const view = createCurrentSessionBranchView(branchCtx);
+		const settings = this.getSettings();
 		return manualFlushPendingBatches({
 			state: this.state,
-			settings: this.getSettings(),
+			settings,
 			ctx,
 			branchEntries: view.messageEntries(),
-			pi,
+			pi: this.guardedAppendEntry(branchCtx, pi, settings),
 		});
 	}
 
