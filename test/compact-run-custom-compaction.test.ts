@@ -181,7 +181,7 @@ describe("runCustomCompaction characterization", () => {
 		expect(args[2]).toBe("");
 		expect(args[3]).toBeUndefined();
 		expect(args[4]).toContain(
-			"Objective: Current objective: characterize compaction",
+			"Prior objective (provisional): Current objective: characterize compaction",
 		);
 		expect(args[4]).not.toContain("prefix excluded when this is not split");
 		expect(args[5]).toBe(ctx.signal);
@@ -217,7 +217,9 @@ describe("runCustomCompaction characterization", () => {
 		expect(args).toHaveLength(8);
 		expect(args[0].previousSummary).not.toBe(previousSummary);
 		expect(args[0].previousSummary.length).toBeLessThan(previousSummary.length);
-		expect(args[4]).toContain("Objective: Current objective: prefix objective");
+		expect(args[4]).toContain(
+			"Prior objective (provisional): Current objective: prefix objective",
+		);
 		expect(args[4]).toContain(
 			"This compaction includes a split turn with 1 prefix message(s).",
 		);

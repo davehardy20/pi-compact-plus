@@ -117,6 +117,47 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it("exposes bounded chronological evidence when a newer request is not recognized", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("All tests passed."),
+			userMessage("I'd like to investigate login instead."),
+		];
+		const focus = extractCurrentFocus(messages);
+		expect(focus.intentEvidence).toEqual({
+			priorObjective: "deploy the retired service.",
+			certainty: "provisional",
+			recentUserTurns: [
+				"Task: deploy the retired service.",
+				"All tests passed.",
+				"I'd like to investigate login instead.",
+			],
+		});
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage("All tests passed."),
+			]).intentEvidence?.certainty,
+		).toBe("provisional");
+	});
+
+	it("caps and filters evidence without trusting generated continuation", () => {
+		const focus = extractCurrentFocus([
+			userMessage("Task: repair login."),
+			userMessage("Continue with the current task."),
+			...Array.from({ length: 8 }, (_, index) =>
+				userMessage(`Note ${index}: ${"x".repeat(800)}`),
+			),
+		]);
+		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(4);
+		expect(
+			focus.intentEvidence?.recentUserTurns.join("").length,
+		).toBeLessThanOrEqual(1200);
+		expect(focus.intentEvidence?.recentUserTurns.join(" ")).not.toContain(
+			"Continue with the current task.",
+		);
+	});
+
 	it("keeps an active task over unlabeled declarative status or problem reports", () => {
 		const earlier = userMessage("Task: deploy the retired service.");
 		for (const reply of ["All tests passed.", "The login flow fails."]) {

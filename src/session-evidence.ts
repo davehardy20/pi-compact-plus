@@ -12,6 +12,7 @@ import type { SessionBranchView } from "./session-branch-view.js";
 import {
 	CONTINUATION_PROMPT,
 	type CurrentFocus,
+	type IntentEvidence,
 	type SessionSnapshot,
 } from "./types.js";
 
@@ -28,6 +29,8 @@ const CURRENT_FOCUS_RECENT_WINDOW = 20;
 const SNAPSHOT_RECENT_WINDOW = 20;
 const SNAPSHOT_FOCUS_RECENT_WINDOW = 30;
 const MAX_OBJECTIVE_CHARS = 200;
+const MAX_INTENT_TURNS = 4;
+const MAX_INTENT_TURN_CHARS = 300;
 const MAX_ACTIVE_FILES = 10;
 const MAX_BLOCKERS = 5;
 const MAX_DECISIONS = 5;
@@ -272,6 +275,49 @@ export function extractObjective(allMessages: AgentMessage[]): string {
 		if (objective) return objective.slice(0, MAX_OBJECTIVE_CHARS);
 	}
 	return initialUnlabeled ?? "Continue current task.";
+}
+
+function boundIntentTurn(text: string): string {
+	if (text.length <= MAX_INTENT_TURN_CHARS) return text;
+	// Retain both ends: a long user message may redirect only at its end.
+	return `${text.slice(0, 140)} … ${text.slice(-140)}`;
+}
+
+function extractIntentEvidence(
+	messages: AgentMessage[],
+	priorObjective: string,
+): IntentEvidence | undefined {
+	const recentUserTurns = messages
+		.filter((message) => message.role === "user")
+		.map((message) =>
+			extractTextContent(message)
+				.split(/\n/)
+				.map((line) => line.trim())
+				.filter((line) => line && line !== CONTINUATION_PROMPT)
+				.join("\n"),
+		)
+		.filter(Boolean)
+		.slice(-MAX_INTENT_TURNS)
+		.map(boundIntentTurn);
+	if (recentUserTurns.length === 0) {
+		return detectCompactionSummary(messages).found
+			? { priorObjective, certainty: "memory", recentUserTurns }
+			: undefined;
+	}
+	const lastObjectiveLine = messages
+		.filter((message) => message.role === "user")
+		.map(firstObjectiveLine)
+		.filter((line): line is string => Boolean(line))
+		.at(-1);
+	const explicit = lastObjectiveLine?.match(
+		/^(?:task|goal|objective|mission):\s*(.+)/i,
+	);
+	return {
+		priorObjective,
+		certainty:
+			explicit?.[1].trim() === priorObjective ? "confirmed" : "provisional",
+		recentUserTurns,
+	};
 }
 
 function objectiveLineContent(line: string): string {
@@ -823,7 +869,14 @@ export function extractCurrentFocus(messages: AgentMessage[]): CurrentFocus {
 	const activeFiles = extractActiveFiles(messages);
 	const blockers = extractBlockers(recent);
 	const dependencyChain = extractDependencyChain(recent, decisions);
-	return { objective, blockers, decisions, activeFiles, dependencyChain };
+	return {
+		objective,
+		intentEvidence: extractIntentEvidence(messages, objective),
+		blockers,
+		decisions,
+		activeFiles,
+		dependencyChain,
+	};
 }
 
 export function extractCurrentFocusFromBranch(

@@ -85,9 +85,14 @@ recent messages retained outside the summarized slice while excluding
 superseded or context-edited messages, so the latest substantive user request
 takes precedence over older `Task:` labels. With an active objective, only
 clear requests, redirects or cancellations replace it; ambiguous declarative
-replies remain context. The extension's exact "Continue with the current task."
-follow-up is not treated as a new objective. If no user request survives, a
-validated persisted summary supplies it; split turns remain continuity context. Additional
+replies remain context. To avoid treating a finite phrase list as complete,
+the helper also receives bounded, chronological user-turn evidence from the
+active Pi projection. When the extracted objective is provisional, the helper
+compares that evidence with the prior task: a clear new request supersedes it,
+but a status-only reply does not. The extension's exact "Continue with the
+current task." follow-up is not treated as a new objective. If no user request
+survives, a validated persisted summary supplies it; split turns remain
+continuity context. Additional
 compaction guidance is bounded and subordinate to the current user request.
 Only a genuine persisted Pi `compactionSummary` can seed a focus echo—assistant
 messages quoting a summary cannot.

@@ -63,8 +63,15 @@ export interface CompactPlusStatus {
 	thresholdSettings?: CompactPlusThresholdSettings;
 }
 
+export interface IntentEvidence {
+	priorObjective: string;
+	certainty: "confirmed" | "provisional" | "memory";
+	recentUserTurns: string[];
+}
+
 export interface CurrentFocus {
 	objective: string;
+	intentEvidence?: IntentEvidence;
 	blockers: string[];
 	decisions: string[];
 	activeFiles: string[];
