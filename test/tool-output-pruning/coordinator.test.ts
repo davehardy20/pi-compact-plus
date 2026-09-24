@@ -6,10 +6,11 @@ import {
 	MAX_RECONSTRUCTION_SCAN_ENTRIES,
 } from "../../src/tool-output-pruning/metadata.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type {
-	PendingToolOutputBatch,
-	ToolOutputPruningSettings,
-	ToolOutputRecord,
+import {
+	MAX_FINALIZED_RECORDS,
+	type PendingToolOutputBatch,
+	type ToolOutputPruningSettings,
+	type ToolOutputRecord,
 } from "../../src/tool-output-pruning/types.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../../src/types.js";
 
@@ -365,6 +366,161 @@ describe("ToolOutputPruningCoordinator", () => {
 			"t2",
 		]);
 		expect(state.generateShortRef()).toBe("t3");
+	});
+
+	it("retains branch-safe in-memory legacy records alongside current metadata", () => {
+		const legacy = makeRecord("legacy", "t1", "entry-1");
+		const current = makeRecord("current", "t2", "entry-2");
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [current],
+			metadataRecords: [current],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const entriesA = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("legacy"),
+			},
+			{
+				type: "custom",
+				id: "legacy-summary",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: {
+					timestamp: 1,
+					refs: "t1: bash",
+					summaryChars: 10,
+					recordCount: 1,
+				},
+			},
+		];
+		const branchA = makeCtxFromEntries(entriesA);
+		const branchB = makeCtxFromEntries([
+			...entriesA,
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("current"),
+			},
+			{
+				type: "custom",
+				id: "current-summary",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryData,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(legacy);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(coordinator.query({ ref: "t1" }, branchB).matches).toHaveLength(1);
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(state.generateShortRef()).toBe("t3");
+	});
+
+	it("prefers durable metadata over conflicting in-memory legacy identities", () => {
+		const current = makeRecord("current", "t2", "entry-2");
+		const conflicting = makeRecord("legacy", "t2", "entry-1");
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(conflicting);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [current],
+			metadataRecords: [current],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+
+		coordinator.onSessionTree(
+			makeCtxFromEntries([
+				{
+					type: "message",
+					id: "entry-1",
+					message: makeToolResultMessage("legacy"),
+				},
+				{
+					type: "message",
+					id: "entry-2",
+					message: makeToolResultMessage("current"),
+				},
+				{
+					type: "custom",
+					id: "current-summary",
+					customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+					data: summaryData,
+				},
+			]),
+		);
+		expect(state.finalizedSnapshot().map((record) => record.recordId)).toEqual([
+			"rec-current",
+		]);
+	});
+
+	it("bounds a mixed legacy and durable index by branch recency", () => {
+		const legacy = makeRecord("legacy", "t1", "entry-1");
+		const durable = Array.from({ length: MAX_FINALIZED_RECORDS }, (_, index) =>
+			makeRecord(`tc${index + 2}`, `t${index + 2}`, `entry-${index + 2}`),
+		);
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: durable,
+			metadataRecords: durable,
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const entries = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("legacy"),
+			},
+			...durable.map((record) => ({
+				type: "message",
+				id: record.entryId ?? "",
+				message: makeToolResultMessage(record.toolCallId),
+			})),
+			{
+				type: "custom",
+				id: "durable-summary",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryData,
+			},
+		];
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(legacy);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(makeCtxFromEntries(entries));
+		const restored = state.finalizedSnapshot();
+		expect(restored).toHaveLength(MAX_FINALIZED_RECORDS);
+		expect(restored[0]?.shortRef).toBe("t2");
+		expect(restored.at(-1)?.shortRef).toBe(`t${MAX_FINALIZED_RECORDS + 1}`);
+		expect(state.generateShortRef()).toBe(`t${MAX_FINALIZED_RECORDS + 2}`);
 	});
 
 	it("fails atomically when new branch metadata is invalid despite a shared survivor", () => {

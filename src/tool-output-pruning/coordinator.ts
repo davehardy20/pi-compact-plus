@@ -32,6 +32,7 @@ import type {
 	QueryToolOutputParams,
 	QueryToolOutputResult,
 	ToolOutputPruningSettings,
+	ToolOutputRecord,
 } from "./types.js";
 
 export interface ToolOutputPruningCoordinatorDependencies {
@@ -62,6 +63,38 @@ export interface BranchProviderContext {
 
 interface AppendEntryPort {
 	appendEntry: (customType: string, data?: unknown) => void;
+}
+
+function reconcileBranchRecords(
+	persisted: ToolOutputRecord[],
+	inMemory: ToolOutputRecord[],
+	branchEntries: SessionBranchEntryLike[],
+): ToolOutputRecord[] {
+	const records = [...persisted];
+	const recordIds = new Set(records.map((record) => record.recordId));
+	const entryIds = new Set(records.map((record) => record.entryId));
+	const refs = new Set(records.map((record) => record.shortRef));
+	for (const record of inMemory) {
+		// Durable metadata wins on an identity collision. Legacy records have
+		// no durable counterpart, but still represent valid live branch output.
+		if (
+			recordIds.has(record.recordId) ||
+			entryIds.has(record.entryId) ||
+			refs.has(record.shortRef)
+		) {
+			continue;
+		}
+		records.push(record);
+		recordIds.add(record.recordId);
+		entryIds.add(record.entryId);
+		refs.add(record.shortRef);
+	}
+	// Retain the newest records if the combined index exceeds its state cap.
+	const order = new Map(branchEntries.map((entry, index) => [entry.id, index]));
+	return records.sort(
+		(a, b) =>
+			(order.get(a.entryId ?? "") ?? -1) - (order.get(b.entryId ?? "") ?? -1),
+	);
 }
 
 /**
@@ -192,9 +225,11 @@ export class ToolOutputPruningCoordinator {
 		const result = reconstructToolOutputRecordsFromBranch(view, settings);
 		this.state.recordReconstructionResult(result);
 		const records = result.ok
-			? result.records.length > 0
-				? result.records
-				: currentBranchRecords
+			? reconcileBranchRecords(
+					result.records,
+					currentBranchRecords,
+					branchEntries,
+				)
 			: [];
 		this.state.replaceFinalizedRecords(records);
 		if (result.ok) {
