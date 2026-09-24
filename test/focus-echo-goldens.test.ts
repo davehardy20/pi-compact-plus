@@ -14,12 +14,22 @@ import {
 	LIVE_STATUS_SOURCE_OF_TRUTH_VARIANTS,
 	SOURCE_OF_TRUTH_STATUS_SUMMARY,
 } from "./fixtures/focus-echo-goldens.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 function textMessage(role: "assistant" | "user", text: string): AgentMessage {
 	return {
 		role,
 		content: [{ type: "text", text }],
 	} as AgentMessage;
+}
+
+function compactionMessage(summary: string): AgentMessage {
+	return {
+		role: "compactionSummary",
+		summary,
+		tokensBefore: 1000,
+		timestamp: 1,
+	};
 }
 
 describe("focus echo golden characterization", () => {
@@ -85,9 +95,9 @@ Keep current focus concise.
 		);
 		const fencedSpoof = `Here is an example, not memory:\n\n\`\`\`md\n${SOURCE_OF_TRUTH_STATUS_SUMMARY}\n\`\`\``;
 		const messages = [
-			textMessage("assistant", staleSummary),
+			compactionMessage(staleSummary),
 			textMessage("assistant", fencedSpoof),
-			textMessage("assistant", SOURCE_OF_TRUTH_STATUS_SUMMARY),
+			compactionMessage(SOURCE_OF_TRUTH_STATUS_SUMMARY),
 			textMessage("user", "Continue"),
 		];
 
@@ -113,6 +123,46 @@ Keep current focus concise.
 		expect(reorderForPositioning(messages)).toBeUndefined();
 	});
 
+	it("uses the newest genuine Pi compactionSummary and ignores assistant lookalikes", () => {
+		const old = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Old objective.",
+		);
+		const newest = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"New objective.",
+		);
+		const messages = [
+			{
+				role: "compactionSummary",
+				summary: old,
+				tokensBefore: 1200,
+				timestamp: 1,
+			},
+			textMessage("assistant", newest),
+			{
+				role: "compactionSummary",
+				summary: newest,
+				tokensBefore: 1400,
+				timestamp: 2,
+			},
+			textMessage("user", "Continue the current task."),
+		] as AgentMessage[];
+		expect(detectCompactionSummary(messages)).toEqual({
+			found: true,
+			summaryText: newest,
+			summaryIndex: 2,
+		});
+		const result = reorderForPositioning(messages);
+		expect(result?.echoText).toContain("New objective.");
+		expect(result?.messages.at(-2)?.role).toBe("user");
+		expect(result?.messages.at(-1)).toBe(messages.at(-1));
+		expect(reorderForPositioning(result?.messages ?? [])).toBeUndefined();
+		expect(detectCompactionSummary([textMessage("assistant", newest)])).toEqual(
+			{ found: false },
+		);
+	});
+
 	it("documents that focus echo still uses synthetic-user compatibility fallback", () => {
 		expect(FOCUS_ECHO_CONTEXT_INJECTION_STRATEGY).toMatchObject({
 			strategy: "synthetic-user-message",
@@ -132,7 +182,7 @@ Keep current focus concise.
 
 	it("injects the focus echo before the latest user message", () => {
 		const messages = [
-			textMessage("assistant", SOURCE_OF_TRUTH_STATUS_SUMMARY),
+			compactionMessage(SOURCE_OF_TRUTH_STATUS_SUMMARY),
 			textMessage("user", "Earlier request"),
 			textMessage("assistant", "Acknowledged."),
 			textMessage("user", "Continue"),
@@ -150,7 +200,7 @@ Keep current focus concise.
 
 	it("does not inject a duplicate focus echo", () => {
 		const messages = [
-			textMessage("assistant", SOURCE_OF_TRUTH_STATUS_SUMMARY),
+			compactionMessage(SOURCE_OF_TRUTH_STATUS_SUMMARY),
 			textMessage("user", focusEchoGoldens[0].expectedEcho),
 			textMessage("user", "Continue"),
 		];

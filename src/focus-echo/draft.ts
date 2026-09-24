@@ -1,3 +1,9 @@
+import {
+	FENCED_EXAMPLE_OMISSION,
+	isSubstantiveCriticalLine,
+	parseSummarySections,
+} from "../summary-schema.js";
+
 export const FOCUS_ECHO_SECTION_HEADINGS = {
 	objective: "## Current Objective",
 	activeFiles: "## Active File Set",
@@ -26,71 +32,60 @@ export interface FocusEchoDraft {
 }
 
 export function extractFocusEchoDraft(summaryText: string): FocusEchoDraft {
+	const { sections } = parseSummarySections(summaryText);
 	return {
 		objective: extractFirstNonEmptyLine(
-			summaryText,
+			sections,
 			FOCUS_ECHO_SECTION_HEADINGS.objective,
 		),
 		activeFiles: extractRawListSection(
-			summaryText,
+			sections,
 			FOCUS_ECHO_SECTION_HEADINGS.activeFiles,
 		),
 		blockers: extractRawListSection(
-			summaryText,
+			sections,
 			FOCUS_ECHO_SECTION_HEADINGS.blockers,
 		),
-		errors: extractRawListSection(
-			summaryText,
-			FOCUS_ECHO_SECTION_HEADINGS.errors,
-		),
+		errors: extractRawListSection(sections, FOCUS_ECHO_SECTION_HEADINGS.errors),
 		decisions: extractRawListSection(
-			summaryText,
+			sections,
 			FOCUS_ECHO_SECTION_HEADINGS.decisions,
 		),
 		dependencyChain: extractRawSectionLines(
-			summaryText,
+			sections,
 			FOCUS_ECHO_SECTION_HEADINGS.dependencyChain,
 		),
 		nextStep: extractFirstNonEmptyLine(
-			summaryText,
+			sections,
 			FOCUS_ECHO_SECTION_HEADINGS.nextStep,
 		),
 	};
 }
 
-function extractFirstNonEmptyLine(text: string, heading: string): string {
-	const content = extractSectionContent(text, heading);
-	if (!content) return "";
-
+function extractFirstNonEmptyLine(
+	sections: Map<string, string[]>,
+	heading: string,
+): string {
 	return (
-		content
-			.split(/\n/)
-			.map((line) => line.trim())
-			.find((line) => line.length > 0) ?? ""
+		extractRawSectionLines(sections, heading).find(isSubstantiveCriticalLine) ??
+		""
 	);
 }
 
-function extractRawListSection(text: string, heading: string): string[] {
-	return extractRawSectionLines(text, heading).filter(
+function extractRawListSection(
+	sections: Map<string, string[]>,
+	heading: string,
+): string[] {
+	return extractRawSectionLines(sections, heading).filter(
 		(line) => line.startsWith("- ") || line.startsWith("* "),
 	);
 }
 
-function extractRawSectionLines(text: string, heading: string): string[] {
-	const content = extractSectionContent(text, heading);
-	if (!content) return [];
-
-	return content
-		.split(/\n/)
+function extractRawSectionLines(
+	sections: Map<string, string[]>,
+	heading: string,
+): string[] {
+	return (sections.get(heading) ?? [])
 		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
-}
-
-function extractSectionContent(text: string, heading: string): string {
-	const headingIndex = text.indexOf(heading);
-	if (headingIndex === -1) return "";
-
-	const afterHeading = text.slice(headingIndex + heading.length).trimStart();
-	const nextHeading = afterHeading.search(/^## /m);
-	return nextHeading === -1 ? afterHeading : afterHeading.slice(0, nextHeading);
+		.filter((line) => line.length > 0 && line !== FENCED_EXAMPLE_OMISSION);
 }

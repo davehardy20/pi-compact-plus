@@ -120,20 +120,33 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 **Change-entrypoint:** If Pi changes the `compact()` helper signature, update the arity checks in `resolveCompactionRuntimeCompatibility`. The cached `streamSimple` import avoids repeated dynamic imports.
 
-## Summary generation (`src/compact.ts`, `src/prompts.ts`)
+## Summary generation (`src/compact.ts`, `src/prompts.ts`, `src/summary-schema.ts`)
 
 ### Summary instruction structure
 
 `buildSummaryInstructions(mode, focus, options?)` in `src/prompts.ts` produces the prompt sent to the LLM during compaction. It includes:
 
 1. **Current focus block** — XML-delimited `<current-focus>` with objective, blockers, decisions, dependency chain, active files. All values are escaped via `escapePromptData()` to prevent XML breakout.
-2. **Structured schema** — 13 required section headings (see `quickstart.md`).
+2. **Structured schema** — the exact title line and all 13 section headings come from `STRUCTURED_SUMMARY_TITLE` / `STRUCTURED_SUMMARY_HEADINGS` in `src/summary-schema.ts`, the single source of truth shared with validation and focus-echo detection. Optional sections may use `None`; the `CRITICAL_HEADINGS` sections (Objective, Task State, Next Best Step, Continuity Instruction) must always be filled.
 3. **Hard-mode constraints** — For `mode === "hard"`: short bullets, fewer historical details, only critical failed attempts, one next step.
 4. **Direction-change detection** — When `options.previousSummary` is provided, detailed merging rules for each section (objective always from current conversation; decisions accumulate; failed attempts accumulate; open problems carry forward unless resolved).
 
+### Summary schema and validation (`src/summary-schema.ts`)
+
+Both validation and focus-echo draft extraction (`src/focus-echo/draft.ts`) parse summaries through the shared fence-aware `parseSummarySections()`: it normalizes newlines, skips the title line, tracks ``` and ~~~ fences (a fence closes only on the same marker kind with at least the opening length), and returns top-level `## ` headings, per-section body lines, a `contentBeforeFirstSection` flag, and an `unterminatedFence` flag. Only out-of-fence lines are collected — fenced lines (and the fence-marker lines themselves) are neither headings nor section body.
+
+`validateStructuredSummary(summary)` enforces the full schema on one string:
+
+- **Title**: line 1 must equal `STRUCTURED_SUMMARY_TITLE` exactly (`Compaction Summary — Compact+ memory`).
+- **Headings**: every one of the 13 `STRUCTURED_SUMMARY_HEADINGS` must appear exactly once at top level; unknown or duplicate `## ` headings are rejected. Headings inside code fences never count, so quoted example summaries cannot spoof or duplicate schema sections.
+- **Structure**: out-of-fence content before the first section, or an unterminated fence, is rejected.
+- **Critical sections**: the four `CRITICAL_HEADINGS` exported from `src/summary-schema.ts` (`## Current Objective`, `## Current Task State`, `## Next Best Step`, `## Continuity Instruction`) require substantive text outside fences — their out-of-fence section lines, joined and trimmed, must be non-empty, not just `None`/`N/A` (an optional list marker is tolerated), and not solely the `FENCED_EXAMPLE_OMISSION` marker. A critical section whose only content sits inside a fence, or whose entire body is the omission marker, fails validation.
+
 ### Summary normalization (`src/compact.ts`)
 
-After the LLM produces a summary, `normalizeStructuredSummary()` enforces size limits:
+`runCustomCompaction` validates the raw summary **before** normalizing (`finalizeCompactionAttempt`), then normalizes, then re-validates the normalized result with the same schema — a lossy rewrite can never drop a required heading and still be accepted.
+
+An oversized but otherwise valid summary is normalized rather than rejected: the title and all section headings are preserved, and fenced code examples are dropped atomically — never cut mid-fence, which would turn an example heading into a duplicate schema heading. `omitFencedExamples()` (`src/compact.ts`) replaces each dropped fence with the `FENCED_EXAMPLE_OMISSION` marker string (`"[Code example omitted during normalization]"`, exported from `src/summary-schema.ts`) **only in non-critical sections**; in a `CRITICAL_HEADINGS` section the fence is dropped without any placeholder, so the section's line budget is spent exclusively on the real objective / task state / next step / continuity content rather than on a marker. `renderSummarySectionBody()` additionally skips bare marker lines in critical sections as a belt-and-braces guard. Because a critical section left with only the marker would be rejected by `validateStructuredSummary` (marker-only critical content is invalid), normalization cannot silently hollow out critical sections. After fence omission, body lines are truncated per line and section body line counts are progressively reduced via multipliers `[1, 0.75, 0.5, 0.35]` until the target fits (final fallback: multiplier `0.25`). Result metadata (`firstKeptEntryId`, `tokensBefore`, `details`) is retained across normalization.
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -142,7 +155,9 @@ After the LLM produces a summary, `normalizeStructuredSummary()` enforces size l
 | `MAX_PREVIOUS_SUMMARY_TOKENS` | 1600 | Max for carried-forward previous summary |
 | `MAX_SUMMARY_LINE_CHARS` | 240 | Per-line truncation |
 
-**Section body line limits** (`SECTION_BODY_LINE_LIMITS`): Each of the 13 sections has a max body line count (4–14). When the summary exceeds token limits, the normalizer progressively reduces body line counts via multipliers `[1, 0.75, 0.5, 0.35]` until it fits.
+**Section body line limits** (`SECTION_BODY_LINE_LIMITS`): derived positionally from `STRUCTURED_SUMMARY_HEADINGS` (4–14 lines per section). Changing the heading list in `summary-schema.ts` requires updating the parallel limits array in `compact.ts`.
+
+Any invalid summary — missing title, missing/unknown/duplicate heading, empty critical section, unterminated fence, content before the first section, empty summary, or still oversized after normalization — yields `result: undefined` with `fallbackReason: "compaction summary invalid: …"` (or `"summary too large"`), and `onSessionBeforeCompact` falls back to native Pi compaction with a warning notification.
 
 ## Content classification (`src/classify.ts`)
 
@@ -165,9 +180,11 @@ See [settings-and-state.md](settings-and-state.md) for persistence details.
 ## Test commands
 
 ```bash
-npx vitest run test/index.test.ts              # 139 tests: policy, settings, compaction, focus-echo, usage
+npx vitest run test/index.test.ts              # policy, settings, compaction, focus-echo, usage
 npx vitest run test/classify-extract.test.ts    # Classification
 npx vitest run test/lifecycle.test.ts           # executeCompaction lifecycle
+npx vitest run test/compact-run-custom-compaction.test.ts  # runCustomCompaction: schema validation, normalization, native fallback
+npx vitest run test/summary-provenance.test.ts  # persisted-summary detection + schema provenance
 npx vitest run test/snapshot-evidence.test.ts   # Session evidence extraction
 npx vitest run test/session-branch-view.test.ts # Branch view projection
 ```
@@ -176,6 +193,6 @@ npx vitest run test/session-branch-view.test.ts # Branch view projection
 
 - **Changing thresholds**: Update defaults in `src/settings.ts:DEFAULT_COMPACT_PLUS_SETTINGS`. Invalid/overlapping values fall back to the default profile automatically.
 - **Changing the guard cascade**: Edit `maybeAutoCompact` in `src/compaction-coordinator.ts`. Document the guard order — it is intentional.
-- **Changing summary schema**: Update both `SECTION_BODY_LINE_LIMITS` in `compact.ts` and the schema array in `buildSummaryInstructions` in `prompts.ts`. Also update `SUMMARY_SIGNATURE_HEADINGS` in `focus-echo/detection.ts` (at minimum the 4 required headings).
+- **Changing summary schema**: Edit `STRUCTURED_SUMMARY_HEADINGS` / `STRUCTURED_SUMMARY_TITLE` / `CRITICAL_HEADINGS` in `src/summary-schema.ts` (single source of truth for prompts, validation, and focus-echo detection). Also update the parallel `SECTION_BODY_LINE_LIMITS` array in `compact.ts` — it is derived positionally from the heading list, so length/order mismatches shift limits onto the wrong sections.
 - **Changing thinking level**: Edit `COMPACT_PLUS_COMPACTION_THINKING_LEVEL` in `compatibility.ts`.
 - **Adding a new compaction mode**: Add to `CompactionMode` type, update `modeSeverity()`, `getModeFromUsage`/`getModeFromTokenUsage`, and the guard cascade.

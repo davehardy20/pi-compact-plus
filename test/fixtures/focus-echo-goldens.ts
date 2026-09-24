@@ -47,6 +47,24 @@ Use the latest live /compact-plus status output as the source of truth to furthe
 
 ## Next Best Step
 Add/update test/index.test.ts regression coverage for the newest pasted live focus echo / post-compaction summary shape, then run validation.
+
+## Current Task State
+The regression is pending.
+
+## Repository State
+On the current feature branch.
+
+## Completed Work
+- Identified the noisy status output.
+
+## Known Constraints
+- Keep generated memory non-authoritative.
+
+## Failed Attempts
+- None.
+
+## Continuity Instruction
+Continue the current normalization task.
 `;
 
 export const ADVERSARIAL_SUMMARY = `Compaction Summary — Compact+ memory

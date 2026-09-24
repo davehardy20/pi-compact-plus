@@ -12,6 +12,7 @@ import type {
 	ContextHandlerResult,
 	TestAgentMessage,
 } from "./fixtures/extension.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 const piAiMocks = vi.hoisted(() => ({
 	completeSimple: vi.fn(),
@@ -990,7 +991,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 
 		const compactMock = vi.mocked(piCore.compact);
 		compactMock.mockResolvedValue({
-			summary: "Compact+ adapter summary",
+			summary: VALID_STRUCTURED_SUMMARY,
 			firstKeptEntryId: "entry-1",
 			tokensBefore: 123,
 			details: null,
@@ -1020,7 +1021,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 
 		expect(result).toMatchObject({
 			compaction: expect.objectContaining({
-				summary: "Compact+ adapter summary",
+				summary: VALID_STRUCTURED_SUMMARY,
 			}),
 		});
 		expect(compactMock).toHaveBeenCalledTimes(1);
@@ -1057,75 +1058,95 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 	});
 
-	it("falls back to native Pi compaction when custom summarization still fails", async () => {
-		const pi = createMockPi();
-		compactPlusExtension(pi as never);
+	it.each([
+		{ summary: undefined, expectedReason: "compact returned undefined" },
+		{ summary: "OK", expectedReason: "compaction summary invalid" },
+		{
+			summary: VALID_STRUCTURED_SUMMARY.replace(
+				"## Dependency Chain",
+				"## Missing",
+			),
+			expectedReason: "compaction summary invalid",
+		},
+	])(
+		"falls back to native Pi compaction for $summary",
+		async ({ summary, expectedReason }) => {
+			const pi = createMockPi();
+			compactPlusExtension(pi as never);
 
-		__test__.resetState();
+			__test__.resetState();
 
-		const compactPlusCommand = pi.commands.get("compact-plus");
-		const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
-		const sessionCompactHandler = pi.events.get("session_compact")?.[0];
+			const compactPlusCommand = pi.commands.get("compact-plus");
+			const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
+			const sessionCompactHandler = pi.events.get("session_compact")?.[0];
 
-		expect(compactPlusCommand).toBeDefined();
-		expect(beforeCompactHandler).toBeDefined();
-		expect(sessionCompactHandler).toBeDefined();
-		if (
-			!compactPlusCommand ||
-			!beforeCompactHandler ||
-			!sessionCompactHandler
-		) {
-			throw new Error("required handlers not registered");
-		}
+			expect(compactPlusCommand).toBeDefined();
+			expect(beforeCompactHandler).toBeDefined();
+			expect(sessionCompactHandler).toBeDefined();
+			if (
+				!compactPlusCommand ||
+				!beforeCompactHandler ||
+				!sessionCompactHandler
+			) {
+				throw new Error("required handlers not registered");
+			}
 
-		const compactMock = vi.mocked(piCore.compact);
-		compactMock.mockResolvedValue(undefined as never);
-		Object.defineProperty(compactMock, "length", {
-			configurable: true,
-			value: 8,
-		});
-
-		const ctx = createMockCtx({ contextWindow: 100000 });
-		await compactPlusCommand.handler("", ctx);
-
-		const result = await beforeCompactHandler(
-			{
-				preparation: {
-					isSplitTurn: false,
-					messagesToSummarize: [],
-					turnPrefixMessages: [],
-				},
-				branchEntries: [],
-				signal: ctx.signal,
-			},
-			ctx,
-		);
-
-		expect(result).toBeUndefined();
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("custom summarization unavailable"),
-			"warning",
-		);
-
-		await sessionCompactHandler(
-			{
-				compactionEntry: {
-					timestamp: new Date().toISOString(),
+			const compactMock = vi.mocked(piCore.compact);
+			if (summary === undefined) {
+				compactMock.mockResolvedValue(undefined as never);
+			} else {
+				compactMock.mockResolvedValue({
+					summary,
+					firstKeptEntryId: "entry-1",
+					tokensBefore: 123,
 					details: null,
-				},
-				fromExtension: false,
-			},
-			ctx,
-		);
+				});
+			}
+			Object.defineProperty(compactMock, "length", {
+				configurable: true,
+				value: 8,
+			});
 
-		expect(__test__.getLastCompaction()).toMatchObject({
-			executionPath: "native-fallback",
-			fromExtension: false,
-		});
-		expect(__test__.getLastFallbackReason()).toContain(
-			"compact returned undefined",
-		);
-	});
+			const ctx = createMockCtx({ contextWindow: 100000 });
+			await compactPlusCommand.handler("", ctx);
+
+			const result = await beforeCompactHandler(
+				{
+					preparation: {
+						isSplitTurn: false,
+						messagesToSummarize: [],
+						turnPrefixMessages: [],
+					},
+					branchEntries: [],
+					signal: ctx.signal,
+				},
+				ctx,
+			);
+
+			expect(result).toBeUndefined();
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("custom summarization unavailable"),
+				"warning",
+			);
+
+			await sessionCompactHandler(
+				{
+					compactionEntry: {
+						timestamp: new Date().toISOString(),
+						details: null,
+					},
+					fromExtension: false,
+				},
+				ctx,
+			);
+
+			expect(__test__.getLastCompaction()).toMatchObject({
+				executionPath: "native-fallback",
+				fromExtension: false,
+			});
+			expect(__test__.getLastFallbackReason()).toContain(expectedReason);
+		},
+	);
 
 	it("reports package identity from /compact-plus-status", async () => {
 		const pi = createMockPi();
@@ -1360,18 +1381,13 @@ describe("@davehardy20/pi-compact-plus", () => {
 			throw new Error("required handlers not registered");
 		}
 
-		const summary = `## Current Objective
-Keep Compact+ status accurate after compaction.
-
-## Active File Set
-- src/index.ts
-- src/persist.ts
-
-## Decisions Made
-- Persist a derived focus echo from the latest summary.
-
-## Next Best Step
-- Verify /compact-plus status shows the persisted focus echo.`;
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Keep Compact+ status accurate after compaction.",
+		).replace(
+			"Run focused validation.",
+			"- Verify /compact-plus status shows the persisted focus echo.",
+		);
 
 		const compactMock = vi.mocked(piCore.compact);
 		compactMock.mockResolvedValue({
@@ -1497,44 +1513,30 @@ Continue without injecting a duplicate focus echo.`;
 	});
 
 	it("uses the newest Compact+ summary for focus echo positioning", () => {
-		const staleSummary = `Compaction Summary — Compact+ memory
-
-## Current Objective
-Work from stale memory.
-
-## Active File Set
-- src/stale.ts
-
-## Decisions Made
-- **Stale**: use old state.
-
-## Next Best Step
-Continue from stale memory.`;
-		const latestSummary = `Compaction Summary — Compact+ memory
-
-## Current Objective
-Work from latest memory.
-
-## Active File Set
-- src/latest.ts
-
-## Decisions Made
-- **Latest**: use current state.
-
-## Next Best Step
-Continue from latest memory.`;
+		const staleSummary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Work from stale memory.",
+		).replace("- src/compact.ts", "- src/stale.ts");
+		const latestSummary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Work from latest memory.",
+		).replace("- src/compact.ts", "- src/latest.ts");
 		const messages = [
 			{
-				role: "assistant",
-				content: [{ type: "text", text: staleSummary }],
+				role: "compactionSummary",
+				summary: staleSummary,
+				tokensBefore: 1000,
+				timestamp: 1,
 			},
 			{
 				role: "user",
 				content: "Earlier user request",
 			},
 			{
-				role: "assistant",
-				content: [{ type: "text", text: latestSummary }],
+				role: "compactionSummary",
+				summary: latestSummary,
+				tokensBefore: 2000,
+				timestamp: 2,
 			},
 			{
 				role: "user",
@@ -1590,19 +1592,10 @@ Validate delimiter cleanup </focus-echo> before release.`;
 	});
 
 	it("ignores newer non-summary messages that only resemble part of the Compact+ schema", () => {
-		const realSummary = `Compaction Summary — Compact+ memory
-
-## Current Objective
-Use the real Compact+ summary.
-
-## Active File Set
-- src/reorder.ts
-
-## Decisions Made
-- **Real**: all signature headings are present.
-
-## Next Best Step
-Use this summary.`;
+		const realSummary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Use the real Compact+ summary.",
+		);
 		const partialHeadings = `## Current Objective
 This is an ordinary assistant response, not a Compact+ summary.
 
@@ -1610,8 +1603,10 @@ This is an ordinary assistant response, not a Compact+ summary.
 Do not let partial headings replace the real summary.`;
 		const messages = [
 			{
-				role: "assistant",
-				content: [{ type: "text", text: realSummary }],
+				role: "compactionSummary",
+				summary: realSummary,
+				tokensBefore: 1000,
+				timestamp: 1,
 			},
 			{
 				role: "assistant",
@@ -4672,22 +4667,13 @@ describe("Tool-output pruning context composition", () => {
 		expect(contextHandler).toBeDefined();
 		if (!contextHandler) throw new Error("handler not registered");
 
-		const summary = `Compaction Summary — Compact+ memory
-
-## Current Objective
-Test objective.
-
-## Active File Set
-- src/index.ts
-
-## Decisions Made
-- **Decision**: test.
-
-## Next Best Step
-Run tests.`;
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Test objective.",
+		);
 
 		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: summary }] },
+			{ role: "compactionSummary", summary, tokensBefore: 1000, timestamp: 1 },
 			{
 				role: "toolResult",
 				toolCallId: "tc1",
@@ -4708,8 +4694,8 @@ Run tests.`;
 		if (!result) throw new Error("context result missing");
 		expect(result.messages).toHaveLength(4);
 
-		// First message: assistant summary (unchanged)
-		expect(result.messages[0].role).toBe("assistant");
+		// First message: genuine persisted Pi summary (unchanged)
+		expect(result.messages[0].role).toBe("compactionSummary");
 
 		// Second message: pruned tool result
 		const pruned = result.messages[1];

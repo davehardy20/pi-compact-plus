@@ -1,3 +1,7 @@
+import {
+	STRUCTURED_SUMMARY_HEADINGS,
+	STRUCTURED_SUMMARY_TITLE,
+} from "./summary-schema.js";
 import type {
 	CompactionMode,
 	CurrentFocus,
@@ -49,22 +53,11 @@ export function buildSummaryInstructions(
 	const isHard = mode === "hard";
 
 	const schema = [
-		"## Current Objective",
-		"## Current Task State",
-		"## Active File Set",
+		...STRUCTURED_SUMMARY_HEADINGS.slice(0, 3),
 		"  - files read that still matter",
 		"  - files modified",
 		"  - likely next files to inspect/edit",
-		"## Repository State",
-		"## Decisions Made",
-		"## Completed Work",
-		"## Open Problems",
-		"## Current Errors",
-		"## Known Constraints",
-		"## Failed Attempts",
-		"## Next Best Step",
-		"## Continuity Instruction",
-		"## Dependency Chain",
+		...STRUCTURED_SUMMARY_HEADINGS.slice(3),
 	];
 
 	const hardInstructions = isHard
@@ -123,12 +116,13 @@ export function buildSummaryInstructions(
 		focusBlock,
 		"",
 		"Start the summary with exactly this title line, without punctuation:",
-		"Compaction Summary — Compact+ memory",
+		STRUCTURED_SUMMARY_TITLE,
 		"Then produce a structured summary using these exact headings:",
 		...schema,
 		"",
 		"Rules:",
-		"- Use the exact headings above. Fill each section from the conversation and <current-focus>.",
+		"- Use every exact heading above once. Fill each section from the conversation and <current-focus>.",
+		"- Use None for optional sections without facts; always fill Objective, Task State, Next Best Step, and Continuity Instruction.",
 		"- Explicitly list failed attempts and why they failed.",
 		"- Link dependent decisions in the Dependency Chain section.",
 		hardInstructions,
