@@ -124,6 +124,8 @@ describe("evidence-weighted session snapshot extraction", () => {
 		"I've finished that part.",
 		"I fixed the login flow.",
 		"Thanks, that helped.",
+		"The tests passed and the build is green.",
+		"That works now, and the checks are green.",
 	])("does not replace a task with a status-only reply: %s", (reply) => {
 		expect(
 			extractCurrentFocus([
@@ -136,6 +138,8 @@ describe("evidence-weighted session snapshot extraction", () => {
 	it.each([
 		"That works now; next, repair the login flow.",
 		"Looks good, but repair the login flow.",
+		"The tests passed and repair the login flow.",
+		"The tests failed; please repair the login flow.",
 	])("keeps a new request attached to a status update: %s", (request) => {
 		expect(
 			extractCurrentFocus([
@@ -144,6 +148,18 @@ describe("evidence-weighted session snapshot extraction", () => {
 			]).objective,
 		).toBe(request);
 	});
+
+	it.each(["Stop!", "Cancel.", "Abort."])(
+		"keeps a short cancellation as the latest objective: %s",
+		(cancellation) => {
+			expect(
+				extractCurrentFocus([
+					userMessage("Task: deploy the retired service."),
+					userMessage(cancellation),
+				]).objective,
+			).toBe(cancellation);
+		},
+	);
 
 	it("does not treat unsupported assistant self-reports as completed work", () => {
 		const completedWork = extractCompletedWork([

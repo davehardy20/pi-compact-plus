@@ -272,20 +272,14 @@ function firstObjectiveLine(msg: AgentMessage): string | undefined {
 }
 
 // Acknowledgements and successful status updates are evidence about progress,
-// not replacements for the user's active request. Match complete replies so a
-// status followed by a new directive still takes chronological precedence.
-function isStatusOnlyReply(text: string): boolean {
-	const normalized = text
+// not replacements for the user's active request. All conjoined clauses must
+// independently describe a status; an attached directive remains eligible.
+function isStatusOnlyClause(text: string): boolean {
+	const clause = text
 		.trim()
-		.toLowerCase()
-		.replace(/\u2019/g, "'")
-		.replace(/[.!?]+$/, "")
-		.replace(/,?\s*(?:thanks|thank you)[.!?]*$/, "")
+		.replace(/[,.!?]+$/, "")
 		.trim();
-	if (isConversationalFiller(normalized)) return true;
-	// Conjunctions and request markers may introduce a new instruction after
-	// the status; prefer keeping that request over filtering an ambiguous reply.
-	if (/\b(?:and|but|then|next|please|instead)\b/.test(normalized)) return false;
+	if (isConversationalFiller(clause)) return true;
 	return [
 		/^(?:thanks|thank you),? (?:that|this|it) (?:helped|works?|is (?:great|good|fine|fixed|resolved))$/,
 		/^(?:that|this|it|everything) works?(?: now)?$/,
@@ -294,7 +288,27 @@ function isStatusOnlyReply(text: string): boolean {
 		/^(?:the )?(?:checks?|tests?|build|ci) (?:passed|succeeded|completed)(?: now)?$/,
 		/^i(?:'ve| have)? (?:finished|completed|fixed|resolved|done|merged|deployed) (?:(?:that|this|it)(?: part)?|the [a-z0-9 -]+)$/,
 		/^i(?:'m| am) done(?: with (?:that|this|it))?$/,
-	].some((pattern) => pattern.test(normalized));
+	].some((pattern) => pattern.test(clause));
+}
+
+function isStatusOnlyReply(text: string): boolean {
+	const normalized = text
+		.trim()
+		.toLowerCase()
+		.replace(/\u2019/g, "'")
+		.replace(/[.!?]+$/, "")
+		.replace(/,?\s*(?:thanks|thank you)[.!?]*$/, "")
+		.trim();
+	return normalized
+		.split(/,?\s+(?:and|but)\s+|;\s*/)
+		.every((clause) => isStatusOnlyClause(clause));
+}
+
+// A cancellation overrides an active goal even below the usual length floor.
+function isShortCancellation(text: string): boolean {
+	return /^(?:stop|cancel|abort|never mind|scratch that|forget it|drop it)$/i.test(
+		text.trim().replace(/[.!?]+$/, ""),
+	);
 }
 
 export function findExplicitObjective(
@@ -320,7 +334,10 @@ export function findSubstantialObjective(
 			/^(?:task|goal|objective|mission):\s*(.*)/i,
 		);
 		const content = labeled ? labeled[1].trim() : firstLine;
-		if (content.length > 5 && !isStatusOnlyReply(content)) {
+		if (
+			isShortCancellation(content) ||
+			(content.length > 5 && !isStatusOnlyReply(content))
+		) {
 			return firstLine.slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
