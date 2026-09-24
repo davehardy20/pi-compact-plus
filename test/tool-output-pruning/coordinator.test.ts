@@ -289,6 +289,142 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(state.statusSnapshot().lastReconstructedCount).toBe(1);
 	});
 
+	it("restores all indexed records across A to B to A navigation", () => {
+		const shared = makeRecord("shared", "t1", "entry-1");
+		const specific = makeRecord("specific", "t2", "entry-2");
+		const summaryA = buildToolPruneSummaryData({
+			allRecords: [shared],
+			metadataRecords: [shared],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const summaryB = buildToolPruneSummaryData({
+			allRecords: [shared, specific],
+			metadataRecords: [specific],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 556,
+		});
+		const sharedMessage = makeToolResultMessage("shared", "shared output");
+		const specificMessage = makeToolResultMessage(
+			"specific",
+			"specific output",
+		);
+		const entriesA = [
+			{ type: "message", id: "entry-1", message: sharedMessage },
+			{
+				type: "custom",
+				id: "summary-A",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryA,
+			},
+		];
+		const branchA = makeCtxFromEntries(entriesA);
+		const branchB = makeCtxFromEntries([
+			...entriesA,
+			{ type: "message", id: "entry-2", message: specificMessage },
+			{
+				type: "custom",
+				id: "summary-B",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryB,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(coordinator.query({ ref: "t2" }, branchB).matches).toHaveLength(1);
+		expect(
+			coordinator.transformContext([sharedMessage, specificMessage], branchB)
+				?.prunedCount,
+		).toBe(2);
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(coordinator.query({ ref: "t2" }, branchA).matches).toHaveLength(0);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(state.generateShortRef()).toBe("t3");
+	});
+
+	it("fails atomically when new branch metadata is invalid despite a shared survivor", () => {
+		const shared = makeRecord("shared", "t1", "entry-1");
+		const specific = makeRecord("specific", "t1", "entry-2");
+		const summaryA = buildToolPruneSummaryData({
+			allRecords: [shared],
+			metadataRecords: [shared],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const summaryB = buildToolPruneSummaryData({
+			allRecords: [shared, specific],
+			metadataRecords: [specific],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 556,
+		});
+		const entriesA = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("shared"),
+			},
+			{
+				type: "custom",
+				id: "summary-A",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryA,
+			},
+		];
+		const branchA = makeCtxFromEntries(entriesA);
+		const branchB = makeCtxFromEntries([
+			...entriesA,
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("specific"),
+			},
+			{
+				type: "custom",
+				id: "summary-B",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryB,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.statusSnapshot().lastReconstructionStatus).toBe("error");
+		expect(state.statusSnapshot().lastReconstructionError).toContain(
+			"duplicate",
+		);
+	});
+
 	it("advances short refs after reconstruction to avoid duplicate refs", () => {
 		const toolResult = makeToolResultMessage("tc1", "original output");
 		const state = new ToolOutputPruningState();

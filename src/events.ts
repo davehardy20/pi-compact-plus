@@ -26,7 +26,7 @@ export function registerCompactPlusEventHandlers(
 		persistTelemetrySnapshot,
 	}: CompactPlusEventRegistryOptions,
 ): void {
-	pi.on("session_start", async (_event, _ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		const result = await loadTelemetryWithDiagnostics();
 		state.reset();
 		state.recordTelemetryPersistenceIssue(result.issue);
@@ -39,6 +39,7 @@ export function registerCompactPlusEventHandlers(
 			state.lastInjectedEcho = persisted.lastInjectedEcho;
 			state.lastModelKey = persisted.lastModelKey;
 		}
+		toolOutputPruning.onSessionStart(ctx);
 	});
 
 	pi.on("agent_start", async (_event, _ctx) => {
@@ -143,7 +144,13 @@ export function registerCompactPlusEventHandlers(
 		return undefined;
 	});
 
-	pi.on("model_select", async (event, _ctx) => {
+	pi.on("model_select", async (event, ctx) => {
+		const previousModelKey = state.lastModelKey;
 		compactionCoordinator.onModelSelect(event);
+		// Only a change from a known model resets model-scoped pruning state.
+		// Recover the branch before the next context transform or query.
+		if (previousModelKey !== null && state.lastModelKey !== previousModelKey) {
+			toolOutputPruning.onSessionTree(ctx);
+		}
 	});
 }

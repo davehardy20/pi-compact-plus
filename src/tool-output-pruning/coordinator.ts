@@ -80,6 +80,11 @@ export class ToolOutputPruningCoordinator {
 		this.state.resetPending();
 	}
 
+	/** Hydrate the active branch after the session state has been reset. */
+	onSessionStart(ctx: BranchProviderContext): void {
+		this.onSessionTree(ctx);
+	}
+
 	onTurnEnd(event: TurnEndPruningEvent): CaptureBatchResult | null {
 		return captureTurnEndBatch(
 			event.message,
@@ -137,14 +142,19 @@ export class ToolOutputPruningCoordinator {
 					recordMatchesBranchEntry(entry, record, settings),
 				),
 			);
-		this.state.replaceFinalizedRecords(currentBranchRecords);
-		if (currentBranchRecords.length === 0) {
-			const result = reconstructToolOutputRecordsFromBranch(view, settings);
-			this.state.recordReconstructionResult(result);
-			this.state.replaceFinalizedRecords(result.ok ? result.records : []);
-			if (result.ok) {
-				this.state.advanceShortRefCounterFromRecords(result.records);
-			}
+		// Shared ancestors may survive a branch switch while branch-specific
+		// records exist only in durable metadata. Validate the whole active branch
+		// before exposing any records; a malformed entry invalidates all of them.
+		const result = reconstructToolOutputRecordsFromBranch(view, settings);
+		this.state.recordReconstructionResult(result);
+		const records = result.ok
+			? result.records.length > 0
+				? result.records
+				: currentBranchRecords
+			: [];
+		this.state.replaceFinalizedRecords(records);
+		if (result.ok) {
+			this.state.advanceShortRefCounterFromRecords(records);
 		}
 	}
 
