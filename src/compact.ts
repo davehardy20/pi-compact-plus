@@ -526,7 +526,10 @@ function selectCompactionSignal(
 	signal: AbortSignal | undefined,
 	contextSignal: AbortSignal | undefined,
 ): AbortSignal | undefined {
-	return signal ?? contextSignal ?? undefined;
+	if (signal && contextSignal && signal !== contextSignal) {
+		return AbortSignal.any([signal, contextSignal]);
+	}
+	return signal ?? contextSignal;
 }
 
 function compactErrorResult(): CompactionAttemptResult {
@@ -587,6 +590,9 @@ export async function runCustomCompaction(
 			compatibility,
 			signal: requestSignal,
 		});
+		if (requestSignal?.aborted) {
+			return { result: undefined, fallbackReason: "compaction aborted" };
+		}
 		const compactRunner = compact as unknown as (
 			...args: unknown[]
 		) => Promise<CompactionResult | undefined>;

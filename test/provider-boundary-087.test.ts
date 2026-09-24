@@ -1,12 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, it, vi } from "vitest";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 
-// The project pins Pi 0.83.0 for CI. Exercise the installed 0.87.1 registry
-// when present without changing the package support range or using network I/O.
-const hostPi = "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent";
+// CI installs an isolated, exact Pi 0.87.1 runtime; locally use the host install
+// if present. A configured CI path must fail rather than silently skip.
+const configuredPi = process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT;
+const defaultHostPi =
+	"/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent";
+const hostPi = configuredPi ?? defaultHostPi;
 const runtimePath = join(hostPi, "dist/core/model-runtime.js");
 const registryPath = join(hostPi, "dist/core/model-registry.js");
 const credentialsPath = join(
@@ -23,10 +26,17 @@ const hasHostRuntime = [
 	credentialsPath,
 	streamPath,
 ].every(existsSync);
+if (configuredPi && !hasHostRuntime) {
+	throw new Error("Configured Pi 0.87 test runtime is incomplete");
+}
 
 it.skipIf(!hasHostRuntime)(
 	"reaches the custom provider boundary through the Pi 0.87 registry without network I/O",
 	async () => {
+		const installed = JSON.parse(
+			readFileSync(join(hostPi, "package.json"), "utf8"),
+		) as { version?: string };
+		expect(installed.version).toBe("0.87.1");
 		const [
 			{ ModelRuntime },
 			{ ModelRegistry },

@@ -160,6 +160,35 @@ describe("runCustomCompaction characterization", () => {
 		expect(compactMock).not.toHaveBeenCalled();
 	});
 
+	it("does not start streaming when context aborts during auth but event signal stays live", async () => {
+		const event = new AbortController();
+		const contextAbort = new AbortController();
+		const ctx = context({ signal: contextAbort.signal });
+		type Auth = Awaited<
+			ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>
+		>;
+		let resolveAuth!: (value: Auth) => void;
+		vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementation(
+			() =>
+				new Promise<Auth>((resolve) => {
+					resolveAuth = resolve;
+				}),
+		);
+		const pending = runCustomCompaction(
+			preparation(),
+			"standard",
+			ctx,
+			compatibility(),
+			event.signal,
+		);
+		contextAbort.abort();
+		resolveAuth({ ok: true });
+		const attempt = await pending;
+		expect(event.signal.aborted).toBe(false);
+		expect(attempt.fallbackReason).toBe("compaction aborted");
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
 	it("does not start streaming if cancelled while resolving authentication", async () => {
 		const abort = new AbortController();
 		const ctx = context({ signal: abort.signal });
@@ -294,7 +323,9 @@ describe("runCustomCompaction characterization", () => {
 			"This compaction includes a split turn with 1 prefix message(s).",
 		);
 		expect(args[4]).toContain(args[0].previousSummary);
-		expect(args[5]).toBe(explicitSignal);
+		expect(args[5]).not.toBe(explicitSignal);
+		expect(args[5]).not.toBe(contextSignal);
+		expect(args[5].aborted).toBe(false);
 		expect(args[6]).toBe("minimal");
 		expect(args[7]).toBe(streamFn);
 		expect(attempt.classifiedCounts).toEqual({
@@ -303,6 +334,33 @@ describe("runCustomCompaction characterization", () => {
 			ephemeral: 1,
 		});
 	});
+
+	it.each(["event", "context"] as const)(
+		"aborts the provider request signal when %s aborts",
+		async (source) => {
+			const event = new AbortController();
+			const contextAbort = new AbortController();
+			let providerSignal: AbortSignal | undefined;
+			compactMock.mockImplementationOnce(async (...args: unknown[]) => {
+				providerSignal = args[5] as AbortSignal;
+				(source === "event" ? event : contextAbort).abort();
+				expect(providerSignal.aborted).toBe(true);
+				throw new Error("request aborted");
+			});
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				context({ signal: contextAbort.signal }),
+				compatibility(),
+				event.signal,
+			);
+			const otherSignal =
+				source === "event" ? contextAbort.signal : event.signal;
+			expect(otherSignal.aborted).toBe(false);
+			expect(attempt.fallbackReason).toBe("compaction aborted");
+			expect(providerSignal).toBeDefined();
+		},
+	);
 
 	it("preserves resolved provider routing and environment without mutating the session model", async () => {
 		const ctx = context({
