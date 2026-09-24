@@ -95,8 +95,9 @@ the extracted objective is provisional, the helper compares the complete
 evidence with the prior task: a clear new request supersedes it, but a
 status-only reply does not. The extension's exact "Continue with the current
 task." follow-up is not treated as a new objective. If no user request
-survives, a validated persisted summary supplies it; split turns remain
-continuity context. Checkpoints do not certify an older objective if newer
+survives after the newest compaction boundary, a validated persisted summary
+supplies it; even an invalid newer summary cannot revive an older `Task:` entry.
+Split turns remain continuity context. Checkpoints do not certify an older objective if newer
 substantive user turns cannot be classified: they mark it unverified and carry
 bounded chronological evidence (or explicitly report evidence overflow). Branch
 summaries may still run on overflow; they retain the prior goal only as

@@ -259,13 +259,22 @@ function hasLaterValidationSuccess(
 	});
 }
 
+function lastCompactionSummaryIndex(messages: AgentMessage[]): number {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index].role === "compactionSummary") return index;
+	}
+	return -1;
+}
+
 export function extractObjective(allMessages: AgentMessage[]): string {
-	// Only a clear new request replaces an active objective. Unlabeled factual
-	// replies remain context; without a prior task, the oldest substantive user
-	// message is the best available starting objective.
+	// Only post-summary messages can replace a persisted objective. Even an
+	// invalid newer summary is a boundary: never revive a pre-compaction task.
+	const activeMessages = allMessages.slice(
+		lastCompactionSummaryIndex(allMessages) + 1,
+	);
 	let initialUnlabeled: string | undefined;
-	for (let i = allMessages.length - 1; i >= 0; i--) {
-		const message = [allMessages[i]];
+	for (let i = activeMessages.length - 1; i >= 0; i--) {
+		const message = [activeMessages[i]];
 		const explicit = findExplicitObjective(message);
 		if (explicit) return explicit;
 		const substantial = findSubstantialObjective(message);
@@ -289,7 +298,9 @@ function extractIntentEvidence(
 ): IntentEvidence | undefined {
 	const userTurns: string[] = [];
 	let evidenceBytes = 0;
-	for (const message of messages) {
+	for (const message of messages.slice(
+		lastCompactionSummaryIndex(messages) + 1,
+	)) {
 		if (message.role !== "user") continue;
 		const turn = extractTextContent(message)
 			.split(/\n/)
@@ -332,15 +343,10 @@ function hasUnverifiedCheckpointObjective(
 	messages: AgentMessage[],
 	priorObjective: string,
 ): boolean {
-	let lastSummaryIndex = -1;
-	for (let index = messages.length - 1; index >= 0; index--) {
-		if (messages[index].role === "compactionSummary") {
-			lastSummaryIndex = index;
-			break;
-		}
-	}
 	let unresolved = false;
-	for (const message of messages.slice(lastSummaryIndex + 1)) {
+	for (const message of messages.slice(
+		lastCompactionSummaryIndex(messages) + 1,
+	)) {
 		if (message.role !== "user") continue;
 		for (const line of extractTextContent(message).split(/\n/)) {
 			const text = line.trim();

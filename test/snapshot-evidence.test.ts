@@ -278,6 +278,42 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it("does not revive a pre-compaction task over a newer persisted objective", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Photograph the login page.",
+		);
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			{ role: "compactionSummary", summary } as AgentMessage,
+			userMessage("All tests passed."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Photograph the login page.",
+		);
+		const snapshot = extractSessionSnapshot(messages);
+		expect(snapshot.objective).toBe("Photograph the login page.");
+		expect(snapshot.intentEvidence).toBeUndefined();
+		const focus = extractCurrentFocus(messages);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([
+			"All tests passed.",
+		]);
+	});
+
+	it("does not revive a pre-compaction task when the newer summary is invalid", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			{ role: "compactionSummary", summary: "invalid" } as AgentMessage,
+			userMessage("Continue with the current task."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Continue current task.",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Continue current task.",
+		);
+	});
+
 	it("does not certify older persisted intent in a checkpoint after an unknown redirect", () => {
 		const summary = VALID_STRUCTURED_SUMMARY.replace(
 			"Finish the current repair.",
