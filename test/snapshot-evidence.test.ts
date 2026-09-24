@@ -255,6 +255,16 @@ describe("evidence-weighted session snapshot extraction", () => {
 		},
 	);
 
+	it("takes a later labelled task even when its verb is not recognized", () => {
+		expect(
+			extractCurrentFocus([
+				userMessage(
+					"Task: repair the login page.\nTask: photograph the login page instead.",
+				),
+			]).objective,
+		).toBe("photograph the login page instead.");
+	});
+
 	it("takes the last actionable line over an earlier Task label in one message", () => {
 		expect(
 			extractCurrentFocus([

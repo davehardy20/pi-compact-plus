@@ -338,8 +338,10 @@ function firstObjectiveLine(msg: AgentMessage): string | undefined {
 			const content = objectiveLineContent(line);
 			return content.length > 0 && !isStatusOnlyReply(content);
 		});
-	const actionable = candidates.filter((line) =>
-		isClearRequest(objectiveLineContent(line)),
+	const actionable = candidates.filter(
+		(line) =>
+			/^(?:task|goal|objective|mission):\s*\S/i.test(line) ||
+			isClearRequest(objectiveLineContent(line)),
 	);
 	return actionable.at(-1) ?? candidates[0];
 }
