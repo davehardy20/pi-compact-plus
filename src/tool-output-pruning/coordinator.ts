@@ -69,6 +69,7 @@ function reconcileBranchRecords(
 	persisted: ToolOutputRecord[],
 	inMemory: ToolOutputRecord[],
 	branchEntries: SessionBranchEntryLike[],
+	validatedShortRefs: readonly string[],
 ): ToolOutputRecord[] {
 	const records = [...persisted];
 	const persistedIndexById = new Map(
@@ -77,6 +78,7 @@ function reconcileBranchRecords(
 	const recordIds = new Set(records.map((record) => record.recordId));
 	const entryIds = new Set(records.map((record) => record.entryId));
 	const refs = new Set(records.map((record) => record.shortRef));
+	const reservedRefs = new Set(validatedShortRefs);
 	for (const record of inMemory) {
 		const persistedIndex = persistedIndexById.get(record.recordId);
 		const matching =
@@ -102,7 +104,8 @@ function reconcileBranchRecords(
 		if (
 			recordIds.has(record.recordId) ||
 			entryIds.has(record.entryId) ||
-			refs.has(record.shortRef)
+			refs.has(record.shortRef) ||
+			reservedRefs.has(record.shortRef)
 		) {
 			continue;
 		}
@@ -251,6 +254,7 @@ export class ToolOutputPruningCoordinator {
 					result.records,
 					currentBranchRecords,
 					branchEntries,
+					result.validatedShortRefs,
 				)
 			: [];
 		this.state.replaceFinalizedRecords(records);

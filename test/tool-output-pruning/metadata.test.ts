@@ -367,6 +367,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 		expect(result.ok).toBe(true);
 		expect(result.records.map((record) => record.shortRef)).toEqual(["t2"]);
 		expect(result.maxValidatedShortRefNumber).toBe(9);
+		expect(result.validatedShortRefs).toEqual(["t9", "t2"]);
 	});
 
 	it("fails atomically for non-text current branch tool results", () => {

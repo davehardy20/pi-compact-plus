@@ -68,6 +68,8 @@ export interface ToolOutputMetadataReconstructionResult {
 	records: ToolOutputRecord[];
 	/** Highest safe short-ref number validated, including policy-filtered history. */
 	maxValidatedShortRefNumber: number;
+	/** Bounded identities of all validated refs, including filtered history. */
+	validatedShortRefs: readonly string[];
 	inspectedEntries: number;
 	scannedEntries: number;
 	scannedBytes: number;
@@ -235,6 +237,7 @@ function fail(
 		ok: false,
 		records: [],
 		maxValidatedShortRefNumber: 0,
+		validatedShortRefs: [],
 		inspectedEntries,
 		scannedEntries,
 		scannedBytes,
@@ -601,6 +604,7 @@ export function reconstructToolOutputRecordsFromBranch(
 		ok: true,
 		records,
 		maxValidatedShortRefNumber,
+		validatedShortRefs: [...seenShortRefs],
 		inspectedEntries,
 		scannedEntries,
 		scannedBytes,

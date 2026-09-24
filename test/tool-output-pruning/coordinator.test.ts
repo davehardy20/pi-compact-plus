@@ -497,6 +497,67 @@ describe("ToolOutputPruningCoordinator", () => {
 		]);
 	});
 
+	it("does not admit a legacy record with a policy-filtered historical ref", () => {
+		const excluded = makeRecord("tc1", "t2", "entry-1");
+		const allowed = {
+			...makeRecord("tc2", "t1", "entry-2"),
+			toolName: "python",
+		};
+		const legacy = {
+			...makeRecord("tc3", "t2", "entry-3"),
+			toolName: "python",
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [excluded, allowed],
+			metadataRecords: [excluded, allowed],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(legacy);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ({
+				...ENABLED_SETTINGS,
+				toolOutputPruneExcludedTools: [
+					...ENABLED_SETTINGS.toolOutputPruneExcludedTools,
+					"bash",
+				],
+			}),
+		});
+		const ctx = makeCtxFromEntries([
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("tc1"),
+			},
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("tc2", undefined, "python"),
+			},
+			{
+				type: "message",
+				id: "entry-3",
+				message: makeToolResultMessage("tc3", undefined, "python"),
+			},
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		]);
+
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(coordinator.query({ ref: "t2" }, ctx).matches).toHaveLength(0);
+		expect(state.generateShortRef()).toBe("t3");
+	});
+
 	it("retains branch-safe in-memory legacy records alongside current metadata", () => {
 		const legacy = makeRecord("legacy", "t1", "entry-1");
 		const current = makeRecord("current", "t2", "entry-2");
