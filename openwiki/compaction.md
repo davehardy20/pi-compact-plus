@@ -140,8 +140,8 @@ The registry contract is asserted in `test/compaction-runtime-contract.test.ts`:
 
 ### Abort handling
 
-- **Signal selection:** `selectCompactionSignal(signal, ctx.signal)` — the coordinator passes `event.signal`, and the event signal wins over the context signal; `undefined` if neither exists.
-- **Checked before auth resolution and again after** (before `compact()` is called): an aborted signal returns `{ result: undefined, fallbackReason: "compaction aborted" }` without resolving credentials or streaming.
+- **Signal selection:** `selectCompactionSignal(signal, ctx.signal)` — the coordinator passes `event.signal`; when both signals exist and are distinct they are combined with `AbortSignal.any([signal, contextSignal])` so aborting *either* one cancels the compaction, otherwise whichever exists is used; `undefined` if neither exists.
+- **Checked before auth resolution, again after auth, and once more after argument construction** (before `compact()` is called): an aborted combined signal returns `{ result: undefined, fallbackReason: "compaction aborted" }` without resolving credentials or streaming — a context-signal abort during a pending auth resolution cancels even while the event signal is still live.
 - **During streaming:** if the request throws, `requestSignal?.aborted` distinguishes cancellation (`"compaction aborted"`) from a provider failure (`"compact error: provider request failed"`).
 - **Coordinator level:** `onSessionBeforeCompact` re-checks `event.signal?.aborted || ctx.signal?.aborted` after `runCustomCompaction` and calls `cancelAbortedCompaction()` — resets `selectedMode`/`isCompacting`/`lastTriggerAuto`, clears pending compaction, records `lastFallbackReason = "compaction aborted"`, and returns `{ cancel: true }` so Pi does not apply a half-finished summary.
 
