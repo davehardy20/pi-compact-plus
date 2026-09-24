@@ -1,8 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
+
+const { invokePi087Compact } = vi.hoisted(() => ({
+	invokePi087Compact: vi.fn(),
+}));
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	compact: (...args: unknown[]) => invokePi087Compact(...args),
+}));
+
+import { runCustomCompaction } from "../src/compact.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 // CI installs an isolated, exact Pi 0.87.1 runtime; locally use the host install
 // if present. A configured CI path must fail rather than silently skip.
@@ -10,6 +21,7 @@ const configuredPi = process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT;
 const defaultHostPi =
 	"/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent";
 const hostPi = configuredPi ?? defaultHostPi;
+const compactPath = join(hostPi, "dist/core/compaction/compaction.js");
 const runtimePath = join(hostPi, "dist/core/model-runtime.js");
 const registryPath = join(hostPi, "dist/core/model-registry.js");
 const credentialsPath = join(
@@ -21,6 +33,7 @@ const streamPath = join(
 	"node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js",
 );
 const hasHostRuntime = [
+	compactPath,
 	runtimePath,
 	registryPath,
 	credentialsPath,
@@ -31,19 +44,20 @@ if (configuredPi && !hasHostRuntime) {
 }
 
 it.skipIf(!hasHostRuntime)(
-	"reaches the custom provider boundary through the Pi 0.87 registry without network I/O",
+	"routes a real Pi 0.87 compaction helper to a custom provider without network I/O",
 	async () => {
 		const installed = JSON.parse(
 			readFileSync(join(hostPi, "package.json"), "utf8"),
 		) as { version?: string };
 		expect(installed.version).toBe("0.87.1");
 		const [
+			{ compact: compact087 },
 			{ ModelRuntime },
 			{ ModelRegistry },
 			{ InMemoryCredentialStore },
 			{ createAssistantMessageEventStream },
 		] = await Promise.all(
-			[runtimePath, registryPath, credentialsPath, streamPath].map(
+			[compactPath, runtimePath, registryPath, credentialsPath, streamPath].map(
 				(path) => import(/* @vite-ignore */ pathToFileURL(path).href),
 			),
 		);
@@ -70,7 +84,7 @@ it.skipIf(!hasHostRuntime)(
 			const stream = createAssistantMessageEventStream();
 			stream.end({
 				role: "assistant",
-				content: [{ type: "text", text: "provider boundary reached" }],
+				content: [{ type: "text", text: VALID_STRUCTURED_SUMMARY }],
 				stopReason: "stop",
 				usage: { input: 1, output: 1, totalTokens: 2 },
 			});
@@ -98,22 +112,56 @@ it.skipIf(!hasHostRuntime)(
 				throw new Error("unexpected provider stream route");
 			},
 		});
+		expect(compact087.length).toBeGreaterThanOrEqual(8);
+		invokePi087Compact.mockImplementation((...args: unknown[]) =>
+			compact087(...args),
+		);
+		const registryStream = vi.spyOn(registry, "streamSimple");
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event: {},
 			modelRegistry: registry,
-			compactHelperArity: 12,
+			compactHelperArity: compact087.length,
 		});
 		expect(compatibility.streamRoute).toBe("registry");
 		const abort = new AbortController();
-		const stream = await compatibility.streamFn?.(
-			model,
-			{ messages: [] },
-			{ signal: abort.signal },
+		const attempt = await runCustomCompaction(
+			{
+				firstKeptEntryId: "entry-2",
+				messagesToSummarize: [
+					{
+						role: "user",
+						content: [{ type: "text", text: "Investigate request routing" }],
+						timestamp: Date.now(),
+					},
+				],
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 42,
+				fileOps: { read: new Set(), edited: new Set(), written: new Set() },
+				settings: { reserveTokens: 1024 },
+			} as never,
+			"standard",
+			{
+				model,
+				modelRegistry: registry,
+				signal: abort.signal,
+			} as unknown as ExtensionContext,
+			compatibility,
 		);
-		const response = await stream?.result();
-		expect(response).toMatchObject({
-			content: [{ type: "text", text: "provider boundary reached" }],
+		expect(attempt.fallbackReason).toBeNull();
+		expect(attempt.result?.summary).toContain("## Current Objective");
+		expect(invokePi087Compact).toHaveBeenCalledTimes(1);
+		expect(registryStream).toHaveBeenCalledTimes(1);
+		const [requestModel, , rawOptions] = registryStream.mock.calls[0] ?? [];
+		const requestOptions = rawOptions as Record<string, unknown>;
+		expect(requestModel).toBe(model);
+		expect(requestOptions).toMatchObject({
+			signal: abort.signal,
+			cacheRetention: "none",
 		});
+		expect(requestOptions.apiKey).toBeUndefined();
+		expect(requestOptions.headers).toBeUndefined();
+		expect(requestOptions.env).toBeUndefined();
 		expect(providerStream).toHaveBeenCalledTimes(1);
 	},
 );
