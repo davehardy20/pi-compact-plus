@@ -14,7 +14,10 @@ import { buildPersistedFocusEcho } from "./focus-echo/index.js";
 import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
-import { createCurrentSessionBranchView } from "./session-branch-view.js";
+import {
+	createCurrentSessionBranchView,
+	createSessionBranchView,
+} from "./session-branch-view.js";
 import {
 	extractCurrentFocus,
 	extractCurrentFocusFromBranch,
@@ -194,7 +197,19 @@ export class CompactionCoordinator {
 					...event.preparation.turnPrefixMessages,
 				]
 			: event.preparation.messagesToSummarize;
-		const focus = extractCurrentFocus(focusMessages);
+		// Pi omits retained messages from preparation.messagesToSummarize.
+		// Use the complete branch for current intent, falling back to preparation
+		// only when no session branch messages are available.
+		const eventMessages = createSessionBranchView(
+			event.branchEntries,
+		).messages();
+		const branchMessages =
+			eventMessages.length > 0
+				? eventMessages
+				: createCurrentSessionBranchView(ctx).messages();
+		const focus = extractCurrentFocus(
+			branchMessages.length > 0 ? branchMessages : focusMessages,
+		);
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,
@@ -258,6 +273,7 @@ export class CompactionCoordinator {
 			ctx,
 			compatibility,
 			event.signal,
+			{ focus, customInstructions: event.customInstructions },
 		);
 
 		if (attempt.result) {

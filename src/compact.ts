@@ -22,7 +22,7 @@ import {
 	STRUCTURED_SUMMARY_TITLE,
 	validateStructuredSummary,
 } from "./summary-schema.js";
-import type { CompactionMode } from "./types.js";
+import type { CompactionMode, CurrentFocus } from "./types.js";
 
 export interface CompactionAttemptResult {
 	result: CompactionResult | undefined;
@@ -351,6 +351,11 @@ interface PreparedCompactionContext {
 	customInstructions: string;
 }
 
+interface CompactionIntent {
+	focus?: CurrentFocus;
+	customInstructions?: string;
+}
+
 function getCompactionFocusSource(
 	preparation: CompactionPreparation,
 ): AgentMessage[] {
@@ -400,6 +405,7 @@ function applyHardModePruning(
 function prepareCompactionContext(
 	preparation: CompactionPreparation,
 	mode: CompactionMode,
+	intent?: CompactionIntent,
 ): PreparedCompactionContext {
 	const focusSource = getCompactionFocusSource(preparation);
 	const prunedPreparation = applyHardModePruning(preparation, mode);
@@ -412,9 +418,10 @@ function prepareCompactionContext(
 	};
 	const customInstructions = buildSummaryInstructions(
 		mode,
-		extractCurrentFocus(focusSource),
+		intent?.focus ?? extractCurrentFocus(focusSource),
 		{
 			previousSummary: normalizedPreviousSummary,
+			customInstructions: intent?.customInstructions,
 			isSplitTurn: normalizedPreparation.isSplitTurn,
 			turnPrefixCount: normalizedPreparation.turnPrefixMessages?.length ?? 0,
 		},
@@ -522,6 +529,7 @@ export async function runCustomCompaction(
 	ctx: ExtensionContext,
 	compatibility: CompactionRuntimeCompatibility,
 	signal?: AbortSignal,
+	intent?: CompactionIntent,
 ): Promise<CompactionAttemptResult> {
 	try {
 		const model = ctx.model;
@@ -533,7 +541,7 @@ export async function runCustomCompaction(
 		const auth = await registry.getApiKeyAndHeaders(model);
 		if (!auth.ok) return authUnavailableResult(auth.error);
 
-		const prepared = prepareCompactionContext(preparation, mode);
+		const prepared = prepareCompactionContext(preparation, mode, intent);
 		const compactArgs = createCompactArguments({
 			prepared,
 			model,

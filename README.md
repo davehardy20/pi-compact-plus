@@ -80,8 +80,14 @@ Compact+ produces structured compaction summaries with these sections:
 
 The exact title (`Compaction Summary — Compact+ memory`) and all 13 headings
 must be present once; malformed custom output falls back to native Pi
-compaction. Only a genuine persisted Pi `compactionSummary` can seed a focus
-echo—assistant messages quoting a summary cannot.
+compaction. The summarizer uses the complete current branch, including recent
+messages Pi retains outside the summarized slice, so the latest substantive
+user request takes precedence over older `Task:` labels. The extension's exact
+"Continue with the current task." follow-up is not treated as a new objective;
+previous summaries and split turns remain continuity context. Additional
+compaction guidance is bounded and subordinate to the current user request.
+Only a genuine persisted Pi `compactionSummary` can seed a focus echo—assistant
+messages quoting a summary cannot.
 
 ### Focus echo
 

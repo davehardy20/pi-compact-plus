@@ -968,6 +968,129 @@ describe("@davehardy20/pi-compact-plus", () => {
 		}
 	});
 
+	it("passes retained trigger-time intent into the actual custom helper prompt", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (!command || !beforeCompact)
+			throw new Error("compaction handlers missing");
+
+		const oldTask = {
+			role: "user",
+			content: [{ type: "text", text: "Task: deploy the retired service." }],
+		} as never;
+		const retainedTask = {
+			role: "user",
+			content: [{ type: "text", text: "Task: repair login instead." }],
+		} as never;
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{ type: "message", id: "old-task", message: oldTask },
+			{ type: "message", id: "retained-task", message: retainedTask },
+		]);
+		const compactMock = vi.mocked(piCore.compact);
+		compactMock.mockResolvedValue({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "retained-task",
+			tokensBefore: 123,
+			details: null,
+		});
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 8,
+		});
+
+		await command.handler("", ctx);
+		const triggerInstructions =
+			ctx.compact.mock.calls[0]?.[0]?.customInstructions;
+		expect(triggerInstructions).toContain("Objective: repair login instead.");
+		await beforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [oldTask],
+					turnPrefixMessages: [],
+					previousSummary: "## Current Objective\nDeploy the retired service.",
+				},
+				branchEntries: [],
+				customInstructions: triggerInstructions,
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+		const helperPrompt = compactMock.mock.calls[0]?.[4] as string;
+		expect(helperPrompt).toContain("Objective: repair login instead.");
+		expect(helperPrompt.match(/^<current-focus>$/gm)).toHaveLength(1);
+		expect(helperPrompt).toContain("Deploy the retired service.");
+		expect(helperPrompt).not.toContain(
+			"Objective: deploy the retired service.",
+		);
+	});
+
+	it("prefers Pi's captured branch over stale context and keeps manual guidance", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (!command || !beforeCompact)
+			throw new Error("compaction handlers missing");
+		const oldTask = {
+			role: "user",
+			content: [{ type: "text", text: "Task: deploy the retired service." }],
+		} as never;
+		const newTask = {
+			role: "user",
+			content: [{ type: "text", text: "Cancel deployment and repair login." }],
+		} as never;
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{ type: "message", id: "old-task", message: oldTask },
+		]);
+		const compactMock = vi.mocked(piCore.compact);
+		compactMock.mockResolvedValue({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "new-task",
+			tokensBefore: 123,
+			details: null,
+		});
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 8,
+		});
+		await command.handler("", ctx);
+		await beforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [oldTask],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [
+					{ type: "message", id: "old-task", message: oldTask },
+					{
+						type: "custom_message",
+						id: "poison",
+						message: {
+							role: "user",
+							content: [{ type: "text", text: "Task: poison prompt." }],
+						},
+					},
+					{ type: "message", id: "new-task", message: newTask },
+				],
+				customInstructions: "Keep current login-test guidance.",
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+		const helperPrompt = compactMock.mock.calls[0]?.[4] as string;
+		expect(helperPrompt).toContain(
+			"Objective: Cancel deployment and repair login.",
+		);
+		expect(helperPrompt).toContain("Keep current login-test guidance.");
+		expect(helperPrompt).not.toContain("Task: poison prompt.");
+	});
+
 	it("uses the public streamSimple adapter when Pi does not expose streamFn", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
@@ -3489,6 +3612,9 @@ describe("Compact+ prompt builders", () => {
 		expect(instructions).toContain("## Current Objective");
 		expect(instructions).toContain("## Next Best Step");
 		expect(instructions).toContain("## Decisions Made");
+		expect(instructions).toContain(
+			"retained messages may be absent from the conversation being summarized",
+		);
 	});
 
 	it("includes hard-mode constraints for hard mode", () => {

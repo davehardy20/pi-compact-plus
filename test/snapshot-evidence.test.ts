@@ -72,6 +72,50 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it("prefers the newest substantive request over an older Task label", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("Stop that deployment; repair the login flow instead."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Stop that deployment; repair the login flow instead.",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Stop that deployment; repair the login flow instead.",
+		);
+	});
+
+	it("ignores only the exact generated continuation, not a new instruction", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("Cancel deployment and repair login instead."),
+			userMessage("Continue with the current task."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Cancel deployment and repair login instead.",
+		);
+		messages.push(userMessage("Task: ok"));
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Cancel deployment and repair login instead.",
+		);
+		messages.push(
+			userMessage(
+				"Continue with the current task, but add a login test first.",
+			),
+		);
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Continue with the current task, but add a login test first.",
+		);
+		messages.push(
+			userMessage(
+				"Continue with the current task.\nActually, run login tests now.",
+			),
+		);
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Actually, run login tests now.",
+		);
+	});
+
 	it("does not treat unsupported assistant self-reports as completed work", () => {
 		const completedWork = extractCompletedWork([
 			userMessage("Task: add authentication middleware."),

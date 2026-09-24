@@ -95,6 +95,7 @@ export interface CheckpointData extends SessionSnapshot {
 
 export interface SummaryInstructionOptions {
 	previousSummary?: string;
+	customInstructions?: string;
 	isSplitTurn: boolean;
 	turnPrefixCount: number;
 }

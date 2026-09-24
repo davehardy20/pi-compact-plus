@@ -7,7 +7,11 @@ import {
 	isToolCallArgumentsObject,
 } from "./pi-messages.js";
 import type { SessionBranchView } from "./session-branch-view.js";
-import type { CurrentFocus, SessionSnapshot } from "./types.js";
+import {
+	CONTINUATION_PROMPT,
+	type CurrentFocus,
+	type SessionSnapshot,
+} from "./types.js";
 
 /**
  * Session Evidence is the caller-facing seam for facts recovered from session
@@ -245,37 +249,36 @@ function hasLaterValidationSuccess(
 }
 
 export function extractObjective(allMessages: AgentMessage[]): string {
-	const recent = allMessages.slice(-CURRENT_FOCUS_RECENT_WINDOW);
-
-	const recentExplicit = findExplicitObjective(recent);
-	if (recentExplicit) return recentExplicit;
-
-	const recentSubstantial = findSubstantialObjective(recent);
-	if (recentSubstantial) return recentSubstantial;
-
-	const fullExplicit = findExplicitObjective(allMessages);
-	if (fullExplicit) return fullExplicit;
-
-	const fullSubstantial = findSubstantialObjective(allMessages);
-	if (fullSubstantial) return fullSubstantial;
-
+	// A newer substantive request wins even when an older message has a label.
+	for (let i = allMessages.length - 1; i >= 0; i--) {
+		const message = [allMessages[i]];
+		const explicit = findExplicitObjective(message);
+		if (explicit) return explicit;
+		const substantial = findSubstantialObjective(message);
+		if (substantial) return substantial;
+	}
 	return "Continue current task.";
+}
+
+function firstObjectiveLine(msg: AgentMessage): string | undefined {
+	if (msg.role !== "user") return undefined;
+	const text = extractTextContent(msg);
+	// Pi's own follow-up is not a new user direction. A genuine instruction
+	// alongside it is still eligible as the objective.
+	return text
+		.split(/\n/)
+		.map((line) => line.trim())
+		.find((line) => line.length > 0 && line !== CONTINUATION_PROMPT);
 }
 
 export function findExplicitObjective(
 	messages: AgentMessage[],
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "user") {
-			const text = extractTextContent(msg);
-			const firstLine = text.split(/\n/).find((l) => l.trim().length > 0) ?? "";
-			const match = firstLine.match(
-				/^(?:task|goal|objective|mission):\s*(.+)/i,
-			);
-			if (match) {
-				return match[1].trim().slice(0, MAX_OBJECTIVE_CHARS);
-			}
+		const firstLine = firstObjectiveLine(messages[i]);
+		const match = firstLine?.match(/^(?:task|goal|objective|mission):\s*(.+)/i);
+		if (match && !isConversationalFiller(match[1])) {
+			return match[1].trim().slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
 	return undefined;
@@ -285,13 +288,14 @@ export function findSubstantialObjective(
 	messages: AgentMessage[],
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "user") {
-			const text = extractTextContent(msg);
-			const firstLine = text.split(/\n/).find((l) => l.trim().length > 0) ?? "";
-			if (firstLine.length > 5 && !isConversationalFiller(firstLine)) {
-				return firstLine.slice(0, MAX_OBJECTIVE_CHARS);
-			}
+		const firstLine = firstObjectiveLine(messages[i]);
+		if (!firstLine) continue;
+		const labeled = firstLine.match(
+			/^(?:task|goal|objective|mission):\s*(.*)/i,
+		);
+		const content = labeled ? labeled[1].trim() : firstLine;
+		if (content.length > 5 && !isConversationalFiller(content)) {
+			return firstLine.slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
 	return undefined;
