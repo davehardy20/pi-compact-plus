@@ -86,14 +86,18 @@ superseded or context-edited messages, so the latest substantive user request
 takes precedence over older `Task:` labels. With an active objective, only
 clear requests, redirects or cancellations replace it; ambiguous declarative
 replies remain context. To avoid treating a finite phrase list as complete,
-the helper also receives bounded, chronological user-turn evidence from the
-active Pi projection. When the extracted objective is provisional, the helper
-compares that evidence with the prior task: a clear new request supersedes it,
-but a status-only reply does not. The extension's exact "Continue with the
-current task." follow-up is not treated as a new objective. If no user request
+the existing summarizer also receives every projected user turn in chronological
+order when the complete evidence fits an 8 KiB UTF-8 budget (including per-turn
+framing allowance). It never silently samples or truncates a redirect. If the
+budget is exceeded, Compact+ cancels compaction and warns; a near-full session
+may require saving its objective before choosing another compaction path. When
+the extracted objective is provisional, the helper compares the complete
+evidence with the prior task: a clear new request supersedes it, but a
+status-only reply does not. The extension's exact "Continue with the current
+task." follow-up is not treated as a new objective. If no user request
 survives, a validated persisted summary supplies it; split turns remain
-continuity context. Additional
-compaction guidance is bounded and subordinate to the current user request.
+continuity context. Additional compaction guidance is bounded and subordinate
+to the current user request.
 Only a genuine persisted Pi `compactionSummary` can seed a focus echo—assistant
 messages quoting a summary cannot.
 

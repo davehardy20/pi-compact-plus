@@ -42,6 +42,9 @@ function currentProjectedMessages(ctx: ExtensionEventContext): AgentMessage[] {
 		.flatMap(sessionEntryToContextMessages);
 }
 
+const INTENT_OVERFLOW_WARNING =
+	"Compact+ intent evidence exceeds the 8 KiB safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
+
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
 type ModelSelectEventLike = {
@@ -100,6 +103,10 @@ export class CompactionCoordinator {
 		this.state.lastTriggerAuto = false;
 
 		const cmdFocus = extractCurrentFocus(currentProjectedMessages(ctx));
+		if (cmdFocus.intentEvidence?.overflow) {
+			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return;
+		}
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
@@ -162,6 +169,15 @@ export class CompactionCoordinator {
 		// Prevent double-triggering within the same turn.
 		if (this.state.isSameTurn(turnIndex)) return;
 
+		const autoFocus = extractCurrentFocus(currentProjectedMessages(ctx));
+		if (autoFocus.intentEvidence?.overflow) {
+			// Throttle repeated warnings at the settled boundary without starting
+			// a compaction that cannot carry all projected user evidence.
+			this.state.lastCompactTime = now;
+			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return;
+		}
+
 		this.state.selectedMode = mode;
 		this.state.isCompacting = true;
 		this.state.lastCompactTime = now;
@@ -169,8 +185,6 @@ export class CompactionCoordinator {
 		if (turnIndex !== undefined) {
 			this.state.lastCompactTurnIndex = turnIndex;
 		}
-
-		const autoFocus = extractCurrentFocus(currentProjectedMessages(ctx));
 
 		const percentText =
 			usage.percent === null ? "unknown" : `${usage.percent.toFixed(0)}%`;
@@ -203,6 +217,15 @@ export class CompactionCoordinator {
 		// prior compactions. An empty projection is authoritative: never revive
 		// edited-away requests from raw branch entries or preparation messages.
 		const focus = extractCurrentFocus(currentProjectedMessages(ctx));
+		if (focus.intentEvidence?.overflow) {
+			this.state.selectedMode = null;
+			this.state.isCompacting = false;
+			this.state.lastTriggerAuto = false;
+			this.state.clearPendingCompaction();
+			this.state.lastFallbackReason = "intent evidence exceeds safety budget";
+			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return { cancel: true };
+		}
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,

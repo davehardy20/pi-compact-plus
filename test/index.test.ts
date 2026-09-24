@@ -1206,7 +1206,17 @@ describe("@davehardy20/pi-compact-plus", () => {
 		} as never;
 		const ctx = createMockCtx({ contextWindow: 100000 });
 		ctx.sessionManager.buildSessionProjection.mockReturnValue({
-			messages: [older, status, latest],
+			messages: [
+				older,
+				status,
+				latest,
+				...Array.from({ length: 7 }, (_, index) => ({
+					role: "user",
+					content: [
+						{ type: "text", text: `Diagnostic note ${index}: trace reviewed.` },
+					],
+				})),
+			],
 		});
 		const compactMock = vi.mocked(piCore.compact);
 		compactMock.mockResolvedValue({
@@ -1238,6 +1248,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 		expect(helperPrompt).toContain("I'd like to investigate login instead.");
 		expect(helperPrompt).toContain("All tests passed.");
+		expect(helperPrompt).toContain("Diagnostic note 6: trace reviewed.");
 		expect(helperPrompt.indexOf("All tests passed.")).toBeLessThan(
 			helperPrompt.indexOf("I'd like to investigate login instead."),
 		);
@@ -3869,6 +3880,24 @@ describe("Compact+ prompt builders", () => {
 		expect(instructions).toContain("## Branch Goal");
 		expect(instructions).toContain("## Recommended Next Step");
 		expect(instructions).toContain("<current-focus>");
+	});
+
+	it("does not advertise an objective when complete evidence is unavailable", () => {
+		const block = buildCurrentFocusBlock({
+			objective: "stale deployment",
+			intentEvidence: {
+				priorObjective: "stale deployment",
+				certainty: "provisional",
+				recentUserTurns: [],
+				overflow: true,
+			},
+			blockers: [],
+			decisions: [],
+			activeFiles: [],
+			dependencyChain: [],
+		});
+		expect(block).toContain("Intent evidence unavailable");
+		expect(block).not.toContain("stale deployment");
 	});
 
 	it("escapes breakout delimiters in projected user-turn evidence", () => {

@@ -18,6 +18,13 @@ function escapePromptData(value: string): string {
 }
 
 export function buildCurrentFocusBlock(focus: CurrentFocus): string {
+	if (focus.intentEvidence?.overflow) {
+		return [
+			"<current-focus>",
+			"Intent evidence unavailable: complete projected user turns exceed the safety budget. Do not infer an objective from this block.",
+			"</current-focus>",
+		].join("\n");
+	}
 	const evidence = focus.intentEvidence;
 	const provisional = evidence?.certainty === "provisional";
 	const parts = [

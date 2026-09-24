@@ -67,6 +67,8 @@ export interface IntentEvidence {
 	priorObjective: string;
 	certainty: "confirmed" | "provisional" | "memory";
 	recentUserTurns: string[];
+	/** Entire projected user evidence is unavailable when the byte budget is exceeded. */
+	overflow?: boolean;
 }
 
 export interface CurrentFocus {

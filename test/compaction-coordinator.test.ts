@@ -61,6 +61,15 @@ function createCoordinator(options?: {
 	return { coordinator, state };
 }
 
+function setProjectedUser(ctx: ExtensionEventContext, text: string): void {
+	const manager = ctx.sessionManager as unknown as {
+		buildSessionProjection: ReturnType<typeof vi.fn>;
+	};
+	manager.buildSessionProjection.mockReturnValue({
+		messages: [{ role: "user", content: [{ type: "text", text }] }],
+	});
+}
+
 describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 	it("skips auto-compaction in an ephemeral json child with no session file", async () => {
 		const { coordinator, state } = createCoordinator();
@@ -131,6 +140,55 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(state.isCompacting).toBe(false);
+	});
+
+	it("does not start manual or auto compaction with incomplete intent evidence", async () => {
+		const { coordinator, state } = createCoordinator();
+		const ctx = createMockCtx({
+			mode: "tui",
+			sessionFile: "/tmp/session.jsonl",
+		});
+		setProjectedUser(ctx, `Task: ${"x".repeat(9_000)}`);
+
+		await coordinator.handleManualCommand("standard", ctx);
+		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(state.isCompacting).toBe(false);
+		expect(state.selectedMode).toBeNull();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("intent evidence exceeds"),
+			"warning",
+		);
+	});
+
+	it("cancels a compaction if evidence overflows after the trigger", async () => {
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		const ctx = createMockCtx({
+			mode: "tui",
+			sessionFile: "/tmp/session.jsonl",
+		});
+		setProjectedUser(ctx, `Task: ${"x".repeat(9_000)}`);
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.selectedMode).toBeNull();
+		expect(state.isCompacting).toBe(false);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("intent evidence exceeds"),
+			"warning",
+		);
 	});
 
 	it("still allows manual compaction in an ephemeral json child", async () => {

@@ -29,8 +29,10 @@ const CURRENT_FOCUS_RECENT_WINDOW = 20;
 const SNAPSHOT_RECENT_WINDOW = 20;
 const SNAPSHOT_FOCUS_RECENT_WINDOW = 30;
 const MAX_OBJECTIVE_CHARS = 200;
-const MAX_INTENT_TURNS = 4;
-const MAX_INTENT_TURN_CHARS = 300;
+// Allow complete projected user evidence or decline custom compaction; never
+// silently evict an unknown redirect to meet a per-turn/window quota.
+const MAX_INTENT_EVIDENCE_BYTES = 8 * 1024;
+const INTENT_TURN_OVERHEAD_BYTES = 48;
 const MAX_ACTIVE_FILES = 10;
 const MAX_BLOCKERS = 5;
 const MAX_DECISIONS = 5;
@@ -277,49 +279,35 @@ export function extractObjective(allMessages: AgentMessage[]): string {
 	return initialUnlabeled ?? "Continue current task.";
 }
 
-function boundIntentTurn(text: string): string {
-	if (text.length <= MAX_INTENT_TURN_CHARS) return text;
-	// Retain both ends: a long user message may redirect only at its end.
-	return `${text.slice(0, 140)} … ${text.slice(-140)}`;
-}
-
 function extractIntentEvidence(
 	messages: AgentMessage[],
 	priorObjective: string,
 ): IntentEvidence | undefined {
-	const userTurns = messages
-		.filter((message) => message.role === "user")
-		.map((message) =>
-			extractTextContent(message)
-				.split(/\n/)
-				.map((line) => line.trim())
-				.filter((line) => line && line !== CONTINUATION_PROMPT)
-				.join("\n"),
-		)
-		.filter(Boolean);
-	const tailStart = Math.max(0, userTurns.length - MAX_INTENT_TURNS);
-	let retainedTurns = userTurns.slice(tailStart);
-	// Reserve one slot for the latest non-status turn when progress updates
-	// would otherwise evict an unrecognized request from the bounded tail.
-	if (tailStart > 0) {
-		let anchor = -1;
-		for (let i = userTurns.length - 1; i >= 0; i--) {
-			if (!userTurns[i].split("\n").every(isStatusOnlyReply)) {
-				anchor = i;
-				break;
-			}
+	const userTurns: string[] = [];
+	let evidenceBytes = 0;
+	for (const message of messages) {
+		if (message.role !== "user") continue;
+		const turn = extractTextContent(message)
+			.split(/\n/)
+			.map((line) => line.trim())
+			.filter((line) => line && line !== CONTINUATION_PROMPT)
+			.join("\n");
+		if (!turn) continue;
+		evidenceBytes +=
+			Buffer.byteLength(turn, "utf8") + INTENT_TURN_OVERHEAD_BYTES;
+		if (evidenceBytes > MAX_INTENT_EVIDENCE_BYTES) {
+			return {
+				priorObjective,
+				certainty: "provisional",
+				recentUserTurns: [],
+				overflow: true,
+			};
 		}
-		if (anchor >= 0 && anchor < tailStart) {
-			retainedTurns = [
-				userTurns[anchor],
-				...userTurns.slice(-(MAX_INTENT_TURNS - 1)),
-			];
-		}
+		userTurns.push(turn);
 	}
-	const recentUserTurns = retainedTurns.map(boundIntentTurn);
-	if (recentUserTurns.length === 0) {
+	if (userTurns.length === 0) {
 		return detectCompactionSummary(messages).found
-			? { priorObjective, certainty: "memory", recentUserTurns }
+			? { priorObjective, certainty: "memory", recentUserTurns: [] }
 			: undefined;
 	}
 	// The final projected user line controls certainty, not the last line
@@ -332,7 +320,7 @@ function extractIntentEvidence(
 		priorObjective,
 		certainty:
 			explicit?.[1].trim() === priorObjective ? "confirmed" : "provisional",
-		recentUserTurns,
+		recentUserTurns: userTurns,
 	};
 }
 

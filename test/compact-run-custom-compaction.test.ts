@@ -145,6 +145,20 @@ describe("runCustomCompaction characterization", () => {
 		},
 	);
 
+	it("declines custom compaction when complete user evidence overflows", async () => {
+		const attempt = await runCustomCompaction(
+			preparation({
+				messages: [message("user", `Task: ${"x".repeat(9_000)}`)],
+			}),
+			"standard",
+			context(),
+			compatibility(),
+		);
+		expect(attempt.result).toBeUndefined();
+		expect(attempt.fallbackReason).toContain("intent evidence exceeds");
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
 	it("passes standard-mode input and the six base helper arguments unchanged", async () => {
 		const history = [
 			message("user", "Current objective: characterize compaction"),

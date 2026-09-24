@@ -150,15 +150,19 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
-	it("reserves evidence for a redirect before many status updates", () => {
-		const focus = extractCurrentFocus([
+	it("keeps every projected turn when a redirect precedes many status and diagnostic notes", () => {
+		const messages = [
 			userMessage("Task: deploy the retired service."),
 			userMessage("I'd like to investigate login instead."),
+			...Array.from({ length: 8 }, (_, index) =>
+				userMessage(`Diagnostic note ${index}: network trace reviewed.`),
+			),
 			...Array.from({ length: 8 }, () => userMessage("All tests passed.")),
-		]);
+		];
+		const focus = extractCurrentFocus(messages);
 		expect(focus.intentEvidence?.certainty).toBe("provisional");
-		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(4);
-		expect(focus.intentEvidence?.recentUserTurns[0]).toBe(
+		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(messages.length);
+		expect(focus.intentEvidence?.recentUserTurns[1]).toBe(
 			"I'd like to investigate login instead.",
 		);
 		expect(focus.intentEvidence?.recentUserTurns.at(-1)).toBe(
@@ -166,7 +170,7 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
-	it("caps and filters evidence without trusting generated continuation", () => {
+	it("includes complete under-budget turns while ignoring exact generated continuation", () => {
 		const focus = extractCurrentFocus([
 			userMessage("Task: repair login."),
 			userMessage("Continue with the current task."),
@@ -174,13 +178,32 @@ describe("evidence-weighted session snapshot extraction", () => {
 				userMessage(`Note ${index}: ${"x".repeat(800)}`),
 			),
 		]);
-		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(4);
-		expect(
-			focus.intentEvidence?.recentUserTurns.join("").length,
-		).toBeLessThanOrEqual(1200);
+		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(9);
+		expect(focus.intentEvidence?.recentUserTurns[1]).toBe(
+			`Note 0: ${"x".repeat(800)}`,
+		);
 		expect(focus.intentEvidence?.recentUserTurns.join(" ")).not.toContain(
 			"Continue with the current task.",
 		);
+	});
+
+	it("marks complete evidence as unavailable on budget overflow", () => {
+		const focus = extractCurrentFocus([
+			userMessage("Task: repair login."),
+			userMessage(`I'd like to switch. ${"x".repeat(9_000)}`),
+		]);
+		expect(focus.intentEvidence?.overflow).toBe(true);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+	});
+
+	it("rejects many short turns when their framing also exceeds the total budget", () => {
+		const focus = extractCurrentFocus(
+			Array.from({ length: 200 }, (_, index) =>
+				userMessage(`Diagnostic note ${index}.`),
+			),
+		);
+		expect(focus.intentEvidence?.overflow).toBe(true);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
 	});
 
 	it("keeps an active task over unlabeled declarative status or problem reports", () => {

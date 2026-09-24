@@ -537,11 +537,24 @@ export async function runCustomCompaction(
 			return { result: undefined, fallbackReason: "model unavailable" };
 		}
 
+		const focus =
+			intent?.focus ??
+			extractCurrentFocus(getCompactionFocusSource(preparation));
+		if (focus.intentEvidence?.overflow) {
+			return {
+				result: undefined,
+				fallbackReason: "intent evidence exceeds the 8 KiB safety budget",
+			};
+		}
+
 		const registry = ctx.modelRegistry as ModelRegistry;
 		const auth = await registry.getApiKeyAndHeaders(model);
 		if (!auth.ok) return authUnavailableResult(auth.error);
 
-		const prepared = prepareCompactionContext(preparation, mode, intent);
+		const prepared = prepareCompactionContext(preparation, mode, {
+			...intent,
+			focus,
+		});
 		const compactArgs = createCompactArguments({
 			prepared,
 			model,
