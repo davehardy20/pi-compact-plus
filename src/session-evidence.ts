@@ -251,13 +251,18 @@ function hasLaterValidationSuccess(
 }
 
 export function extractObjective(allMessages: AgentMessage[]): string {
-	// A newer substantive request wins even when an older message has a label.
+	// Only a clear new request replaces an active objective. Unlabeled factual
+	// replies remain context; without a prior task, the oldest substantive user
+	// message is the best available starting objective.
+	let initialUnlabeled: string | undefined;
 	for (let i = allMessages.length - 1; i >= 0; i--) {
 		const message = [allMessages[i]];
 		const explicit = findExplicitObjective(message);
 		if (explicit) return explicit;
 		const substantial = findSubstantialObjective(message);
-		if (substantial) return substantial;
+		if (!substantial) continue;
+		if (isClearRequest(substantial)) return substantial;
+		initialUnlabeled = substantial;
 	}
 	// On repeated compaction, no original user request may survive the active
 	// projection. Only validated, persisted Pi memory can supply that objective.
@@ -266,23 +271,31 @@ export function extractObjective(allMessages: AgentMessage[]): string {
 		const objective = extractFocusEchoDraft(persisted.summaryText).objective;
 		if (objective) return objective.slice(0, MAX_OBJECTIVE_CHARS);
 	}
-	return "Continue current task.";
+	return initialUnlabeled ?? "Continue current task.";
+}
+
+function objectiveLineContent(line: string): string {
+	return (
+		line.match(/^(?:task|goal|objective|mission):\s*(.*)/i)?.[1].trim() ?? line
+	);
 }
 
 function firstObjectiveLine(msg: AgentMessage): string | undefined {
 	if (msg.role !== "user") return undefined;
-	const text = extractTextContent(msg);
-	// Skip generated continuations and status-only lines, but keep scanning
-	// this message for a genuine instruction on a later line.
-	return text
+	// Prefer an actionable line even when a preceding status uses unfamiliar
+	// wording. Ignore exact generated continuation and empty labels.
+	const candidates = extractTextContent(msg)
 		.split(/\n/)
 		.map((line) => line.trim())
-		.find((line) => {
+		.filter((line) => {
 			if (!line || line === CONTINUATION_PROMPT) return false;
-			const labeled = line.match(/^(?:task|goal|objective|mission):\s*(.*)/i);
-			const content = labeled ? labeled[1].trim() : line;
+			const content = objectiveLineContent(line);
 			return content.length > 0 && !isStatusOnlyReply(content);
 		});
+	return (
+		candidates.find((line) => isClearRequest(objectiveLineContent(line))) ??
+		candidates[0]
+	);
 }
 
 // Acknowledgements and successful status updates are evidence about progress,
@@ -325,6 +338,23 @@ function isShortCancellation(text: string): boolean {
 	);
 }
 
+// Conservative objective precedence: ambiguous declarative replies do not
+// replace an existing task. A later clause can still introduce a clear request.
+function isClearRequest(text: string): boolean {
+	const normalized = text
+		.trim()
+		.toLowerCase()
+		.replace(/\u2019/g, "'");
+	if (isShortCancellation(normalized) || normalized.endsWith("?")) return true;
+	return normalized
+		.split(/[,;.!]\s*(?:and|but)?\s*|\s+(?:and|but)\s+/)
+		.some((clause) =>
+			/^(?:(?:please|actually|instead|now|next|no)\b[,:]?\s*)*(?:(?:stop|cancel|abort|repair|fix|investigate|update|build|implement|run|test|check|add|remove|create|move|change|use|find|review|explain|help|research|write|deploy|start|continue|complete|summarize|show|tell|debug|improve|refactor|look|analyze|drop|do|don't)\b|(?:can|could|would|will)\s+you\b|(?:i|we)\s+(?:need|want|should|would like)\b|(?:let's|let us|you\s+(?:should|need to))\b)/.test(
+				clause.trim(),
+			),
+		);
+}
+
 export function findExplicitObjective(
 	messages: AgentMessage[],
 ): string | undefined {
@@ -344,10 +374,7 @@ export function findSubstantialObjective(
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const firstLine = firstObjectiveLine(messages[i]);
 		if (!firstLine) continue;
-		const labeled = firstLine.match(
-			/^(?:task|goal|objective|mission):\s*(.*)/i,
-		);
-		const content = labeled ? labeled[1].trim() : firstLine;
+		const content = objectiveLineContent(firstLine);
 		if (
 			isShortCancellation(content) ||
 			(content.length > 5 && !isStatusOnlyReply(content))

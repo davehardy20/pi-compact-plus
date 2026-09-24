@@ -83,9 +83,11 @@ must be present once; malformed custom output falls back to native Pi
 compaction. The summarizer uses Pi's active session projection, including
 recent messages retained outside the summarized slice while excluding
 superseded or context-edited messages, so the latest substantive user request
-takes precedence over older `Task:` labels. The extension's exact
-"Continue with the current task." follow-up is not treated as a new objective;
-previous summaries and split turns remain continuity context. Additional
+takes precedence over older `Task:` labels. With an active objective, only
+clear requests, redirects or cancellations replace it; ambiguous declarative
+replies remain context. The extension's exact "Continue with the current task."
+follow-up is not treated as a new objective. If no user request survives, a
+validated persisted summary supplies it; split turns remain continuity context. Additional
 compaction guidance is bounded and subordinate to the current user request.
 Only a genuine persisted Pi `compactionSummary` can seed a focus echo—assistant
 messages quoting a summary cannot.

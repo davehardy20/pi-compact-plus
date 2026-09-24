@@ -117,6 +117,39 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it("keeps an active task over unlabeled declarative status or problem reports", () => {
+		const earlier = userMessage("Task: deploy the retired service.");
+		for (const reply of ["All tests passed.", "The login flow fails."]) {
+			expect(extractCurrentFocus([earlier, userMessage(reply)]).objective).toBe(
+				"deploy the retired service.",
+			);
+		}
+		expect(
+			extractCurrentFocus([
+				userMessage("Investigate the login flow."),
+				userMessage("All tests passed."),
+			]).objective,
+		).toBe("Investigate the login flow.");
+		expect(
+			extractCurrentFocus([userMessage("The login flow fails.")]).objective,
+		).toBe("The login flow fails.");
+	});
+
+	it("accepts clear new requests after a status update", () => {
+		for (const reply of [
+			"Tests passed, but please repair login.",
+			"I need help with login.",
+			"All tests passed.\nPlease repair login.",
+		]) {
+			expect(
+				extractCurrentFocus([
+					userMessage("Task: deploy the retired service."),
+					userMessage(reply),
+				]).objective,
+			).toBe(reply.includes("\n") ? "Please repair login." : reply);
+		}
+	});
+
 	it("recovers an objective from genuine persisted memory on repeated compaction", () => {
 		const summary = VALID_STRUCTURED_SUMMARY.replace(
 			"Finish the current repair.",
@@ -134,6 +167,10 @@ describe("evidence-weighted session snapshot extraction", () => {
 			"Repair login without redeploying.",
 		);
 		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Repair login without redeploying.",
+		);
+		messages.push(userMessage("All tests passed."));
+		expect(extractCurrentFocus(messages).objective).toBe(
 			"Repair login without redeploying.",
 		);
 		messages.push(userMessage("Cancel that repair and investigate tests."));
@@ -213,7 +250,14 @@ describe("evidence-weighted session snapshot extraction", () => {
 		).toBe(request);
 	});
 
-	it.each(["Stop!", "Cancel.", "Abort."])(
+	it.each([
+		"Stop!",
+		"Cancel.",
+		"Abort.",
+		"Never mind.",
+		"Scratch that.",
+		"Forget it.",
+	])(
 		"keeps a short cancellation as the latest objective: %s",
 		(cancellation) => {
 			expect(
