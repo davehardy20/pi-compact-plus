@@ -368,6 +368,129 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(state.generateShortRef()).toBe("t3");
 	});
 
+	it("preserves live fallback search for a matching durable record", () => {
+		const record = {
+			...makeRecord("tc1", "t1", "entry-1"),
+			fallbackSnippets: "needle beyond scan limit",
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const ctx = makeCtxFromEntries([
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage(
+					"tc1",
+					`${"x".repeat(13_000)}needle beyond scan limit`,
+				),
+			},
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(record);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		expect(
+			coordinator.query({ query: "needle beyond scan limit" }, ctx).matches,
+		).toHaveLength(1);
+
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot()[0]?.fallbackSnippets).toBe(
+			"needle beyond scan limit",
+		);
+		expect(
+			coordinator.query({ query: "needle beyond scan limit" }, ctx).matches,
+		).toHaveLength(1);
+	});
+
+	it("keeps allowed records and new flushes usable after a policy change", async () => {
+		const bash = makeRecord("tc1", "t1", "entry-1");
+		const python = {
+			...makeRecord("tc2", "t2", "entry-2"),
+			toolName: "python",
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [bash, python],
+			metadataRecords: [bash, python],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const entries: Parameters<typeof makeCtxFromEntries>[0] = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("tc1"),
+			},
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("tc2", undefined, "python"),
+			},
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		];
+		const ctx = makeCtxFromEntries(entries);
+		let settings = ENABLED_SETTINGS;
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => settings,
+		});
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot()).toHaveLength(2);
+
+		settings = {
+			...ENABLED_SETTINGS,
+			toolOutputPruneExcludedTools: [
+				...ENABLED_SETTINGS.toolOutputPruneExcludedTools,
+				"bash",
+			],
+		};
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t2",
+		]);
+		expect(state.statusSnapshot().lastReconstructionStatus).toBe("ok");
+		expect(coordinator.query({ ref: "t1" }, ctx).matches).toHaveLength(0);
+
+		entries.push({
+			type: "message",
+			id: "entry-3",
+			message: makeToolResultMessage("tc3", undefined, "python"),
+		});
+		state.addPendingBatch(makeBatch(["rec-tc3"]), [
+			{ ...makeRecord("tc3", "t3", null), toolName: "python" },
+		]);
+		mockCompleteSimple.mockResolvedValueOnce(
+			makeSummarizerResponse("## t3\nPython summary."),
+		);
+		const pi = makeAppendPort();
+		const flush = await coordinator.manualFlush(ctx, pi);
+		expect(flush.ok).toBe(true);
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t2",
+			"t3",
+		]);
+	});
+
 	it("retains branch-safe in-memory legacy records alongside current metadata", () => {
 		const legacy = makeRecord("legacy", "t1", "entry-1");
 		const current = makeRecord("current", "t2", "entry-2");

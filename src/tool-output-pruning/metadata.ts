@@ -1,8 +1,9 @@
 import type { SessionBranchView } from "../session-branch-view.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
 import {
-	isExcludedTool,
-	recordMatchesBranchEntry,
+	isCompactPlusInternalTool,
+	PROTECTED_EXCLUDED_TOOLS,
+	recordIdentityMatchesBranchEntry,
 	type ToolOutputBranchEntry,
 } from "./record-identity.js";
 import {
@@ -292,7 +293,7 @@ function validateMetadataRecord(
 	value: unknown,
 	settings: ToolOutputPruningSettings,
 	branchEntryById: Map<string, ToolOutputBranchEntry>,
-): { record: ToolOutputRecord } | { error: string } {
+): { record: ToolOutputRecord; policyExcluded: boolean } | { error: string } {
 	if (!isObject(value)) {
 		return { error: "metadata record is not an object" };
 	}
@@ -353,14 +354,11 @@ function validateMetadataRecord(
 	if (!/^t\d+$/.test(shortRef)) {
 		return { error: "metadata record has invalid short ref" };
 	}
-	if (isExcludedTool(toolName, settings)) {
-		return { error: `metadata record uses excluded tool ${toolName}` };
-	}
 	if (
-		settings.toolOutputPruneIncludedTools.length > 0 &&
-		!settings.toolOutputPruneIncludedTools.includes(toolName)
+		PROTECTED_EXCLUDED_TOOLS.includes(toolName) ||
+		isCompactPlusInternalTool(toolName)
 	) {
-		return { error: `metadata record tool ${toolName} is not included` };
+		return { error: `metadata record uses excluded tool ${toolName}` };
 	}
 
 	const record: ToolOutputRecord = {
@@ -380,11 +378,17 @@ function validateMetadataRecord(
 	if (!matchingEntry) {
 		return { error: "metadata record does not match current branch" };
 	}
-	if (!recordMatchesBranchEntry(matchingEntry, record, settings)) {
+	if (!recordIdentityMatchesBranchEntry(matchingEntry, record)) {
 		return { error: "metadata record does not match current branch" };
 	}
 
-	return { record };
+	return {
+		record,
+		policyExcluded:
+			settings.toolOutputPruneExcludedTools.includes(toolName) ||
+			(settings.toolOutputPruneIncludedTools.length > 0 &&
+				!settings.toolOutputPruneIncludedTools.includes(toolName)),
+	};
 }
 
 function isDuplicate(
@@ -452,6 +456,7 @@ export function reconstructToolOutputRecordsFromBranch(
 	}
 
 	const records: ToolOutputRecord[] = [];
+	let validatedRecordCount = 0;
 	const seenRecordIds = new Set<string>();
 	const seenEntryIds = new Set<string>();
 	const seenShortRefs = new Set<string>();
@@ -533,7 +538,7 @@ export function reconstructToolOutputRecordsFromBranch(
 				skippedEntries,
 			);
 		}
-		if (records.length + header.records.length > MAX_FINALIZED_RECORDS) {
+		if (validatedRecordCount + header.records.length > MAX_FINALIZED_RECORDS) {
 			return fail(
 				`metadata record count exceeded ${MAX_FINALIZED_RECORDS}`,
 				inspectedEntries,
@@ -574,8 +579,9 @@ export function reconstructToolOutputRecordsFromBranch(
 				seenEntryIds.add(result.record.entryId);
 			}
 			seenShortRefs.add(result.record.shortRef);
-			records.push(result.record);
+			if (!result.policyExcluded) records.push(result.record);
 		}
+		validatedRecordCount += header.records.length;
 	}
 
 	return {

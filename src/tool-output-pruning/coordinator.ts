@@ -71,10 +71,32 @@ function reconcileBranchRecords(
 	branchEntries: SessionBranchEntryLike[],
 ): ToolOutputRecord[] {
 	const records = [...persisted];
+	const persistedIndexById = new Map(
+		records.map((record, index) => [record.recordId, index]),
+	);
 	const recordIds = new Set(records.map((record) => record.recordId));
 	const entryIds = new Set(records.map((record) => record.entryId));
 	const refs = new Set(records.map((record) => record.shortRef));
 	for (const record of inMemory) {
+		const persistedIndex = persistedIndexById.get(record.recordId);
+		const matching =
+			persistedIndex === undefined ? undefined : records[persistedIndex];
+		if (
+			persistedIndex !== undefined &&
+			matching &&
+			matching.entryId === record.entryId &&
+			matching.toolCallId === record.toolCallId &&
+			matching.toolName === record.toolName &&
+			matching.shortRef === record.shortRef &&
+			record.fallbackSnippets !== null
+		) {
+			// Only live memory keeps bounded original-output snippets. Preserve
+			// that search affordance without writing snippets to durable metadata.
+			records[persistedIndex] = {
+				...matching,
+				fallbackSnippets: record.fallbackSnippets,
+			};
+		}
 		// Durable metadata wins on an identity collision. Legacy records have
 		// no durable counterpart, but still represent valid live branch output.
 		if (

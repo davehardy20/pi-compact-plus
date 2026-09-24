@@ -318,7 +318,7 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 		expect(wrongTool.error).toContain("current branch");
 	});
 
-	it("fails atomically for protected excluded tools and include-list misses", () => {
+	it("fails atomically for protected excluded tools but skips policy changes", () => {
 		const protectedTool = makePersistedData([
 			makeRecord({ recordId: "rec-read", toolCallId: "tc1", toolName: "read" }),
 		]);
@@ -337,8 +337,35 @@ describe("reconstructToolOutputRecordsFromBranch", () => {
 			toolOutputPruneIncludedTools: ["python"],
 		};
 		const includeResult = reconstruct(makePersistedData(), includedOnly);
-		expect(includeResult.ok).toBe(false);
-		expect(includeResult.error).toContain("not included");
+		expect(includeResult.ok).toBe(true);
+		expect(includeResult.records).toHaveLength(0);
+
+		const records = [
+			makeRecord(),
+			makeRecord({
+				recordId: "rec-tc2",
+				entryId: "entry-2",
+				toolCallId: "tc2",
+				toolName: "python",
+				shortRef: "t2",
+			}),
+		];
+		const result = reconstructToolOutputRecordsFromBranch(
+			makeView(
+				[makeSummaryEntry(makePersistedData(records))],
+				[
+					makeToolResultEntry(),
+					makeToolResultEntry({
+						id: "entry-2",
+						toolCallId: "tc2",
+						toolName: "python",
+					}),
+				],
+			),
+			{ ...SETTINGS, toolOutputPruneExcludedTools: ["bash"] },
+		);
+		expect(result.ok).toBe(true);
+		expect(result.records.map((record) => record.shortRef)).toEqual(["t2"]);
 	});
 
 	it("fails atomically for non-text current branch tool results", () => {
