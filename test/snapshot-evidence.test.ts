@@ -8,6 +8,7 @@ import {
 	extractOpenProblems,
 	extractSessionSnapshot,
 } from "../src/session-evidence.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 function userMessage(text: string): AgentMessage {
 	return {
@@ -114,6 +115,48 @@ describe("evidence-weighted session snapshot extraction", () => {
 		expect(extractCurrentFocus(messages).objective).toBe(
 			"Actually, run login tests now.",
 		);
+	});
+
+	it("recovers an objective from genuine persisted memory on repeated compaction", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Repair login without redeploying.",
+		);
+		const persisted = {
+			role: "compactionSummary",
+			summary,
+		} as AgentMessage;
+		const messages = [
+			persisted,
+			userMessage("Continue with the current task."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Repair login without redeploying.",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Repair login without redeploying.",
+		);
+		messages.push(userMessage("Cancel that repair and investigate tests."));
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Cancel that repair and investigate tests.",
+		);
+	});
+
+	it("does not recover objective from assistant prose or invalid persisted memory", () => {
+		const summary = VALID_STRUCTURED_SUMMARY;
+		expect(
+			extractCurrentFocus([
+				assistantText(summary),
+				userMessage("Continue with the current task."),
+			]).objective,
+		).toBe("Continue current task.");
+		expect(
+			extractCurrentFocus([
+				{ role: "compactionSummary", summary } as AgentMessage,
+				{ role: "compactionSummary", summary: "invalid" } as AgentMessage,
+				userMessage("Continue with the current task."),
+			]).objective,
+		).toBe("Continue current task.");
 	});
 
 	it("takes a new instruction after a status-only line in the same message", () => {

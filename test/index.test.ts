@@ -1080,6 +1080,60 @@ describe("@davehardy20/pi-compact-plus", () => {
 		);
 	});
 
+	it("keeps a persisted objective in the helper on repeated compaction", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (!command || !beforeCompact)
+			throw new Error("compaction handlers missing");
+		const continuation = {
+			role: "user",
+			content: [{ type: "text", text: CONTINUATION_PROMPT }],
+		} as never;
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [
+				{ role: "compactionSummary", summary: VALID_STRUCTURED_SUMMARY },
+				continuation,
+			],
+		});
+		const compactMock = vi.mocked(piCore.compact);
+		compactMock.mockResolvedValue({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "continuation",
+			tokensBefore: 123,
+			details: null,
+		});
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 8,
+		});
+		await command.handler("", ctx);
+		const triggerInstructions =
+			ctx.compact.mock.calls[0]?.[0]?.customInstructions;
+		expect(triggerInstructions).toContain(
+			"Objective: Finish the current repair.",
+		);
+		await beforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+					previousSummary: VALID_STRUCTURED_SUMMARY,
+				},
+				branchEntries: [],
+				customInstructions: triggerInstructions,
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+		const helperPrompt = compactMock.mock.calls[0]?.[4] as string;
+		expect(helperPrompt).toContain("Objective: Finish the current repair.");
+		expect(helperPrompt).not.toContain("Objective: Continue current task.");
+	});
+
 	it("prefers projected intent over edited-away raw entries and keeps manual guidance", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);

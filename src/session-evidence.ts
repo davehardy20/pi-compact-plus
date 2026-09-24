@@ -1,4 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { detectCompactionSummary } from "./focus-echo/detection.js";
+import { extractFocusEchoDraft } from "./focus-echo/draft.js";
 import {
 	extractMessageText,
 	getAssistantToolCallBlocks,
@@ -256,6 +258,13 @@ export function extractObjective(allMessages: AgentMessage[]): string {
 		if (explicit) return explicit;
 		const substantial = findSubstantialObjective(message);
 		if (substantial) return substantial;
+	}
+	// On repeated compaction, no original user request may survive the active
+	// projection. Only validated, persisted Pi memory can supply that objective.
+	const persisted = detectCompactionSummary(allMessages);
+	if (persisted.found) {
+		const objective = extractFocusEchoDraft(persisted.summaryText).objective;
+		if (objective) return objective.slice(0, MAX_OBJECTIVE_CHARS);
 	}
 	return "Continue current task.";
 }
