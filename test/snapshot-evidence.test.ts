@@ -140,6 +140,9 @@ describe("evidence-weighted session snapshot extraction", () => {
 			"Tests passed, but please repair login.",
 			"I need help with login.",
 			"All tests passed.\nPlease repair login.",
+			"Switch to repairing login instead.",
+			"Instead, focus on the login bug.",
+			"I'd rather investigate login.",
 		]) {
 			expect(
 				extractCurrentFocus([

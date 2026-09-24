@@ -1134,6 +1134,52 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(helperPrompt).not.toContain("Objective: Continue current task.");
 	});
 
+	it("does not revive raw objectives when Pi's projection is empty", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (!command || !beforeCompact)
+			throw new Error("compaction handlers missing");
+		const editedAway = {
+			role: "user",
+			content: [{ type: "text", text: "Task: deploy the retired service." }],
+		} as never;
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({ messages: [] });
+		const compactMock = vi.mocked(piCore.compact);
+		compactMock.mockResolvedValue({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "old-task",
+			tokensBefore: 123,
+			details: null,
+		});
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 8,
+		});
+		await command.handler("", ctx);
+		await beforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [editedAway],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [
+					{ type: "message", id: "old-task", message: editedAway },
+				],
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+		const helperPrompt = compactMock.mock.calls[0]?.[4] as string;
+		expect(helperPrompt).toContain("Objective: Continue current task.");
+		expect(helperPrompt).not.toContain(
+			"Objective: deploy the retired service.",
+		);
+	});
+
 	it("prefers projected intent over edited-away raw entries and keeps manual guidance", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);

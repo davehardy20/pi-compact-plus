@@ -198,19 +198,11 @@ export class CompactionCoordinator {
 			return undefined;
 		}
 
-		const focusMessages = event.preparation.isSplitTurn
-			? [
-					...event.preparation.messagesToSummarize,
-					...event.preparation.turnPrefixMessages,
-				]
-			: event.preparation.messagesToSummarize;
 		// Pi omits retained messages from preparation.messagesToSummarize.
-		// The session projection includes them while honoring context edits and
-		// prior compactions; raw branchEntries can contain edited-away objectives.
-		const projectedMessages = currentProjectedMessages(ctx);
-		const focus = extractCurrentFocus(
-			projectedMessages.length > 0 ? projectedMessages : focusMessages,
-		);
+		// The active projection includes them while honoring context edits and
+		// prior compactions. An empty projection is authoritative: never revive
+		// edited-away requests from raw branch entries or preparation messages.
+		const focus = extractCurrentFocus(currentProjectedMessages(ctx));
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,

@@ -349,7 +349,7 @@ function isClearRequest(text: string): boolean {
 	return normalized
 		.split(/[,;.!]\s*(?:and|but)?\s*|\s+(?:and|but)\s+/)
 		.some((clause) =>
-			/^(?:(?:please|actually|instead|now|next|no)\b[,:]?\s*)*(?:(?:stop|cancel|abort|repair|fix|investigate|update|build|implement|run|test|check|add|remove|create|move|change|use|find|review|explain|help|research|write|deploy|start|continue|complete|summarize|show|tell|debug|improve|refactor|look|analyze|drop|do|don't)\b|(?:can|could|would|will)\s+you\b|(?:i|we)\s+(?:need|want|should|would like)\b|(?:let's|let us|you\s+(?:should|need to))\b)/.test(
+			/^(?:(?:please|actually|instead|now|next|no)\b[,:]?\s*)*(?:(?:stop|cancel|abort|repair|fix|investigate|update|build|implement|run|test|check|add|remove|create|move|change|use|find|review|explain|help|research|write|deploy|start|continue|complete|summarize|show|tell|debug|improve|refactor|look|analyze|focus|switch|pivot|forget|drop|do|don't)\b|(?:can|could|would|will)\s+you\b|(?:i|we)\s+(?:need|want|should|would like)\b|i(?:'d| would)\s+rather\b|(?:let's|let us|you\s+(?:should|need to))\b)/.test(
 				clause.trim(),
 			),
 		);
