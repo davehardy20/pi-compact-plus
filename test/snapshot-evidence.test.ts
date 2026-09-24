@@ -7,6 +7,7 @@ import {
 	extractDependencyChain,
 	extractOpenProblems,
 	extractSessionSnapshot,
+	extractTextContent,
 } from "../src/session-evidence.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
@@ -275,6 +276,58 @@ describe("evidence-weighted session snapshot extraction", () => {
 		expect(extractCurrentFocus(messages).objective).toBe(
 			"Cancel that repair and investigate tests.",
 		);
+	});
+
+	it("does not certify older persisted intent in a checkpoint after an unknown redirect", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Deploy the retired service.",
+		);
+		const messages = [
+			{ role: "compactionSummary", summary } as AgentMessage,
+			userMessage("Photograph the login page instead."),
+			...Array.from({ length: 7 }, (_, index) =>
+				userMessage(`Diagnostic note ${index}: trace reviewed.`),
+			),
+		];
+		const snapshot = extractSessionSnapshot(messages);
+		expect(snapshot.objective).toBe(
+			"Current objective unverified; inspect projected user turns.",
+		);
+		expect(snapshot.intentEvidence?.priorObjective).toBe(
+			"Deploy the retired service.",
+		);
+		expect(snapshot.intentEvidence?.certainty).toBe("provisional");
+		expect(snapshot.intentEvidence?.recentUserTurns).toEqual(
+			messages.slice(1).map((message) => extractTextContent(message)),
+		);
+	});
+
+	it("leaves a same-message unrecognized redirect unverified in a checkpoint", () => {
+		const snapshot = extractSessionSnapshot([
+			userMessage(
+				"Task: deploy the retired service.\nPhotograph the login page instead.",
+			),
+			userMessage("All tests passed."),
+		]);
+		expect(snapshot.objective).toBe(
+			"Current objective unverified; inspect projected user turns.",
+		);
+		expect(snapshot.intentEvidence?.recentUserTurns[0]).toContain(
+			"Photograph the login page instead.",
+		);
+	});
+
+	it("does not promise missing checkpoint evidence on overflow", () => {
+		const snapshot = extractSessionSnapshot([
+			userMessage("Task: repair login."),
+			userMessage(`Photograph login instead. ${"x".repeat(9_000)}`),
+		]);
+		expect(snapshot.objective).toBe(
+			"Current objective unverified; projected user turns exceeded the safety budget.",
+		);
+		expect(snapshot.intentEvidence?.overflow).toBe(true);
+		expect(snapshot.intentEvidence?.recentUserTurns).toEqual([]);
 	});
 
 	it("does not recover objective from assistant prose or invalid persisted memory", () => {

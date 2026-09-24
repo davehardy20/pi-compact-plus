@@ -3900,6 +3900,28 @@ describe("Compact+ prompt builders", () => {
 		expect(block).not.toContain("stale deployment");
 	});
 
+	it("retains an explicitly provisional branch objective when evidence overflows", () => {
+		const focus = {
+			objective: "map the active branch",
+			intentEvidence: {
+				priorObjective: "map the active branch",
+				certainty: "provisional" as const,
+				recentUserTurns: [],
+				overflow: true,
+			},
+			blockers: ["Pending review"],
+			decisions: [],
+			activeFiles: [],
+			dependencyChain: [],
+		};
+		const instructions = buildBranchInstructions(focus);
+		expect(instructions).toContain("map the active branch");
+		expect(instructions).toContain("provisional");
+		expect(instructions).toContain("incomplete projected evidence");
+		expect(instructions).toContain("Pending review");
+		expect(instructions).toContain("## Branch Goal");
+	});
+
 	it("escapes breakout delimiters in projected user-turn evidence", () => {
 		const block = buildCurrentFocusBlock({
 			objective: "repair login",

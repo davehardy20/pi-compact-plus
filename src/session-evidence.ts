@@ -29,6 +29,10 @@ const CURRENT_FOCUS_RECENT_WINDOW = 20;
 const SNAPSHOT_RECENT_WINDOW = 20;
 const SNAPSHOT_FOCUS_RECENT_WINDOW = 30;
 const MAX_OBJECTIVE_CHARS = 200;
+const UNVERIFIED_OBJECTIVE =
+	"Current objective unverified; inspect projected user turns.";
+const UNVERIFIED_OVERFLOW_OBJECTIVE =
+	"Current objective unverified; projected user turns exceeded the safety budget.";
 // Allow complete projected user evidence or decline custom compaction; never
 // silently evict an unknown redirect to meet a per-turn/window quota.
 const MAX_INTENT_EVIDENCE_BYTES = 8 * 1024;
@@ -322,6 +326,34 @@ function extractIntentEvidence(
 			explicit?.[1].trim() === priorObjective ? "confirmed" : "provisional",
 		recentUserTurns: userTurns,
 	};
+}
+
+function hasUnverifiedCheckpointObjective(
+	messages: AgentMessage[],
+	priorObjective: string,
+): boolean {
+	let lastSummaryIndex = -1;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index].role === "compactionSummary") {
+			lastSummaryIndex = index;
+			break;
+		}
+	}
+	let unresolved = false;
+	for (const message of messages.slice(lastSummaryIndex + 1)) {
+		if (message.role !== "user") continue;
+		for (const line of extractTextContent(message).split(/\n/)) {
+			const text = line.trim();
+			if (!text || text === CONTINUATION_PROMPT) continue;
+			const candidate = objectiveLineContent(text);
+			if (isStatusOnlyReply(candidate)) continue;
+			// A later confirmed objective resets uncertainty from earlier turns.
+			// An unfamiliar substantive turn after it must not certify that goal
+			// in a persisted checkpoint, even when both occur in one message.
+			unresolved = candidate !== priorObjective;
+		}
+	}
+	return unresolved;
 }
 
 function objectiveLineContent(line: string): string {
@@ -896,13 +928,27 @@ export function extractSessionSnapshot(
 ): SessionSnapshot {
 	const recent = messages.slice(-SNAPSHOT_RECENT_WINDOW);
 	const focusRecent = messages.slice(-SNAPSHOT_FOCUS_RECENT_WINDOW);
-	const objective = extractObjective(messages);
+	const priorObjective = extractObjective(messages);
+	// A deterministic matcher cannot certify an unfamiliar redirect. A
+	// checkpoint must not persist the older task as its current objective when
+	// a newer substantive turn was not classified; carry bounded chronological
+	// evidence and require a reader to resolve the uncertainty.
+	const unresolved = hasUnverifiedCheckpointObjective(messages, priorObjective);
+	const intentEvidence = unresolved
+		? extractIntentEvidence(messages, priorObjective)
+		: undefined;
+	const objective = unresolved
+		? intentEvidence?.overflow
+			? UNVERIFIED_OVERFLOW_OBJECTIVE
+			: UNVERIFIED_OBJECTIVE
+		: priorObjective;
 	const blockers = extractBlockers(recent);
 	const decisions = extractDecisions(recent);
 	const activeFiles = extractActiveFiles(recent);
 	const dependencyChain = extractDependencyChain(recent, decisions);
 	return {
 		objective,
+		...(unresolved ? { intentEvidence } : {}),
 		blockers,
 		decisions,
 		activeFiles,
