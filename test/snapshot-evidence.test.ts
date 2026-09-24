@@ -222,6 +222,9 @@ describe("evidence-weighted session snapshot extraction", () => {
 		expect(extractCurrentFocus(messages).objective).toBe(
 			"Repair login without redeploying.",
 		);
+		expect(extractCurrentFocus(messages).intentEvidence?.certainty).toBe(
+			"memory",
+		);
 		expect(extractSessionSnapshot(messages).objective).toBe(
 			"Repair login without redeploying.",
 		);
