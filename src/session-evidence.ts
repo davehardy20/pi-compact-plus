@@ -297,9 +297,26 @@ function extractIntentEvidence(
 				.join("\n"),
 		)
 		.filter(Boolean);
-	const recentUserTurns = userTurns
-		.slice(-MAX_INTENT_TURNS)
-		.map(boundIntentTurn);
+	const tailStart = Math.max(0, userTurns.length - MAX_INTENT_TURNS);
+	let retainedTurns = userTurns.slice(tailStart);
+	// Reserve one slot for the latest non-status turn when progress updates
+	// would otherwise evict an unrecognized request from the bounded tail.
+	if (tailStart > 0) {
+		let anchor = -1;
+		for (let i = userTurns.length - 1; i >= 0; i--) {
+			if (!userTurns[i].split("\n").every(isStatusOnlyReply)) {
+				anchor = i;
+				break;
+			}
+		}
+		if (anchor >= 0 && anchor < tailStart) {
+			retainedTurns = [
+				userTurns[anchor],
+				...userTurns.slice(-(MAX_INTENT_TURNS - 1)),
+			];
+		}
+	}
+	const recentUserTurns = retainedTurns.map(boundIntentTurn);
 	if (recentUserTurns.length === 0) {
 		return detectCompactionSummary(messages).found
 			? { priorObjective, certainty: "memory", recentUserTurns }
@@ -358,8 +375,8 @@ function isStatusOnlyClause(text: string): boolean {
 		/^(?:thanks|thank you),? (?:that|this|it) (?:helped|works?|is (?:great|good|fine|fixed|resolved))$/,
 		/^(?:that|this|it|everything) works?(?: now)?$/,
 		/^(?:that|this|it|everything) (?:is|was|looks?) (?:good|fine|okay|working|fixed|resolved|done|complete)(?: now)?$/,
-		/^(?:the )?(?:checks?|tests?|build|ci) (?:is|are|was|were) (?:green|passing|working|done|complete|successful)(?: now)?$/,
-		/^(?:the )?(?:checks?|tests?|build|ci) (?:passed|succeeded|completed)(?: now)?$/,
+		/^(?:(?:the|all|my|our) )?(?:checks?|tests?|build|ci) (?:is|are|was|were) (?:green|passing|working|done|complete|successful)(?: now)?$/,
+		/^(?:(?:the|all|my|our) )?(?:checks?|tests?|build|ci) (?:passed|succeeded|completed)(?: now)?$/,
 		/^i(?:'ve| have)? (?:finished|completed|fixed|resolved|done|merged|deployed) (?:(?:that|this|it)(?: part)?|the [a-z0-9 -]+)$/,
 		/^i(?:'m| am) done(?: with (?:that|this|it))?$/,
 	].some((pattern) => pattern.test(clause));

@@ -150,6 +150,22 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it("reserves evidence for a redirect before many status updates", () => {
+		const focus = extractCurrentFocus([
+			userMessage("Task: deploy the retired service."),
+			userMessage("I'd like to investigate login instead."),
+			...Array.from({ length: 8 }, () => userMessage("All tests passed.")),
+		]);
+		expect(focus.intentEvidence?.certainty).toBe("provisional");
+		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(4);
+		expect(focus.intentEvidence?.recentUserTurns[0]).toBe(
+			"I'd like to investigate login instead.",
+		);
+		expect(focus.intentEvidence?.recentUserTurns.at(-1)).toBe(
+			"All tests passed.",
+		);
+	});
+
 	it("caps and filters evidence without trusting generated continuation", () => {
 		const focus = extractCurrentFocus([
 			userMessage("Task: repair login."),
