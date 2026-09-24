@@ -159,6 +159,18 @@ describe("evidence-weighted session snapshot extraction", () => {
 		).toBe("Continue current task.");
 	});
 
+	it.each(["Task:", "Goal:", "Objective:"])(
+		"takes the direction after an empty multiline %s label",
+		(label) => {
+			expect(
+				extractCurrentFocus([
+					userMessage("Task: deploy the retired service."),
+					userMessage(`${label}\nRepair the login flow instead.`),
+				]).objective,
+			).toBe("Repair the login flow instead.");
+		},
+	);
+
 	it("takes a new instruction after a status-only line in the same message", () => {
 		expect(
 			extractCurrentFocus([

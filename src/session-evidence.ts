@@ -280,7 +280,8 @@ function firstObjectiveLine(msg: AgentMessage): string | undefined {
 		.find((line) => {
 			if (!line || line === CONTINUATION_PROMPT) return false;
 			const labeled = line.match(/^(?:task|goal|objective|mission):\s*(.*)/i);
-			return !isStatusOnlyReply(labeled ? labeled[1].trim() : line);
+			const content = labeled ? labeled[1].trim() : line;
+			return content.length > 0 && !isStatusOnlyReply(content);
 		});
 }
 
