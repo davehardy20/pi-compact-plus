@@ -10,6 +10,7 @@ export interface MockCtx {
 	} | null;
 	modelRegistry: {
 		getApiKeyAndHeaders: ReturnType<typeof vi.fn>;
+		streamSimple?: ReturnType<typeof vi.fn>;
 	};
 	compact: ReturnType<typeof vi.fn>;
 	getContextUsage: ReturnType<typeof vi.fn>;
@@ -93,6 +94,7 @@ export function createMockCtx(options?: {
 				apiKey: "test-key",
 				headers: {},
 			})),
+			streamSimple: vi.fn(() => ({ result: vi.fn() })),
 		},
 		compact: vi.fn(),
 		getContextUsage: vi.fn(() =>

@@ -77,8 +77,10 @@ npm run typecheck      # tsc --noEmit (no output)
 4. Lockfile consistency check: `npm ci --dry-run --package-lock-only` — fails if lockfile is out of sync.
 5. Typecheck: `npm run typecheck` (if `typecheck` script or `tsconfig.json` exists).
 6. Test: `npm test` (if `test` script or vitest config exists).
-7. Build: `npm run build` (if `build` script exists).
-8. Audit: `npm audit --omit=dev` (if lockfile exists).
+7. Pi 0.87 provider boundary (if tests exist): installs an isolated `@earendil-works/pi-coding-agent@0.87.1` into `$RUNNER_TEMP/pi-087` (`npm install --prefix`, `--ignore-scripts`, no audit/fund) and runs `npx --no-install vitest run test/provider-boundary-087.test.ts` with `PI_COMPACT_PLUS_TEST_PI_087_ROOT` pointing at it. A configured-but-incomplete runtime fails the test rather than silently skipping (the local fallback path `/opt/homebrew/...` is skip-if-missing).
+8. Build: `npm run build` (if `build` script exists).
+9. Audit: `npm audit --audit-level=high` (if lockfile exists; `continue-on-error`).
+10. Secret scan: `gitleaks/gitleaks-action@v2` (`continue-on-error`).
 
 **Required status check name:** `Typecheck and test` (or `CI / Typecheck and test`).
 

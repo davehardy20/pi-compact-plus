@@ -1481,7 +1481,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(helperPrompt).not.toContain("Task: poison prompt.");
 	});
 
-	it("uses the public streamSimple adapter when Pi does not expose streamFn", async () => {
+	it("uses registry-backed streaming when Pi does not expose streamFn", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
 
@@ -1538,7 +1538,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			}),
 		});
 		expect(compactMock).toHaveBeenCalledTimes(1);
-		expect(compactMock.mock.calls[0]).toHaveLength(8);
+		expect(compactMock.mock.calls[0]).toHaveLength(9);
 		expect(compactMock.mock.calls[0]?.[7]).toEqual(expect.any(Function));
 		expect(compactMock.mock.calls[0]?.[6]).toBe("minimal");
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
@@ -1567,7 +1567,80 @@ describe("@davehardy20/pi-compact-plus", () => {
 			thinkingLevel: "minimal",
 		});
 		expect(__test__.getLastCompaction()?.compatibilityReason).toContain(
-			"streamSimple adapter",
+			"registry streamSimple",
+		);
+	});
+
+	it("defers to native Pi when no session or registry stream is available", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (!command || !beforeCompact) throw new Error("missing handlers");
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.modelRegistry.streamSimple = undefined;
+		const compactMock = vi.mocked(piCore.compact);
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 11,
+		});
+		await command.handler("", ctx);
+		const result = await beforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+		expect(result).toBeUndefined();
+		expect(compactMock).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("native Pi compaction"),
+			"warning",
+		);
+	});
+
+	it("cancels an aborted custom stream without retrying native compaction", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const command = pi.commands.get("compact-plus");
+		const beforeCompact = pi.events.get("session_before_compact")?.[0];
+		if (!command || !beforeCompact) throw new Error("missing handlers");
+		const abort = new AbortController();
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		ctx.signal = abort.signal;
+		const compactMock = vi.mocked(piCore.compact);
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 11,
+		});
+		compactMock.mockImplementationOnce(async () => {
+			abort.abort();
+			throw new Error("sentinel-secret");
+		});
+		await command.handler("", ctx);
+		const result = await beforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+				signal: abort.signal,
+			},
+			ctx,
+		);
+		expect(result).toEqual({ cancel: true });
+		expect(compactMock).toHaveBeenCalledTimes(1);
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("default compaction"),
+			"warning",
 		);
 	});
 

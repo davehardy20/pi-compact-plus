@@ -15,4 +15,11 @@ describe("PR Node workflow dependency install", () => {
 		expect(installStep).toContain("npm ci --no-audit");
 		expect(installStep).not.toContain("--package-lock=false");
 	});
+
+	it("runs the no-network provider-boundary test against Pi 0.87.1 in CI", () => {
+		expect(workflow).toContain("name: Pi 0.87 provider boundary");
+		expect(workflow).toContain("@earendil-works/pi-coding-agent@0.87.1");
+		expect(workflow).toContain("PI_COMPACT_PLUS_TEST_PI_087_ROOT:");
+		expect(workflow).toContain("vitest run test/provider-boundary-087.test.ts");
+	});
 });

@@ -94,31 +94,60 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 `CompactionCoordinator.onSessionBeforeCompact(event, ctx)` (`src/compaction-coordinator.ts`):
 
 1. Read `state.selectedMode` — if null, return `undefined` (let Pi handle natively).
-2. Extract focus from `event.preparation.messagesToSummarize` (plus turn prefix if split turn).
-3. Resolve compatibility: `resolveCompactionRuntimeCompatibility({ event })`.
-4. Build telemetry base.
-5. **If execution path is `native-fallback`**: Set `pendingCompaction` with fallback reason, persist, notify warning, return `undefined` (Pi does native compaction).
-6. **Otherwise**: Call `runCustomCompaction(preparation, mode, ctx, compatibility, signal)`.
+2. Extract focus from the active session projection (`currentProjectedMessages(ctx)` in `src/session-projection.ts`) — Pi omits retained messages from `preparation.messagesToSummarize`, and an empty projection is authoritative.
+3. Abort check (`event.signal`/`ctx.signal`) → `cancelAbortedCompaction()`. Intent-evidence overflow → cancel with warning.
+4. Resolve compatibility: `resolveCompactionRuntimeCompatibility({ event, modelRegistry: ctx.modelRegistry })` (`src/compaction-coordinator.ts`).
+5. Build telemetry base.
+6. **If execution path is `native-fallback`**: Set `pendingCompaction` with fallback reason, persist, notify warning, return `undefined` (Pi does native compaction).
+7. **Otherwise**: Call `runCustomCompaction(preparation, mode, ctx, compatibility, event.signal, { focus, customInstructions })`; a post-run abort check cancels before applying any result.
    - **Success**: Return `{ compaction: { ...result, details: { mode, triggerReason, ... } } }`.
    - **Failure**: Fall back to native, set `lastFallbackReason`, notify warning.
 
 ## Compatibility resolution (`src/compatibility.ts`)
 
-`resolveCompactionRuntimeCompatibility()` detects Pi runtime capabilities by inspecting `compact.length` (the Pi helper's arity):
+`resolveCompactionRuntimeCompatibility({ event, modelRegistry, compactHelperArity })` detects Pi runtime capabilities by inspecting `compact.length` (the Pi helper's arity, overridable via `compactHelperArity` in tests):
 
-| Helper arity | Supports | Thinking level |
+| Helper arity | Supports | Effect |
 |---|---|---|
-| ≥ 7 | `thinkingLevel` parameter | `"minimal"` (Compact+ forces cheap summaries) |
-| ≥ 8 | `streamFn` parameter | Uses session's `streamFn` if available |
+| ≥ 7 | `thinkingLevel` parameter | Compact+ passes `"minimal"` (cheap summaries regardless of session reasoning level) |
+| ≥ 8 | `streamFn` + `env` parameters | Compact+ can supply a stream-aware provider route; without stream-fn support the routes below are irrelevant and Pi's own routing is used |
 
-**Execution paths:**
-1. **Custom with session streamFn**: If `event.streamFn` is a function → use it directly. Reason: null.
-2. **Custom with streamSimple shim**: If no session streamFn but helper supports it (arity ≥ 8) → use `PUBLIC_STREAM_SIMPLE_FN` which dynamically imports `@earendil-works/pi-ai/compat`'s `streamSimple`. Reason: `STREAM_SIMPLE_SHIM_REASON`.
-3. **Native fallback**: If neither streamFn nor streamSimple available → reason: `NATIVE_FALLBACK_REASON`, return undefined from `onSessionBeforeCompact`.
+### Stream routes
 
-**Invariant:** `COMPACT_PLUS_COMPACTION_THINKING_LEVEL = "minimal"` — Compact+ summaries always run at minimal thinking regardless of the session's reasoning level, to keep compaction fast and cheap.
+> **Removed:** an earlier revision routed through a public `@earendil-works/pi-ai/compat` `streamSimple` adapter (`PUBLIC_STREAM_SIMPLE_FN`, dynamic import, `STREAM_SIMPLE_SHIM_REASON`). That shim was removed because it bypassed Pi's configured provider routes and request-time auth; do not reintroduce it.
 
-**Change-entrypoint:** If Pi changes the `compact()` helper signature, update the arity checks in `resolveCompactionRuntimeCompatibility`. The cached `streamSimple` import avoids repeated dynamic imports.
+| Route | Condition | `streamRoute` | `reason` |
+|---|---|---|---|
+| **Live session stream** | `helperSupportsStreamFn` and `event.streamFn` is a function | `"session"` | `null` |
+| **Registry streamSimple** | No session `streamFn`, but `modelRegistry.streamSimple` is a function | `"registry"` | `REGISTRY_STREAM_REASON` |
+| **Native fallback** | No safe stream route exists | — | `NATIVE_FALLBACK_REASON` |
+
+1. **Live session stream (preferred):** the `session_before_compact` event's `streamFn` is Pi's own live stream for the session, so provider routing and auth stay exactly as the session configured them.
+2. **Registry streamSimple:** Compact+ wraps `modelRegistry.streamSimple` in an arrow function that forwards all arguments and preserves the registry as `this`, keeping provider routing, request transforms, and request-time authentication inside Pi's registry. Reason string: `"Pi does not expose the live session stream function; Compact+ is using the registry streamSimple route to preserve provider routing and request transforms."`
+3. **Native fallback:** when the helper predates stream support or neither stream source is available — including Pi 0.83.0, whose `ModelRegistry` exposes `getApiKeyAndHeaders` but no `streamSimple` and whose `SessionBeforeCompactEvent` carries no `streamFn` — Compact+ returns `undefined` from `onSessionBeforeCompact` instead of sending credentials through a generic stream adapter that may bypass custom provider routes. Telemetry records `executionPath: "native-fallback"` and the reason; the user sees a warning ("Compact+ is deferring to native Pi compaction to preserve stream-aware routing.").
+
+### Auth and request fields per route (`src/compact.ts:runCustomCompaction`)
+
+| Field | Session route | Registry route |
+|---|---|---|
+| `apiKey` / `headers` / `baseUrl` / `env` | Resolved once via `ctx.modelRegistry.getApiKeyAndHeaders(model)` and forwarded to `compact()` | Not resolved — the registry stream resolves provider auth at request time, so forwarding an earlier snapshot could override rotated credentials or routing |
+| `model` | Copied with `baseUrl` spread onto the copy (never mutated) when auth supplies one | Passed through unchanged |
+| `headers` | Null-valued entries filtered out; only string values forwarded | — |
+| Auth failure (`auth.ok === false`) | `fallbackReason: "auth unavailable"`, `compact()` never called | n/a |
+| `env` | Resolved auth's `env` (e.g. provider-scoped environment), appended as the final helper argument only when `helperSupportsStreamFn` | `undefined` at that argument position — the registry resolves environment with auth at request time |
+
+The registry contract is asserted in `test/compaction-runtime-contract.test.ts`: with a registry-route compatibility the request carries no `apiKey`/`headers`/`env` and `getApiKeyAndHeaders` is never called, while the session route's forwarding behavior is asserted in `test/compact-run-custom-compaction.test.ts`.
+
+### Abort handling
+
+- **Signal selection:** `selectCompactionSignal(signal, ctx.signal)` — the coordinator passes `event.signal`; when both signals exist and are distinct they are combined with `AbortSignal.any([signal, contextSignal])` so aborting *either* one cancels the compaction, otherwise whichever exists is used; `undefined` if neither exists.
+- **Checked before auth resolution, again after auth, and once more after argument construction** (before `compact()` is called): an aborted combined signal returns `{ result: undefined, fallbackReason: "compaction aborted" }` without resolving credentials or streaming — a context-signal abort during a pending auth resolution cancels even while the event signal is still live.
+- **During streaming:** if the request throws, `requestSignal?.aborted` distinguishes cancellation (`"compaction aborted"`) from a provider failure (`"compact error: provider request failed"`).
+- **Coordinator level:** `onSessionBeforeCompact` re-checks `event.signal?.aborted || ctx.signal?.aborted` after `runCustomCompaction` and calls `cancelAbortedCompaction()` — resets `selectedMode`/`isCompacting`/`lastTriggerAuto`, clears pending compaction, records `lastFallbackReason = "compaction aborted"`, and returns `{ cancel: true }` so Pi does not apply a half-finished summary.
+
+**Invariant:** `COMPACT_PLUS_COMPACTION_THINKING_LEVEL = "minimal"` — Compact+ summaries always run at minimal thinking regardless of the session's reasoning level, to keep compaction fast and cheap. Failure paths never include provider error text or credentials in `fallbackReason` or telemetry.
+
+**Change-entrypoint:** If Pi changes the `compact()` helper signature, update the arity checks in `resolveCompactionRuntimeCompatibility`. If Pi exposes the live session stream or a registry stream on new runtimes, prefer those over any direct pi-ai adapter import — the compat shim removal was deliberate.
 
 ## Summary generation (`src/compact.ts`, `src/prompts.ts`, `src/summary-schema.ts`)
 
@@ -183,7 +212,10 @@ See [settings-and-state.md](settings-and-state.md) for persistence details.
 npx vitest run test/index.test.ts              # policy, settings, compaction, focus-echo, usage
 npx vitest run test/classify-extract.test.ts    # Classification
 npx vitest run test/lifecycle.test.ts           # executeCompaction lifecycle
-npx vitest run test/compact-run-custom-compaction.test.ts  # runCustomCompaction: schema validation, normalization, native fallback
+npx vitest run test/compatibility.test.ts       # stream route selection (session/registry/native fallback)
+npx vitest run test/compaction-runtime-contract.test.ts  # real compact() helper through the registry route
+npx vitest run test/provider-boundary-087.test.ts  # skipUnless a host Pi 0.87 install exists: registry streamSimple reaches the custom provider boundary with request-time auth, no network
+npx vitest run test/compact-run-custom-compaction.test.ts  # runCustomCompaction: auth forwarding, aborts, schema validation, normalization, native fallback
 npx vitest run test/summary-provenance.test.ts  # persisted-summary detection + schema provenance
 npx vitest run test/snapshot-evidence.test.ts   # Session evidence extraction
 npx vitest run test/session-branch-view.test.ts # Branch view projection

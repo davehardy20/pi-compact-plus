@@ -130,20 +130,105 @@ describe("runCustomCompaction characterization", () => {
 		expect(compactMock).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		[{ ok: false, error: "denied" }, "auth unavailable: denied"],
-		[{ ok: false }, "auth unavailable: unknown"],
-	])(
-		"reports authentication failures exactly",
-		async (auth, fallbackReason) => {
+	it.each([{ ok: false, error: "denied: sentinel-secret" }, { ok: false }])(
+		"reports authentication failures without exposing credentials",
+		async (auth) => {
 			const ctx = context({ auth });
 
 			await expect(
 				runCustomCompaction(preparation(), "standard", ctx, compatibility()),
-			).resolves.toEqual({ result: undefined, fallbackReason });
+			).resolves.toEqual({
+				result: undefined,
+				fallbackReason: "auth unavailable",
+			});
 			expect(compactMock).not.toHaveBeenCalled();
 		},
 	);
+
+	it("does not resolve credentials or start streaming after cancellation", async () => {
+		const abort = new AbortController();
+		abort.abort();
+		const ctx = context({ signal: abort.signal });
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			ctx,
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBe("compaction aborted");
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
+	it("does not start streaming when context aborts during auth but event signal stays live", async () => {
+		const event = new AbortController();
+		const contextAbort = new AbortController();
+		const ctx = context({ signal: contextAbort.signal });
+		type Auth = Awaited<
+			ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>
+		>;
+		let resolveAuth!: (value: Auth) => void;
+		vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementation(
+			() =>
+				new Promise<Auth>((resolve) => {
+					resolveAuth = resolve;
+				}),
+		);
+		const pending = runCustomCompaction(
+			preparation(),
+			"standard",
+			ctx,
+			compatibility(),
+			event.signal,
+		);
+		contextAbort.abort();
+		resolveAuth({ ok: true });
+		const attempt = await pending;
+		expect(event.signal.aborted).toBe(false);
+		expect(attempt.fallbackReason).toBe("compaction aborted");
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
+	it("does not start streaming if cancelled while resolving authentication", async () => {
+		const abort = new AbortController();
+		const ctx = context({ signal: abort.signal });
+		type Auth = Awaited<
+			ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>
+		>;
+		let resolveAuth!: (value: Auth) => void;
+		vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementation(
+			() =>
+				new Promise<Auth>((resolve) => {
+					resolveAuth = resolve;
+				}),
+		);
+		const pending = runCustomCompaction(
+			preparation(),
+			"standard",
+			ctx,
+			compatibility(),
+		);
+		abort.abort();
+		resolveAuth({ ok: true, apiKey: ["sentinel", "secret"].join("-") });
+		const attempt = await pending;
+		expect(attempt.fallbackReason).toBe("compaction aborted");
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
+	it("reports cancellation rather than a provider error when streaming aborts", async () => {
+		const abort = new AbortController();
+		compactMock.mockImplementationOnce(async () => {
+			abort.abort();
+			throw new Error("sentinel-secret");
+		});
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context({ signal: abort.signal }),
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBe("compaction aborted");
+	});
 
 	it("declines custom compaction when complete user evidence overflows", async () => {
 		const attempt = await runCustomCompaction(
@@ -159,7 +244,7 @@ describe("runCustomCompaction characterization", () => {
 		expect(compactMock).not.toHaveBeenCalled();
 	});
 
-	it("passes standard-mode input and the six base helper arguments unchanged", async () => {
+	it("passes standard-mode input and the six base helper arguments safely", async () => {
 		const history = [
 			message("user", "Current objective: characterize compaction"),
 			message("assistant", "ack retained outside hard mode"),
@@ -192,7 +277,7 @@ describe("runCustomCompaction characterization", () => {
 			previousSummary: undefined,
 		});
 		expect(args[1]).toBe(ctx.model);
-		expect(args[2]).toBe("");
+		expect(args[2]).toBeUndefined();
 		expect(args[3]).toBeUndefined();
 		expect(args[4]).toContain(
 			"Prior objective (provisional): Current objective: characterize compaction",
@@ -228,7 +313,7 @@ describe("runCustomCompaction characterization", () => {
 		);
 
 		const args = compactMock.mock.calls[0] ?? [];
-		expect(args).toHaveLength(8);
+		expect(args).toHaveLength(9);
 		expect(args[0].previousSummary).not.toBe(previousSummary);
 		expect(args[0].previousSummary.length).toBeLessThan(previousSummary.length);
 		expect(args[4]).toContain(
@@ -238,7 +323,9 @@ describe("runCustomCompaction characterization", () => {
 			"This compaction includes a split turn with 1 prefix message(s).",
 		);
 		expect(args[4]).toContain(args[0].previousSummary);
-		expect(args[5]).toBe(explicitSignal);
+		expect(args[5]).not.toBe(explicitSignal);
+		expect(args[5]).not.toBe(contextSignal);
+		expect(args[5].aborted).toBe(false);
 		expect(args[6]).toBe("minimal");
 		expect(args[7]).toBe(streamFn);
 		expect(attempt.classifiedCounts).toEqual({
@@ -246,6 +333,70 @@ describe("runCustomCompaction characterization", () => {
 			contextual: 0,
 			ephemeral: 1,
 		});
+	});
+
+	it.each(["event", "context"] as const)(
+		"aborts the provider request signal when %s aborts",
+		async (source) => {
+			const event = new AbortController();
+			const contextAbort = new AbortController();
+			let providerSignal: AbortSignal | undefined;
+			compactMock.mockImplementationOnce(async (...args: unknown[]) => {
+				providerSignal = args[5] as AbortSignal;
+				(source === "event" ? event : contextAbort).abort();
+				expect(providerSignal.aborted).toBe(true);
+				throw new Error("request aborted");
+			});
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				context({ signal: contextAbort.signal }),
+				compatibility(),
+				event.signal,
+			);
+			const otherSignal =
+				source === "event" ? contextAbort.signal : event.signal;
+			expect(otherSignal.aborted).toBe(false);
+			expect(attempt.fallbackReason).toBe("compaction aborted");
+			expect(providerSignal).toBeDefined();
+		},
+	);
+
+	it("preserves resolved provider routing and environment without mutating the session model", async () => {
+		const ctx = context({
+			auth: {
+				ok: true,
+				apiKey: ["sentinel", "secret"].join("-"),
+				headers: { "x-tenant": "sentinel-header", "x-deleted": null },
+				baseUrl: "https://custom.example.test/v1",
+				env: { CUSTOM_REGION: "test-region" },
+			},
+		});
+		const streamFn = vi.fn();
+		const original = ctx.model;
+		await runCustomCompaction(
+			preparation(),
+			"standard",
+			ctx,
+			compatibility({
+				helperArity: 11,
+				helperSupportsThinkingLevel: true,
+				helperSupportsStreamFn: true,
+				thinkingLevel: "minimal",
+				streamFn,
+			}),
+		);
+		const args = compactMock.mock.calls[0] ?? [];
+		expect(args).toHaveLength(9);
+		expect(args[1]).toEqual({
+			...original,
+			baseUrl: "https://custom.example.test/v1",
+		});
+		expect(ctx.model).toBe(original);
+		expect(args[2]).toBe("sentinel-secret");
+		expect(args[3]).toEqual({ "x-tenant": "sentinel-header" });
+		expect(args[7]).toBe(streamFn);
+		expect(args[8]).toEqual({ CUSTOM_REGION: "test-region" });
 	});
 
 	it("keeps bounded manual guidance subordinate to the current focus", async () => {
@@ -761,19 +912,22 @@ describe("runCustomCompaction characterization", () => {
 		).toHaveLength(1);
 	});
 
-	it.each([
-		[new Error("aborted"), "compact error: aborted"],
-		["non-error rejection", "compact error: non-error rejection"],
-	])("normalizes thrown helper failures", async (error, fallbackReason) => {
-		compactMock.mockRejectedValueOnce(error);
+	it.each([new Error("sentinel-secret"), "sentinel-secret"])(
+		"redacts thrown helper failures",
+		async (error) => {
+			compactMock.mockRejectedValueOnce(error);
 
-		await expect(
-			runCustomCompaction(
-				preparation(),
-				"standard",
-				context(),
-				compatibility(),
-			),
-		).resolves.toEqual({ result: undefined, fallbackReason });
-	});
+			await expect(
+				runCustomCompaction(
+					preparation(),
+					"standard",
+					context(),
+					compatibility(),
+				),
+			).resolves.toEqual({
+				result: undefined,
+				fallbackReason: "compact error: provider request failed",
+			});
+		},
+	);
 });
