@@ -116,6 +116,35 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
+	it.each([
+		"Looks good, thank you!",
+		"That works now, thanks.",
+		"The checks are green now.",
+		"The tests passed.",
+		"I've finished that part.",
+		"I fixed the login flow.",
+		"Thanks, that helped.",
+	])("does not replace a task with a status-only reply: %s", (reply) => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: repair the login flow."),
+				userMessage(reply),
+			]).objective,
+		).toBe("repair the login flow.");
+	});
+
+	it.each([
+		"That works now; next, repair the login flow.",
+		"Looks good, but repair the login flow.",
+	])("keeps a new request attached to a status update: %s", (request) => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage(request),
+			]).objective,
+		).toBe(request);
+	});
+
 	it("does not treat unsupported assistant self-reports as completed work", () => {
 		const completedWork = extractCompletedWork([
 			userMessage("Task: add authentication middleware."),

@@ -271,13 +271,39 @@ function firstObjectiveLine(msg: AgentMessage): string | undefined {
 		.find((line) => line.length > 0 && line !== CONTINUATION_PROMPT);
 }
 
+// Acknowledgements and successful status updates are evidence about progress,
+// not replacements for the user's active request. Match complete replies so a
+// status followed by a new directive still takes chronological precedence.
+function isStatusOnlyReply(text: string): boolean {
+	const normalized = text
+		.trim()
+		.toLowerCase()
+		.replace(/\u2019/g, "'")
+		.replace(/[.!?]+$/, "")
+		.replace(/,?\s*(?:thanks|thank you)[.!?]*$/, "")
+		.trim();
+	if (isConversationalFiller(normalized)) return true;
+	// Conjunctions and request markers may introduce a new instruction after
+	// the status; prefer keeping that request over filtering an ambiguous reply.
+	if (/\b(?:and|but|then|next|please|instead)\b/.test(normalized)) return false;
+	return [
+		/^(?:thanks|thank you),? (?:that|this|it) (?:helped|works?|is (?:great|good|fine|fixed|resolved))$/,
+		/^(?:that|this|it|everything) works?(?: now)?$/,
+		/^(?:that|this|it|everything) (?:is|was|looks?) (?:good|fine|okay|working|fixed|resolved|done|complete)(?: now)?$/,
+		/^(?:the )?(?:checks?|tests?|build|ci) (?:is|are|was|were) (?:green|passing|working|done|complete|successful)(?: now)?$/,
+		/^(?:the )?(?:checks?|tests?|build|ci) (?:passed|succeeded|completed)(?: now)?$/,
+		/^i(?:'ve| have)? (?:finished|completed|fixed|resolved|done|merged|deployed) (?:(?:that|this|it)(?: part)?|the [a-z0-9 -]+)$/,
+		/^i(?:'m| am) done(?: with (?:that|this|it))?$/,
+	].some((pattern) => pattern.test(normalized));
+}
+
 export function findExplicitObjective(
 	messages: AgentMessage[],
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const firstLine = firstObjectiveLine(messages[i]);
 		const match = firstLine?.match(/^(?:task|goal|objective|mission):\s*(.+)/i);
-		if (match && !isConversationalFiller(match[1])) {
+		if (match && !isStatusOnlyReply(match[1])) {
 			return match[1].trim().slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
@@ -294,7 +320,7 @@ export function findSubstantialObjective(
 			/^(?:task|goal|objective|mission):\s*(.*)/i,
 		);
 		const content = labeled ? labeled[1].trim() : firstLine;
-		if (content.length > 5 && !isConversationalFiller(content)) {
+		if (content.length > 5 && !isStatusOnlyReply(content)) {
 			return firstLine.slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
