@@ -23,8 +23,13 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	estimateTokens: vi.fn(() => 100),
 	compact: vi.fn(),
 	sessionEntryToContextMessages: vi.fn(
-		(entry: { type: string; message?: TestAgentMessage }) =>
-			entry.type === "message" && entry.message ? [entry.message] : [],
+		(entry: { type: string; message?: TestAgentMessage; summary?: string }) => {
+			if (entry.type === "message" && entry.message) return [entry.message];
+			if (entry.type === "compaction" && entry.summary) {
+				return [{ role: "compactionSummary", summary: entry.summary }];
+			}
+			return [];
+		},
 	),
 }));
 
@@ -191,6 +196,154 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(pi.commands.has("compact-plus")).toBe(true);
 		expect(pi.commands.has("checkpoint")).toBe(true);
 		expect(pi.commands.has("compact-plus-status")).toBe(true);
+	});
+
+	it("checkpoints the active projection rather than a pre-compaction branch task", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx();
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Photograph the login page.",
+		);
+		const oldTask = {
+			role: "user",
+			content: [{ type: "text", text: "Task: deploy the retired service." }],
+		};
+		const status = {
+			role: "user",
+			content: [{ type: "text", text: "All tests passed." }],
+		};
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{ type: "message", id: "old", message: oldTask },
+			{ type: "compaction", id: "summary", summary },
+			{ type: "message", id: "status", message: status },
+		]);
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [{ role: "compactionSummary", summary }, status],
+		});
+
+		await pi.commands.get("checkpoint")?.handler("", ctx);
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			CHECKPOINT_CUSTOM_TYPE,
+			expect.objectContaining({ objective: "Photograph the login page." }),
+		);
+		expect(ctx.sessionManager.buildSessionProjection).toHaveBeenCalledOnce();
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+	});
+
+	it("persists uncertainty and projected turns when checkpoint intent is ambiguous", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx();
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Deploy the retired service.",
+		);
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [
+				{ role: "compactionSummary", summary },
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "Photograph the login page instead." },
+					],
+				},
+				{
+					role: "user",
+					content: [{ type: "text", text: "All tests passed." }],
+				},
+			],
+		});
+
+		await pi.commands.get("checkpoint")?.handler("", ctx);
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			CHECKPOINT_CUSTOM_TYPE,
+			expect.objectContaining({
+				objective:
+					"Current objective unverified; inspect projected user turns.",
+				intentEvidence: expect.objectContaining({
+					priorObjective: "Deploy the retired service.",
+					recentUserTurns: [
+						"Photograph the login page instead.",
+						"All tests passed.",
+					],
+				}),
+			}),
+		);
+	});
+
+	it("treats an available empty projection as authoritative for checkpoints", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx();
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{
+				type: "message",
+				id: "removed",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Task: edited-away work." }],
+				},
+			},
+		]);
+		ctx.sessionManager.buildSessionProjection.mockReturnValue({
+			messages: [],
+		});
+
+		await pi.commands.get("checkpoint")?.handler("", ctx);
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			CHECKPOINT_CUSTOM_TYPE,
+			expect.objectContaining({ objective: "Continue current task." }),
+		);
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+	});
+
+	it("checkpoints compaction-aware context entries on the pinned runtime", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx();
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Photograph the login page.",
+		);
+		Object.defineProperty(ctx.sessionManager, "buildSessionProjection", {
+			value: undefined,
+			configurable: true,
+		});
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{
+				type: "message",
+				id: "old",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Task: old objective." }],
+				},
+			},
+		]);
+		ctx.sessionManager.buildContextEntries.mockReturnValue([
+			{ type: "compaction", id: "summary", summary },
+			{
+				type: "message",
+				id: "status",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "All tests passed." }],
+				},
+			},
+		]);
+
+		await pi.commands.get("checkpoint")?.handler("", ctx);
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			CHECKPOINT_CUSTOM_TYPE,
+			expect.objectContaining({ objective: "Photograph the login page." }),
+		);
+		expect(ctx.sessionManager.buildContextEntries).toHaveBeenCalledOnce();
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
 	});
 
 	it("registers the recovery query tool while pruning is disabled but keeps execution inactive", async () => {

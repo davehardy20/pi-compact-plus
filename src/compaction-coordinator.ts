@@ -1,10 +1,8 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-	type CompactionResult,
-	type ExtensionAPI,
-	type SessionBeforeCompactEvent,
-	type SessionCompactEvent,
-	sessionEntryToContextMessages,
+import type {
+	CompactionResult,
+	ExtensionAPI,
+	SessionBeforeCompactEvent,
+	SessionCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 
 import { runCustomCompaction } from "./compact.js";
@@ -17,6 +15,7 @@ import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
 import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
+import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
@@ -26,21 +25,6 @@ import {
 	REGROWTH_TOKENS,
 	type TriggerSource,
 } from "./types.js";
-
-// Newer Pi runtimes expose the canonical context-edit-aware projection. The
-// pinned 0.83 peer only has compaction-aware context entries; use those when
-// the newer method is absent rather than scanning raw branch history.
-function currentProjectedMessages(ctx: ExtensionEventContext): AgentMessage[] {
-	const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
-		buildSessionProjection?: () => { messages: AgentMessage[] };
-	};
-	if (typeof sessionManager.buildSessionProjection === "function") {
-		return sessionManager.buildSessionProjection().messages;
-	}
-	return sessionManager
-		.buildContextEntries()
-		.flatMap(sessionEntryToContextMessages);
-}
 
 const INTENT_OVERFLOW_WARNING =
 	"Compact+ intent evidence exceeds the 8 KiB safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";

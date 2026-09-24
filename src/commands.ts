@@ -12,8 +12,8 @@ import {
 	formatCheckpointSummary,
 	formatStatusLines,
 } from "./policy.js";
-import { createCurrentSessionBranchView } from "./session-branch-view.js";
-import { extractSessionSnapshotFromBranch } from "./session-evidence.js";
+import { extractSessionSnapshot } from "./session-evidence.js";
+import { currentProjectedMessages } from "./session-projection.js";
 import {
 	type CompactPlusThresholdSettings,
 	resolveCompactPlusSettings,
@@ -119,8 +119,7 @@ export function registerCompactPlusCommands(
 		description: "Save a lightweight checkpoint. Usage: /checkpoint [note]",
 		handler: async (args, ctx) => {
 			const note = args.trim() || undefined;
-			const branchView = createCurrentSessionBranchView(ctx);
-			const snapshot = extractSessionSnapshotFromBranch(branchView);
+			const snapshot = extractSessionSnapshot(currentProjectedMessages(ctx));
 			const data = buildCheckpointData(note, snapshot);
 			pi.appendEntry(CHECKPOINT_CUSTOM_TYPE, data);
 			ctx.ui.notify(formatCheckpointSummary(data), "info");
