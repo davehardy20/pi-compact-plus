@@ -80,8 +80,32 @@ Compact+ produces structured compaction summaries with these sections:
 
 The exact title (`Compaction Summary — Compact+ memory`) and all 13 headings
 must be present once; malformed custom output falls back to native Pi
-compaction. Only a genuine persisted Pi `compactionSummary` can seed a focus
-echo—assistant messages quoting a summary cannot.
+compaction. The summarizer uses Pi's active session projection, including
+recent messages retained outside the summarized slice while excluding
+superseded or context-edited messages, so the latest substantive user request
+takes precedence over older `Task:` labels. With an active objective, only
+clear requests, redirects or cancellations replace it; ambiguous declarative
+replies remain context. To avoid treating a finite phrase list as complete,
+the existing summarizer also receives every projected user turn in chronological
+order when the complete evidence fits an 8 KiB UTF-8 budget (including per-turn
+framing allowance). It never silently samples or truncates a redirect. If the
+budget is exceeded, Compact+ cancels compaction and warns; a near-full session
+may require saving its objective before choosing another compaction path. When
+the extracted objective is provisional, the helper compares the complete
+evidence with the prior task: a clear new request supersedes it, but a
+status-only reply does not. The extension's exact "Continue with the current
+task." follow-up is not treated as a new objective. If no user request
+survives after the newest compaction boundary, a validated persisted summary
+supplies it; even an invalid newer summary cannot revive an older `Task:` entry.
+Split turns remain continuity context. Checkpoints use the same authoritative
+active projection, not raw branch history, and do not certify an older objective if newer
+substantive user turns cannot be classified: they mark it unverified and carry
+bounded chronological evidence (or explicitly report evidence overflow). Branch
+summaries may still run on overflow; they retain the prior goal only as
+provisional and require comparison with branch history. Additional compaction
+guidance is bounded and subordinate to the current user request. Only a genuine
+persisted Pi `compactionSummary` can seed a focus echo—assistant
+messages quoting a summary cannot.
 
 ### Focus echo
 

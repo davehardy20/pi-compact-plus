@@ -1,4 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { detectCompactionSummary } from "./focus-echo/detection.js";
+import { extractFocusEchoDraft } from "./focus-echo/draft.js";
 import {
 	extractMessageText,
 	getAssistantToolCallBlocks,
@@ -7,7 +9,12 @@ import {
 	isToolCallArgumentsObject,
 } from "./pi-messages.js";
 import type { SessionBranchView } from "./session-branch-view.js";
-import type { CurrentFocus, SessionSnapshot } from "./types.js";
+import {
+	CONTINUATION_PROMPT,
+	type CurrentFocus,
+	type IntentEvidence,
+	type SessionSnapshot,
+} from "./types.js";
 
 /**
  * Session Evidence is the caller-facing seam for facts recovered from session
@@ -22,6 +29,14 @@ const CURRENT_FOCUS_RECENT_WINDOW = 20;
 const SNAPSHOT_RECENT_WINDOW = 20;
 const SNAPSHOT_FOCUS_RECENT_WINDOW = 30;
 const MAX_OBJECTIVE_CHARS = 200;
+const UNVERIFIED_OBJECTIVE =
+	"Current objective unverified; inspect projected user turns.";
+const UNVERIFIED_OVERFLOW_OBJECTIVE =
+	"Current objective unverified; projected user turns exceeded the safety budget.";
+// Allow complete projected user evidence or decline custom compaction; never
+// silently evict an unknown redirect to meet a per-turn/window quota.
+const MAX_INTENT_EVIDENCE_BYTES = 8 * 1024;
+const INTENT_TURN_OVERHEAD_BYTES = 48;
 const MAX_ACTIVE_FILES = 10;
 const MAX_BLOCKERS = 5;
 const MAX_DECISIONS = 5;
@@ -244,38 +259,203 @@ function hasLaterValidationSuccess(
 	});
 }
 
+function lastCompactionSummaryIndex(messages: AgentMessage[]): number {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index].role === "compactionSummary") return index;
+	}
+	return -1;
+}
+
 export function extractObjective(allMessages: AgentMessage[]): string {
-	const recent = allMessages.slice(-CURRENT_FOCUS_RECENT_WINDOW);
+	// Only post-summary messages can replace a persisted objective. Even an
+	// invalid newer summary is a boundary: never revive a pre-compaction task.
+	const activeMessages = allMessages.slice(
+		lastCompactionSummaryIndex(allMessages) + 1,
+	);
+	let initialUnlabeled: string | undefined;
+	for (let i = activeMessages.length - 1; i >= 0; i--) {
+		const message = [activeMessages[i]];
+		const explicit = findExplicitObjective(message);
+		if (explicit) return explicit;
+		const substantial = findSubstantialObjective(message);
+		if (!substantial) continue;
+		if (isClearRequest(substantial)) return substantial;
+		initialUnlabeled = substantial;
+	}
+	// On repeated compaction, no original user request may survive the active
+	// projection. Only validated, persisted Pi memory can supply that objective.
+	const persisted = detectCompactionSummary(allMessages);
+	if (persisted.found) {
+		const objective = extractFocusEchoDraft(persisted.summaryText).objective;
+		if (objective) return objective.slice(0, MAX_OBJECTIVE_CHARS);
+	}
+	return initialUnlabeled ?? "Continue current task.";
+}
 
-	const recentExplicit = findExplicitObjective(recent);
-	if (recentExplicit) return recentExplicit;
+function extractIntentEvidence(
+	messages: AgentMessage[],
+	priorObjective: string,
+): IntentEvidence | undefined {
+	const userTurns: string[] = [];
+	let evidenceBytes = 0;
+	for (const message of messages.slice(
+		lastCompactionSummaryIndex(messages) + 1,
+	)) {
+		if (message.role !== "user") continue;
+		const turn = extractTextContent(message)
+			.split(/\n/)
+			.map((line) => line.trim())
+			.filter((line) => line && line !== CONTINUATION_PROMPT)
+			.join("\n");
+		if (!turn) continue;
+		evidenceBytes +=
+			Buffer.byteLength(turn, "utf8") + INTENT_TURN_OVERHEAD_BYTES;
+		if (evidenceBytes > MAX_INTENT_EVIDENCE_BYTES) {
+			return {
+				priorObjective,
+				certainty: "provisional",
+				recentUserTurns: [],
+				overflow: true,
+			};
+		}
+		userTurns.push(turn);
+	}
+	if (userTurns.length === 0) {
+		return detectCompactionSummary(messages).found
+			? { priorObjective, certainty: "memory", recentUserTurns: [] }
+			: undefined;
+	}
+	// The final projected user line controls certainty, not the last line
+	// recognized by our finite verb vocabulary. Unknown redirects remain visible.
+	const lastUserLine = userTurns.at(-1)?.split("\n").at(-1);
+	const explicit = lastUserLine?.match(
+		/^(?:task|goal|objective|mission):\s*(.+)/i,
+	);
+	return {
+		priorObjective,
+		certainty:
+			explicit?.[1].trim() === priorObjective ? "confirmed" : "provisional",
+		recentUserTurns: userTurns,
+	};
+}
 
-	const recentSubstantial = findSubstantialObjective(recent);
-	if (recentSubstantial) return recentSubstantial;
+function hasUnverifiedCheckpointObjective(
+	messages: AgentMessage[],
+	priorObjective: string,
+): boolean {
+	let unresolved = false;
+	for (const message of messages.slice(
+		lastCompactionSummaryIndex(messages) + 1,
+	)) {
+		if (message.role !== "user") continue;
+		for (const line of extractTextContent(message).split(/\n/)) {
+			const text = line.trim();
+			if (!text || text === CONTINUATION_PROMPT) continue;
+			const candidate = objectiveLineContent(text);
+			if (isStatusOnlyReply(candidate)) continue;
+			// A later confirmed objective resets uncertainty from earlier turns.
+			// An unfamiliar substantive turn after it must not certify that goal
+			// in a persisted checkpoint, even when both occur in one message.
+			unresolved = candidate !== priorObjective;
+		}
+	}
+	return unresolved;
+}
 
-	const fullExplicit = findExplicitObjective(allMessages);
-	if (fullExplicit) return fullExplicit;
+function objectiveLineContent(line: string): string {
+	return (
+		line.match(/^(?:task|goal|objective|mission):\s*(.*)/i)?.[1].trim() ?? line
+	);
+}
 
-	const fullSubstantial = findSubstantialObjective(allMessages);
-	if (fullSubstantial) return fullSubstantial;
+function firstObjectiveLine(msg: AgentMessage): string | undefined {
+	if (msg.role !== "user") return undefined;
+	// Prefer an actionable line even when a preceding status uses unfamiliar
+	// wording. Ignore exact generated continuation and empty labels.
+	const candidates = extractTextContent(msg)
+		.split(/\n/)
+		.map((line) => line.trim())
+		.filter((line) => {
+			if (!line || line === CONTINUATION_PROMPT) return false;
+			const content = objectiveLineContent(line);
+			return content.length > 0 && !isStatusOnlyReply(content);
+		});
+	const actionable = candidates.filter(
+		(line) =>
+			/^(?:task|goal|objective|mission):\s*\S/i.test(line) ||
+			isClearRequest(objectiveLineContent(line)),
+	);
+	return actionable.at(-1) ?? candidates[0];
+}
 
-	return "Continue current task.";
+// Acknowledgements and successful status updates are evidence about progress,
+// not replacements for the user's active request. All conjoined clauses must
+// independently describe a status; an attached directive remains eligible.
+function isStatusOnlyClause(text: string): boolean {
+	const clause = text
+		.trim()
+		.replace(/[,.!?]+$/, "")
+		.trim();
+	if (isConversationalFiller(clause)) return true;
+	return [
+		/^(?:thanks|thank you),? (?:that|this|it) (?:helped|works?|is (?:great|good|fine|fixed|resolved))$/,
+		/^(?:that|this|it|everything) works?(?: now)?$/,
+		/^(?:that|this|it|everything) (?:is|was|looks?) (?:good|fine|okay|working|fixed|resolved|done|complete)(?: now)?$/,
+		/^(?:(?:the|all|my|our) )?(?:checks?|tests?|build|ci) (?:is|are|was|were) (?:green|passing|working|done|complete|successful)(?: now)?$/,
+		/^(?:(?:the|all|my|our) )?(?:checks?|tests?|build|ci) (?:passed|succeeded|completed)(?: now)?$/,
+		/^i(?:'ve| have)? (?:finished|completed|fixed|resolved|done|merged|deployed) (?:(?:that|this|it)(?: part)?|the [a-z0-9 -]+)$/,
+		/^i(?:'m| am) done(?: with (?:that|this|it))?$/,
+	].some((pattern) => pattern.test(clause));
+}
+
+function isStatusOnlyReply(text: string): boolean {
+	const normalized = text
+		.trim()
+		.toLowerCase()
+		.replace(/\u2019/g, "'")
+		.replace(/[.!?]+$/, "")
+		.replace(/,?\s*(?:thanks|thank you)[.!?]*$/, "")
+		.trim();
+	return normalized
+		.split(/,?\s+(?:and|but)\s+|;\s*/)
+		.every((clause) => isStatusOnlyClause(clause));
+}
+
+// A cancellation overrides an active goal even below the usual length floor.
+function isShortCancellation(text: string): boolean {
+	return /^(?:stop|cancel|abort|never mind|scratch that|forget it|drop it)$/i.test(
+		text.trim().replace(/[.!?]+$/, ""),
+	);
+}
+
+// Conservative objective precedence: ambiguous declarative replies do not
+// replace an existing task. A later clause can still introduce a clear request.
+function isClearRequest(text: string): boolean {
+	const normalized = text
+		.trim()
+		.toLowerCase()
+		.replace(/\u2019/g, "'");
+	if (isShortCancellation(normalized) || normalized.endsWith("?")) return true;
+	return normalized
+		.split(/[,;.!?:—–]\s*(?:and|but)?\s*|\s+(?:and|but)\s+/)
+		.some((part) => {
+			const clause = part.trim();
+			if (isShortCancellation(clause)) return true;
+			if (/^(?:please|kindly)\s+\S/.test(clause)) return true;
+			return /^(?:(?:actually|instead|now|next|no)\b[,:]?\s*)*(?:(?:stop|cancel|abort|repair|fix|investigate|update|build|implement|run|test|check|add|remove|create|move|change|use|find|review|explain|help|research|write|deploy|start|continue|complete|summarize|show|tell|debug|improve|refactor|look|analyze|focus|switch|pivot|forget|drop|do|don't)\b|(?:can|could|would|will|shall)\s+(?:you|we|i)\b|(?:i|we)\s+(?:need|want|should|would like)\b|i(?:'d| would)\s+rather\b|(?:let's|let us|you\s+(?:should|need to))\b)/.test(
+				clause,
+			);
+		});
 }
 
 export function findExplicitObjective(
 	messages: AgentMessage[],
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "user") {
-			const text = extractTextContent(msg);
-			const firstLine = text.split(/\n/).find((l) => l.trim().length > 0) ?? "";
-			const match = firstLine.match(
-				/^(?:task|goal|objective|mission):\s*(.+)/i,
-			);
-			if (match) {
-				return match[1].trim().slice(0, MAX_OBJECTIVE_CHARS);
-			}
+		const firstLine = firstObjectiveLine(messages[i]);
+		const match = firstLine?.match(/^(?:task|goal|objective|mission):\s*(.+)/i);
+		if (match && !isStatusOnlyReply(match[1])) {
+			return match[1].trim().slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
 	return undefined;
@@ -285,13 +465,14 @@ export function findSubstantialObjective(
 	messages: AgentMessage[],
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "user") {
-			const text = extractTextContent(msg);
-			const firstLine = text.split(/\n/).find((l) => l.trim().length > 0) ?? "";
-			if (firstLine.length > 5 && !isConversationalFiller(firstLine)) {
-				return firstLine.slice(0, MAX_OBJECTIVE_CHARS);
-			}
+		const firstLine = firstObjectiveLine(messages[i]);
+		if (!firstLine) continue;
+		const content = objectiveLineContent(firstLine);
+		if (
+			isShortCancellation(content) ||
+			(content.length > 5 && !isStatusOnlyReply(content))
+		) {
+			return firstLine.slice(0, MAX_OBJECTIVE_CHARS);
 		}
 	}
 	return undefined;
@@ -732,7 +913,14 @@ export function extractCurrentFocus(messages: AgentMessage[]): CurrentFocus {
 	const activeFiles = extractActiveFiles(messages);
 	const blockers = extractBlockers(recent);
 	const dependencyChain = extractDependencyChain(recent, decisions);
-	return { objective, blockers, decisions, activeFiles, dependencyChain };
+	return {
+		objective,
+		intentEvidence: extractIntentEvidence(messages, objective),
+		blockers,
+		decisions,
+		activeFiles,
+		dependencyChain,
+	};
 }
 
 export function extractCurrentFocusFromBranch(
@@ -746,13 +934,27 @@ export function extractSessionSnapshot(
 ): SessionSnapshot {
 	const recent = messages.slice(-SNAPSHOT_RECENT_WINDOW);
 	const focusRecent = messages.slice(-SNAPSHOT_FOCUS_RECENT_WINDOW);
-	const objective = extractObjective(messages);
+	const priorObjective = extractObjective(messages);
+	// A deterministic matcher cannot certify an unfamiliar redirect. A
+	// checkpoint must not persist the older task as its current objective when
+	// a newer substantive turn was not classified; carry bounded chronological
+	// evidence and require a reader to resolve the uncertainty.
+	const unresolved = hasUnverifiedCheckpointObjective(messages, priorObjective);
+	const intentEvidence = unresolved
+		? extractIntentEvidence(messages, priorObjective)
+		: undefined;
+	const objective = unresolved
+		? intentEvidence?.overflow
+			? UNVERIFIED_OVERFLOW_OBJECTIVE
+			: UNVERIFIED_OBJECTIVE
+		: priorObjective;
 	const blockers = extractBlockers(recent);
 	const decisions = extractDecisions(recent);
 	const activeFiles = extractActiveFiles(recent);
 	const dependencyChain = extractDependencyChain(recent, decisions);
 	return {
 		objective,
+		...(unresolved ? { intentEvidence } : {}),
 		blockers,
 		decisions,
 		activeFiles,

@@ -63,8 +63,17 @@ export interface CompactPlusStatus {
 	thresholdSettings?: CompactPlusThresholdSettings;
 }
 
+export interface IntentEvidence {
+	priorObjective: string;
+	certainty: "confirmed" | "provisional" | "memory";
+	recentUserTurns: string[];
+	/** Entire projected user evidence is unavailable when the byte budget is exceeded. */
+	overflow?: boolean;
+}
+
 export interface CurrentFocus {
 	objective: string;
+	intentEvidence?: IntentEvidence;
 	blockers: string[];
 	decisions: string[];
 	activeFiles: string[];
@@ -95,6 +104,7 @@ export interface CheckpointData extends SessionSnapshot {
 
 export interface SummaryInstructionOptions {
 	previousSummary?: string;
+	customInstructions?: string;
 	isSplitTurn: boolean;
 	turnPrefixCount: number;
 }

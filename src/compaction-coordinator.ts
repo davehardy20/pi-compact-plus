@@ -14,12 +14,8 @@ import { buildPersistedFocusEcho } from "./focus-echo/index.js";
 import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
-import { createCurrentSessionBranchView } from "./session-branch-view.js";
-import {
-	extractCurrentFocus,
-	extractCurrentFocusFromBranch,
-	extractTextContent,
-} from "./session-evidence.js";
+import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
+import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
@@ -29,6 +25,9 @@ import {
 	REGROWTH_TOKENS,
 	type TriggerSource,
 } from "./types.js";
+
+const INTENT_OVERFLOW_WARNING =
+	"Compact+ intent evidence exceeds the 8 KiB safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
@@ -87,8 +86,11 @@ export class CompactionCoordinator {
 
 		this.state.lastTriggerAuto = false;
 
-		const cmdBranchView = createCurrentSessionBranchView(ctx);
-		const cmdFocus = extractCurrentFocusFromBranch(cmdBranchView);
+		const cmdFocus = extractCurrentFocus(currentProjectedMessages(ctx));
+		if (cmdFocus.intentEvidence?.overflow) {
+			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return;
+		}
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
@@ -151,6 +153,15 @@ export class CompactionCoordinator {
 		// Prevent double-triggering within the same turn.
 		if (this.state.isSameTurn(turnIndex)) return;
 
+		const autoFocus = extractCurrentFocus(currentProjectedMessages(ctx));
+		if (autoFocus.intentEvidence?.overflow) {
+			// Throttle repeated warnings at the settled boundary without starting
+			// a compaction that cannot carry all projected user evidence.
+			this.state.lastCompactTime = now;
+			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return;
+		}
+
 		this.state.selectedMode = mode;
 		this.state.isCompacting = true;
 		this.state.lastCompactTime = now;
@@ -158,9 +169,6 @@ export class CompactionCoordinator {
 		if (turnIndex !== undefined) {
 			this.state.lastCompactTurnIndex = turnIndex;
 		}
-
-		const autoBranchView = createCurrentSessionBranchView(ctx);
-		const autoFocus = extractCurrentFocusFromBranch(autoBranchView);
 
 		const percentText =
 			usage.percent === null ? "unknown" : `${usage.percent.toFixed(0)}%`;
@@ -188,13 +196,20 @@ export class CompactionCoordinator {
 			return undefined;
 		}
 
-		const focusMessages = event.preparation.isSplitTurn
-			? [
-					...event.preparation.messagesToSummarize,
-					...event.preparation.turnPrefixMessages,
-				]
-			: event.preparation.messagesToSummarize;
-		const focus = extractCurrentFocus(focusMessages);
+		// Pi omits retained messages from preparation.messagesToSummarize.
+		// The active projection includes them while honoring context edits and
+		// prior compactions. An empty projection is authoritative: never revive
+		// edited-away requests from raw branch entries or preparation messages.
+		const focus = extractCurrentFocus(currentProjectedMessages(ctx));
+		if (focus.intentEvidence?.overflow) {
+			this.state.selectedMode = null;
+			this.state.isCompacting = false;
+			this.state.lastTriggerAuto = false;
+			this.state.clearPendingCompaction();
+			this.state.lastFallbackReason = "intent evidence exceeds safety budget";
+			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return { cancel: true };
+		}
 		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,
@@ -258,6 +273,7 @@ export class CompactionCoordinator {
 			ctx,
 			compatibility,
 			event.signal,
+			{ focus, customInstructions: event.customInstructions },
 		);
 
 		if (attempt.result) {

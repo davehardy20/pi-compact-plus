@@ -7,7 +7,9 @@ import {
 	extractDependencyChain,
 	extractOpenProblems,
 	extractSessionSnapshot,
+	extractTextContent,
 } from "../src/session-evidence.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 function userMessage(text: string): AgentMessage {
 	return {
@@ -71,6 +73,409 @@ describe("evidence-weighted session snapshot extraction", () => {
 			"deepen the Session Evidence seam.",
 		);
 	});
+
+	it("prefers the newest substantive request over an older Task label", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("Stop that deployment; repair the login flow instead."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Stop that deployment; repair the login flow instead.",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Stop that deployment; repair the login flow instead.",
+		);
+	});
+
+	it("ignores only the exact generated continuation, not a new instruction", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("Cancel deployment and repair login instead."),
+			userMessage("Continue with the current task."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Cancel deployment and repair login instead.",
+		);
+		messages.push(userMessage("Task: ok"));
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Cancel deployment and repair login instead.",
+		);
+		messages.push(
+			userMessage(
+				"Continue with the current task, but add a login test first.",
+			),
+		);
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Continue with the current task, but add a login test first.",
+		);
+		messages.push(
+			userMessage(
+				"Continue with the current task.\nActually, run login tests now.",
+			),
+		);
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Actually, run login tests now.",
+		);
+	});
+
+	it("exposes bounded chronological evidence when a newer request is not recognized", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("All tests passed."),
+			userMessage("I'd like to investigate login instead."),
+		];
+		const focus = extractCurrentFocus(messages);
+		expect(focus.intentEvidence).toEqual({
+			priorObjective: "deploy the retired service.",
+			certainty: "provisional",
+			recentUserTurns: [
+				"Task: deploy the retired service.",
+				"All tests passed.",
+				"I'd like to investigate login instead.",
+			],
+		});
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage("All tests passed."),
+			]).intentEvidence?.certainty,
+		).toBe("provisional");
+		const sameMessage = extractCurrentFocus([
+			userMessage(
+				"Task: deploy the retired service.\nI'd like to investigate login instead.",
+			),
+		]);
+		expect(sameMessage.intentEvidence?.certainty).toBe("provisional");
+		expect(sameMessage.intentEvidence?.recentUserTurns).toContain(
+			"Task: deploy the retired service.\nI'd like to investigate login instead.",
+		);
+	});
+
+	it("keeps every projected turn when a redirect precedes many status and diagnostic notes", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			userMessage("I'd like to investigate login instead."),
+			...Array.from({ length: 8 }, (_, index) =>
+				userMessage(`Diagnostic note ${index}: network trace reviewed.`),
+			),
+			...Array.from({ length: 8 }, () => userMessage("All tests passed.")),
+		];
+		const focus = extractCurrentFocus(messages);
+		expect(focus.intentEvidence?.certainty).toBe("provisional");
+		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(messages.length);
+		expect(focus.intentEvidence?.recentUserTurns[1]).toBe(
+			"I'd like to investigate login instead.",
+		);
+		expect(focus.intentEvidence?.recentUserTurns.at(-1)).toBe(
+			"All tests passed.",
+		);
+	});
+
+	it("includes complete under-budget turns while ignoring exact generated continuation", () => {
+		const focus = extractCurrentFocus([
+			userMessage("Task: repair login."),
+			userMessage("Continue with the current task."),
+			...Array.from({ length: 8 }, (_, index) =>
+				userMessage(`Note ${index}: ${"x".repeat(800)}`),
+			),
+		]);
+		expect(focus.intentEvidence?.recentUserTurns).toHaveLength(9);
+		expect(focus.intentEvidence?.recentUserTurns[1]).toBe(
+			`Note 0: ${"x".repeat(800)}`,
+		);
+		expect(focus.intentEvidence?.recentUserTurns.join(" ")).not.toContain(
+			"Continue with the current task.",
+		);
+	});
+
+	it("marks complete evidence as unavailable on budget overflow", () => {
+		const focus = extractCurrentFocus([
+			userMessage("Task: repair login."),
+			userMessage(`I'd like to switch. ${"x".repeat(9_000)}`),
+		]);
+		expect(focus.intentEvidence?.overflow).toBe(true);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+	});
+
+	it("rejects many short turns when their framing also exceeds the total budget", () => {
+		const focus = extractCurrentFocus(
+			Array.from({ length: 200 }, (_, index) =>
+				userMessage(`Diagnostic note ${index}.`),
+			),
+		);
+		expect(focus.intentEvidence?.overflow).toBe(true);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+	});
+
+	it("keeps an active task over unlabeled declarative status or problem reports", () => {
+		const earlier = userMessage("Task: deploy the retired service.");
+		for (const reply of ["All tests passed.", "The login flow fails."]) {
+			expect(extractCurrentFocus([earlier, userMessage(reply)]).objective).toBe(
+				"deploy the retired service.",
+			);
+		}
+		expect(
+			extractCurrentFocus([
+				userMessage("Investigate the login flow."),
+				userMessage("All tests passed."),
+			]).objective,
+		).toBe("Investigate the login flow.");
+		expect(
+			extractCurrentFocus([userMessage("The login flow fails.")]).objective,
+		).toBe("The login flow fails.");
+	});
+
+	it("accepts clear new requests after a status update", () => {
+		for (const reply of [
+			"Tests passed, but please repair login.",
+			"I need help with login.",
+			"All tests passed.\nPlease repair login.",
+			"Switch to repairing login instead.",
+			"Instead, focus on the login bug.",
+			"I'd rather investigate login.",
+			"Please take another look at login.",
+			"Wait—never mind.",
+			"No—stop the deployment.",
+		]) {
+			expect(
+				extractCurrentFocus([
+					userMessage("Task: deploy the retired service."),
+					userMessage(reply),
+				]).objective,
+			).toBe(reply.includes("\n") ? "Please repair login." : reply);
+		}
+	});
+
+	it("recovers an objective from genuine persisted memory on repeated compaction", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Repair login without redeploying.",
+		);
+		const persisted = {
+			role: "compactionSummary",
+			summary,
+		} as AgentMessage;
+		const messages = [
+			persisted,
+			userMessage("Continue with the current task."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Repair login without redeploying.",
+		);
+		expect(extractCurrentFocus(messages).intentEvidence?.certainty).toBe(
+			"memory",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Repair login without redeploying.",
+		);
+		messages.push(userMessage("All tests passed."));
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Repair login without redeploying.",
+		);
+		messages.push(userMessage("Cancel that repair and investigate tests."));
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Cancel that repair and investigate tests.",
+		);
+	});
+
+	it("does not revive a pre-compaction task over a newer persisted objective", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Photograph the login page.",
+		);
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			{ role: "compactionSummary", summary } as AgentMessage,
+			userMessage("All tests passed."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Photograph the login page.",
+		);
+		const snapshot = extractSessionSnapshot(messages);
+		expect(snapshot.objective).toBe("Photograph the login page.");
+		expect(snapshot.intentEvidence).toBeUndefined();
+		const focus = extractCurrentFocus(messages);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([
+			"All tests passed.",
+		]);
+	});
+
+	it("does not revive a pre-compaction task when the newer summary is invalid", () => {
+		const messages = [
+			userMessage("Task: deploy the retired service."),
+			{ role: "compactionSummary", summary: "invalid" } as AgentMessage,
+			userMessage("Continue with the current task."),
+		];
+		expect(extractCurrentFocus(messages).objective).toBe(
+			"Continue current task.",
+		);
+		expect(extractSessionSnapshot(messages).objective).toBe(
+			"Continue current task.",
+		);
+	});
+
+	it("does not certify older persisted intent in a checkpoint after an unknown redirect", () => {
+		const summary = VALID_STRUCTURED_SUMMARY.replace(
+			"Finish the current repair.",
+			"Deploy the retired service.",
+		);
+		const messages = [
+			{ role: "compactionSummary", summary } as AgentMessage,
+			userMessage("Photograph the login page instead."),
+			...Array.from({ length: 7 }, (_, index) =>
+				userMessage(`Diagnostic note ${index}: trace reviewed.`),
+			),
+		];
+		const snapshot = extractSessionSnapshot(messages);
+		expect(snapshot.objective).toBe(
+			"Current objective unverified; inspect projected user turns.",
+		);
+		expect(snapshot.intentEvidence?.priorObjective).toBe(
+			"Deploy the retired service.",
+		);
+		expect(snapshot.intentEvidence?.certainty).toBe("provisional");
+		expect(snapshot.intentEvidence?.recentUserTurns).toEqual(
+			messages.slice(1).map((message) => extractTextContent(message)),
+		);
+	});
+
+	it("leaves a same-message unrecognized redirect unverified in a checkpoint", () => {
+		const snapshot = extractSessionSnapshot([
+			userMessage(
+				"Task: deploy the retired service.\nPhotograph the login page instead.",
+			),
+			userMessage("All tests passed."),
+		]);
+		expect(snapshot.objective).toBe(
+			"Current objective unverified; inspect projected user turns.",
+		);
+		expect(snapshot.intentEvidence?.recentUserTurns[0]).toContain(
+			"Photograph the login page instead.",
+		);
+	});
+
+	it("does not promise missing checkpoint evidence on overflow", () => {
+		const snapshot = extractSessionSnapshot([
+			userMessage("Task: repair login."),
+			userMessage(`Photograph login instead. ${"x".repeat(9_000)}`),
+		]);
+		expect(snapshot.objective).toBe(
+			"Current objective unverified; projected user turns exceeded the safety budget.",
+		);
+		expect(snapshot.intentEvidence?.overflow).toBe(true);
+		expect(snapshot.intentEvidence?.recentUserTurns).toEqual([]);
+	});
+
+	it("does not recover objective from assistant prose or invalid persisted memory", () => {
+		const summary = VALID_STRUCTURED_SUMMARY;
+		expect(
+			extractCurrentFocus([
+				assistantText(summary),
+				userMessage("Continue with the current task."),
+			]).objective,
+		).toBe("Continue current task.");
+		expect(
+			extractCurrentFocus([
+				{ role: "compactionSummary", summary } as AgentMessage,
+				{ role: "compactionSummary", summary: "invalid" } as AgentMessage,
+				userMessage("Continue with the current task."),
+			]).objective,
+		).toBe("Continue current task.");
+	});
+
+	it.each(["Task:", "Goal:", "Objective:"])(
+		"takes the direction after an empty multiline %s label",
+		(label) => {
+			expect(
+				extractCurrentFocus([
+					userMessage("Task: deploy the retired service."),
+					userMessage(`${label}\nRepair the login flow instead.`),
+				]).objective,
+			).toBe("Repair the login flow instead.");
+		},
+	);
+
+	it("takes a later labelled task even when its verb is not recognized", () => {
+		expect(
+			extractCurrentFocus([
+				userMessage(
+					"Task: repair the login page.\nTask: photograph the login page instead.",
+				),
+			]).objective,
+		).toBe("photograph the login page instead.");
+	});
+
+	it("takes the last actionable line over an earlier Task label in one message", () => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage(
+					"Task: deploy the retired service.\nActually, repair login instead.",
+				),
+			]).objective,
+		).toBe("Actually, repair login instead.");
+	});
+
+	it("takes a new instruction after a status-only line in the same message", () => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage("Looks good, thanks.\nActually, repair login instead."),
+			]).objective,
+		).toBe("Actually, repair login instead.");
+	});
+
+	it.each([
+		"Looks good, thank you!",
+		"That works now, thanks.",
+		"The checks are green now.",
+		"The tests passed.",
+		"I've finished that part.",
+		"I fixed the login flow.",
+		"Thanks, that helped.",
+		"The tests passed and the build is green.",
+		"That works now, and the checks are green.",
+	])("does not replace a task with a status-only reply: %s", (reply) => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: repair the login flow."),
+				userMessage(reply),
+			]).objective,
+		).toBe("repair the login flow.");
+	});
+
+	it.each([
+		"That works now; next, repair the login flow.",
+		"Looks good, but repair the login flow.",
+		"The tests passed and repair the login flow.",
+		"The tests failed; please repair the login flow.",
+	])("keeps a new request attached to a status update: %s", (request) => {
+		expect(
+			extractCurrentFocus([
+				userMessage("Task: deploy the retired service."),
+				userMessage(request),
+			]).objective,
+		).toBe(request);
+	});
+
+	it.each([
+		"Stop!",
+		"Cancel.",
+		"Abort.",
+		"Never mind.",
+		"Scratch that.",
+		"Forget it.",
+	])(
+		"keeps a short cancellation as the latest objective: %s",
+		(cancellation) => {
+			expect(
+				extractCurrentFocus([
+					userMessage("Task: deploy the retired service."),
+					userMessage(cancellation),
+				]).objective,
+			).toBe(cancellation);
+		},
+	);
 
 	it("does not treat unsupported assistant self-reports as completed work", () => {
 		const completedWork = extractCompletedWork([
