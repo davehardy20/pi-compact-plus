@@ -482,6 +482,15 @@ The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 reviewed Pi 0.87.1 SDK follow-up under `pi-compact-plus-02f1` must replace this
 intermediate baseline before that issue can close.
 
+Compact+ keeps every projected user turn since the last compaction in its
+intent-evidence prompt, including unrecognized redirects. The default 8 KiB
+budget expands only when native usage confirms spare model context: at most a
+quarter of the remaining tokens after a 16,384-token reserve, capped at 256 KiB.
+This lets a 1M-context session compact near a configured 180k-token threshold
+even when user evidence exceeds 8 KiB. If the full evidence still will not fit,
+compaction cancels rather than silently dropping instructions; estimated or
+inconsistent usage does not raise the budget.
+
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.
 - **F2 — genuine summary provenance:** `test/index.test.ts` rejects spoofed/fenced

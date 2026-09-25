@@ -12,6 +12,7 @@ import type { SessionBranchView } from "./session-branch-view.js";
 import {
 	CONTINUATION_PROMPT,
 	type CurrentFocus,
+	type EffectiveUsage,
 	type IntentEvidence,
 	type SessionSnapshot,
 } from "./types.js";
@@ -35,8 +36,36 @@ const UNVERIFIED_OVERFLOW_OBJECTIVE =
 	"Current objective unverified; projected user turns exceeded the safety budget.";
 // Allow complete projected user evidence or decline custom compaction; never
 // silently evict an unknown redirect to meet a per-turn/window quota.
-const MAX_INTENT_EVIDENCE_BYTES = 8 * 1024;
+const DEFAULT_INTENT_EVIDENCE_BYTES = 8 * 1024;
+const MAX_INTENT_EVIDENCE_BYTES = 256 * 1024;
+const COMPACTION_PROMPT_RESERVE_TOKENS = 16_384;
 const INTENT_TURN_OVERHEAD_BYTES = 48;
+
+/** Spend at most a quarter of verified native context headroom on exact user turns. */
+export function intentEvidenceBudgetForUsage(
+	usage: EffectiveUsage | null,
+): number {
+	if (
+		usage?.source !== "native" ||
+		!Number.isSafeInteger(usage.tokens) ||
+		!Number.isSafeInteger(usage.contextWindow) ||
+		usage.tokens === null ||
+		usage.tokens < 0 ||
+		usage.contextWindow <= 0 ||
+		usage.tokens >= usage.contextWindow ||
+		typeof usage.percent !== "number" ||
+		!Number.isFinite(usage.percent) ||
+		Math.abs(usage.percent - (usage.tokens / usage.contextWindow) * 100) > 1
+	) {
+		return DEFAULT_INTENT_EVIDENCE_BYTES;
+	}
+	const available =
+		usage.contextWindow - usage.tokens - COMPACTION_PROMPT_RESERVE_TOKENS;
+	return Math.max(
+		DEFAULT_INTENT_EVIDENCE_BYTES,
+		Math.min(MAX_INTENT_EVIDENCE_BYTES, Math.floor(available / 4)),
+	);
+}
 const MAX_ACTIVE_FILES = 10;
 const MAX_BLOCKERS = 5;
 const MAX_DECISIONS = 5;
@@ -295,6 +324,7 @@ export function extractObjective(allMessages: AgentMessage[]): string {
 function extractIntentEvidence(
 	messages: AgentMessage[],
 	priorObjective: string,
+	budgetBytes = DEFAULT_INTENT_EVIDENCE_BYTES,
 ): IntentEvidence | undefined {
 	const userTurns: string[] = [];
 	let evidenceBytes = 0;
@@ -310,7 +340,7 @@ function extractIntentEvidence(
 		if (!turn) continue;
 		evidenceBytes +=
 			Buffer.byteLength(turn, "utf8") + INTENT_TURN_OVERHEAD_BYTES;
-		if (evidenceBytes > MAX_INTENT_EVIDENCE_BYTES) {
+		if (evidenceBytes > budgetBytes) {
 			return {
 				priorObjective,
 				certainty: "provisional",
@@ -906,7 +936,16 @@ export function extractFailedAttempts(messages: AgentMessage[]): string[] {
 	return uniqueLast(items, MAX_BLOCKERS);
 }
 
-export function extractCurrentFocus(messages: AgentMessage[]): CurrentFocus {
+export function extractCurrentFocus(
+	messages: AgentMessage[],
+	budgetBytes = DEFAULT_INTENT_EVIDENCE_BYTES,
+): CurrentFocus {
+	const safeBudget =
+		Number.isSafeInteger(budgetBytes) &&
+		budgetBytes >= DEFAULT_INTENT_EVIDENCE_BYTES &&
+		budgetBytes <= MAX_INTENT_EVIDENCE_BYTES
+			? budgetBytes
+			: DEFAULT_INTENT_EVIDENCE_BYTES;
 	const recent = messages.slice(-CURRENT_FOCUS_RECENT_WINDOW);
 	const objective = extractObjective(messages);
 	const decisions = extractDecisions(messages);
@@ -915,7 +954,7 @@ export function extractCurrentFocus(messages: AgentMessage[]): CurrentFocus {
 	const dependencyChain = extractDependencyChain(recent, decisions);
 	return {
 		objective,
-		intentEvidence: extractIntentEvidence(messages, objective),
+		intentEvidence: extractIntentEvidence(messages, objective, safeBudget),
 		blockers,
 		decisions,
 		activeFiles,

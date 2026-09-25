@@ -14,7 +14,11 @@ import { buildPersistedFocusEcho } from "./focus-echo/index.js";
 import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
-import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
+import {
+	extractCurrentFocus,
+	extractTextContent,
+	intentEvidenceBudgetForUsage,
+} from "./session-evidence.js";
 import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
@@ -27,7 +31,7 @@ import {
 } from "./types.js";
 
 const INTENT_OVERFLOW_WARNING =
-	"Compact+ intent evidence exceeds the 8 KiB safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
+	"Compact+ intent evidence exceeds the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
@@ -95,7 +99,10 @@ export class CompactionCoordinator {
 
 		this.state.lastTriggerAuto = false;
 
-		const cmdFocus = extractCurrentFocus(currentProjectedMessages(ctx));
+		const cmdFocus = extractCurrentFocus(
+			currentProjectedMessages(ctx),
+			intentEvidenceBudgetForUsage(this.getEffectiveUsage(ctx)),
+		);
 		if (cmdFocus.intentEvidence?.overflow) {
 			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
 			return;
@@ -162,7 +169,10 @@ export class CompactionCoordinator {
 		// Prevent double-triggering within the same turn.
 		if (this.state.isSameTurn(turnIndex)) return;
 
-		const autoFocus = extractCurrentFocus(currentProjectedMessages(ctx));
+		const autoFocus = extractCurrentFocus(
+			currentProjectedMessages(ctx),
+			intentEvidenceBudgetForUsage(usage),
+		);
 		if (autoFocus.intentEvidence?.overflow) {
 			// Throttle repeated warnings at the settled boundary without starting
 			// a compaction that cannot carry all projected user evidence.
@@ -213,7 +223,11 @@ export class CompactionCoordinator {
 		// The active projection includes them while honoring context edits and
 		// prior compactions. An empty projection is authoritative: never revive
 		// edited-away requests from raw branch entries or preparation messages.
-		const focus = extractCurrentFocus(currentProjectedMessages(ctx));
+		const usage = this.getEffectiveUsage(ctx);
+		const focus = extractCurrentFocus(
+			currentProjectedMessages(ctx),
+			intentEvidenceBudgetForUsage(usage),
+		);
 		if (focus.intentEvidence?.overflow) {
 			this.state.selectedMode = null;
 			this.state.isCompacting = false;
@@ -223,7 +237,6 @@ export class CompactionCoordinator {
 			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
 			return { cancel: true };
 		}
-		const usage = this.getEffectiveUsage(ctx);
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,
 			modelRegistry: ctx.modelRegistry as { streamSimple?: unknown },

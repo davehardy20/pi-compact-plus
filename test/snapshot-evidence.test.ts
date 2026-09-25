@@ -8,6 +8,7 @@ import {
 	extractOpenProblems,
 	extractSessionSnapshot,
 	extractTextContent,
+	intentEvidenceBudgetForUsage,
 } from "../src/session-evidence.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
@@ -186,6 +187,65 @@ describe("evidence-weighted session snapshot extraction", () => {
 		expect(focus.intentEvidence?.recentUserTurns.join(" ")).not.toContain(
 			"Continue with the current task.",
 		);
+	});
+
+	it("scales the exact-evidence budget only with verified native headroom", () => {
+		const native = {
+			percent: 18.4,
+			tokens: 183_988,
+			contextWindow: 1_000_000,
+			source: "native" as const,
+		};
+		const budget = intentEvidenceBudgetForUsage(native);
+		expect(budget).toBeGreaterThan(12_000);
+		expect(budget).toBeLessThanOrEqual(256 * 1024);
+		const redirect = `Unknown redirect: ${"x".repeat(12_000)}`;
+		const messages = [
+			userMessage("Task: investigate login"),
+			userMessage(redirect),
+		];
+		expect(extractCurrentFocus(messages).intentEvidence?.overflow).toBe(true);
+		const evidence = extractCurrentFocus(messages, budget).intentEvidence;
+		expect(evidence?.overflow).toBeUndefined();
+		expect(evidence?.recentUserTurns).toEqual([
+			"Task: investigate login",
+			redirect,
+		]);
+		const tooLarge = extractCurrentFocus(
+			[userMessage("Task: investigate login"), userMessage("y".repeat(budget))],
+			budget,
+		).intentEvidence;
+		expect(tooLarge?.overflow).toBe(true);
+		expect(tooLarge?.recentUserTurns).toEqual([]);
+		expect(
+			intentEvidenceBudgetForUsage({ ...native, source: "estimated" }),
+		).toBe(8 * 1024);
+		expect(
+			intentEvidenceBudgetForUsage({ ...native, tokens: Number.NaN }),
+		).toBe(8 * 1024);
+		expect(intentEvidenceBudgetForUsage({ ...native, percent: 90 })).toBe(
+			8 * 1024,
+		);
+		expect(
+			intentEvidenceBudgetForUsage({
+				percent: 80,
+				tokens: 160_000,
+				contextWindow: 200_000,
+				source: "native",
+			}),
+		).toBe(8 * 1024);
+		expect(
+			intentEvidenceBudgetForUsage({
+				percent: 1,
+				tokens: 1_000_000,
+				contextWindow: 100_000_000,
+				source: "native",
+			}),
+		).toBe(256 * 1024);
+		expect(
+			extractCurrentFocus(messages, Number.POSITIVE_INFINITY).intentEvidence
+				?.overflow,
+		).toBe(true);
 	});
 
 	it("marks complete evidence as unavailable on budget overflow", () => {
