@@ -351,6 +351,39 @@ function staleExtensionCtxError(): Error {
 }
 
 describe("executeCompaction stale extension context handling", () => {
+	it.each(["onComplete", "onError"] as const)(
+		"ignores %s from a previous session after state reset",
+		(callbackName) => {
+			const state = new CompactionState();
+			const persist = vi.fn();
+			const ctx = createMockCtx();
+			const pi = createMockPi();
+			executeCompaction(
+				"standard",
+				STALE_TEST_FOCUS,
+				state,
+				ctx as unknown as Parameters<typeof executeCompaction>[3],
+				pi as unknown as Parameters<typeof executeCompaction>[4],
+				{ sendContinuation: true, persist },
+			);
+			state.reset();
+			state.lastCompactTime = 123;
+			state.lastCompactTokens = 456;
+			const callbacks = ctx.compact.mock.calls[0]?.[0];
+			if (!callbacks) throw new Error("compaction callbacks missing");
+			if (callbackName === "onComplete") {
+				callbacks.onComplete({ estimatedTokensAfter: 42_000 });
+			} else {
+				callbacks.onError(new Error("old session failed"));
+			}
+			expect(state.lastCompactTime).toBe(123);
+			expect(state.lastCompactTokens).toBe(456);
+			expect(persist).not.toHaveBeenCalled();
+			expect(pi.sendUserMessage).not.toHaveBeenCalled();
+			expect(ctx.ui.notify).not.toHaveBeenCalled();
+		},
+	);
+
 	it("keeps state consistent when onComplete observes a stale extension context", () => {
 		const state = new CompactionState();
 		const persist = vi.fn();

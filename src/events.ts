@@ -29,6 +29,9 @@ export function registerCompactPlusEventHandlers(
 	}: CompactPlusEventRegistryOptions,
 ): void {
 	pi.on("session_start", async (_event, ctx) => {
+		// Fence old compaction callbacks before the first await; a callback can
+		// otherwise queue a late save during the drain/load window.
+		state.invalidateCompactionCallbacks();
 		await waitForTelemetryPersistence?.();
 		const result = await loadTelemetryWithDiagnostics();
 		state.reset();
@@ -118,6 +121,7 @@ export function registerCompactPlusEventHandlers(
 	});
 
 	pi.on("session_shutdown", async (_event, _ctx) => {
+		state.invalidateCompactionCallbacks();
 		await waitForTelemetryPersistence?.();
 		toolOutputPruning.onSessionShutdown();
 	});
