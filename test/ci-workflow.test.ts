@@ -16,6 +16,8 @@ const workflow = readFileSync(
 	new URL("../.github/workflows/pr-checks-node.yml", import.meta.url),
 	"utf8",
 );
+// The workflow uses Bash on ubuntu-latest; Windows lacks /bin/bash and symlink privileges.
+const unixBashIt = it.skipIf(process.platform === "win32");
 
 describe("PR Node workflow checks", () => {
 	it("installs reproducibly from the committed lockfile", () => {
@@ -61,7 +63,7 @@ describe("PR Node workflow checks", () => {
 		},
 	);
 
-	it("executes the config-only lint fallback using pinned local Biome", () => {
+	unixBashIt("executes config-only lint with local Biome", () => {
 		const lintStep = workflow
 			.split("\n      - name: Lint if present\n")[1]
 			?.split("\n      - name: ")[0];
