@@ -15,6 +15,7 @@ export interface CompactPlusEventRegistryOptions {
 	toolOutputPruning: ToolOutputPruningCoordinator;
 	compactionCoordinator: CompactionCoordinator;
 	persistTelemetrySnapshot: () => Promise<void>;
+	waitForTelemetryPersistence?: () => Promise<void>;
 }
 
 export function registerCompactPlusEventHandlers(
@@ -24,9 +25,11 @@ export function registerCompactPlusEventHandlers(
 		toolOutputPruning,
 		compactionCoordinator,
 		persistTelemetrySnapshot,
+		waitForTelemetryPersistence,
 	}: CompactPlusEventRegistryOptions,
 ): void {
 	pi.on("session_start", async (_event, ctx) => {
+		await waitForTelemetryPersistence?.();
 		const result = await loadTelemetryWithDiagnostics();
 		state.reset();
 		state.recordTelemetryPersistenceIssue(result.issue);
@@ -115,6 +118,7 @@ export function registerCompactPlusEventHandlers(
 	});
 
 	pi.on("session_shutdown", async (_event, _ctx) => {
+		await waitForTelemetryPersistence?.();
 		toolOutputPruning.onSessionShutdown();
 	});
 

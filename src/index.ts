@@ -25,6 +25,7 @@ import { saveTelemetryWithDiagnostics } from "./persist.js";
 import { extractCurrentFocus } from "./session-evidence.js";
 import { resolveCompactPlusSettings } from "./settings.js";
 import { CompactionState } from "./state.js";
+import { createTelemetryWriter } from "./telemetry-writer.js";
 import { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
 import { createQueryToolDefinition } from "./tool-output-pruning/query-tool.js";
 import type { EffectiveUsage, SummaryInstructionOptions } from "./types.js";
@@ -44,17 +45,18 @@ const toolOutputPruning = new ToolOutputPruningCoordinator({
 	getSettings: resolveCompactPlusSettings,
 });
 
-async function persistTelemetrySnapshot(): Promise<void> {
-	const result = await saveTelemetryWithDiagnostics({
+const telemetryWriter = createTelemetryWriter({
+	snapshot: () => ({
 		lastCompaction: state.lastCompaction,
 		lastFallbackReason: state.lastFallbackReason,
 		lastInjectedEcho: state.lastInjectedEcho,
 		lastCompactTime: state.lastCompactTime,
 		lastCompactTokens: state.lastCompactTokens,
 		lastModelKey: state.lastModelKey,
-	});
-	state.recordTelemetryPersistenceIssue(result.issue);
-}
+	}),
+	save: saveTelemetryWithDiagnostics,
+	reportIssue: (issue) => state.recordTelemetryPersistenceIssue(issue),
+});
 
 export default function compactPlusExtension(pi: ExtensionAPI) {
 	const thresholdSettings = resolveCompactPlusSettings();
@@ -63,7 +65,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		pi,
 		thresholdSettings,
 		getEffectiveUsage,
-		persistTelemetrySnapshot,
+		persistTelemetrySnapshot: telemetryWriter.persist,
 		disableAutoCompaction: thresholdSettings.disableAutoCompaction,
 	});
 
@@ -87,7 +89,8 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		state,
 		toolOutputPruning,
 		compactionCoordinator,
-		persistTelemetrySnapshot,
+		persistTelemetrySnapshot: telemetryWriter.persist,
+		waitForTelemetryPersistence: telemetryWriter.drain,
 	});
 }
 

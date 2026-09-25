@@ -146,7 +146,8 @@ export function resolveSummarizerModel(
 		return {
 			model: currentModel,
 			isFallback: true,
-			warning: `Invalid summarizer model spec "${spec}"; expected "provider/model-id". Using current model.`,
+			warning:
+				'Invalid summarizer model spec; expected "provider/model-id". Using current model.',
 		};
 	}
 
@@ -160,7 +161,7 @@ export function resolveSummarizerModel(
 	return {
 		model: currentModel,
 		isFallback: true,
-		warning: `Summarizer model "${spec}" not found in registry. Using current model.`,
+		warning: "Summarizer model not found in registry. Using current model.",
 	};
 }
 
@@ -231,12 +232,16 @@ export async function summarizeBatch(
 	try {
 		auth = await registry.getApiKeyAndHeaders(model);
 	} catch (err) {
-		return buildSummarizationExceptionFailure(err);
+		return buildSummarizationExceptionFailure(
+			err,
+			"auth lookup",
+			options?.signal,
+		);
 	}
 	if (!auth.ok) {
 		return {
 			ok: false,
-			error: `Auth unavailable for summarizer model: ${auth.error}`,
+			error: "Auth unavailable for summarizer model",
 			aborted: false,
 		};
 	}
@@ -283,7 +288,7 @@ export async function summarizeBatch(
 		if (response.stopReason === "error") {
 			return {
 				ok: false,
-				error: response.errorMessage || "Summarization failed",
+				error: "Summarization failed",
 				aborted: false,
 			};
 		}
@@ -291,7 +296,7 @@ export async function summarizeBatch(
 		if (response.stopReason !== "stop") {
 			return {
 				ok: false,
-				error: `Summarization stopped before completion: ${response.stopReason}`,
+				error: "Summarization stopped before completion",
 				aborted: false,
 			};
 		}
@@ -319,7 +324,7 @@ export async function summarizeBatch(
 		if (!parseResult.ok) {
 			return {
 				ok: false,
-				error: `Summarizer returned incomplete summaries: ${parseResult.error}`,
+				error: "Summarizer returned incomplete summaries",
 				aborted: false,
 			};
 		}
@@ -340,20 +345,25 @@ export async function summarizeBatch(
 		}
 		return result;
 	} catch (err) {
-		return buildSummarizationExceptionFailure(err);
+		return buildSummarizationExceptionFailure(
+			err,
+			"provider request",
+			options?.signal,
+		);
 	}
 }
 
 function buildSummarizationExceptionFailure(
 	err: unknown,
+	phase: "auth lookup" | "provider request",
+	signal?: AbortSignal,
 ): SummarizeBatchFailure {
-	const message = err instanceof Error ? err.message : String(err);
 	const aborted =
-		err instanceof Error &&
-		(err.name === "AbortError" || message.includes("aborted"));
+		(err instanceof Error && err.name === "AbortError") ||
+		signal?.aborted === true;
 	return {
 		ok: false,
-		error: `Summarization error: ${message}`,
+		error: aborted ? "Summarization aborted" : `Summarization ${phase} failed`,
 		aborted,
 	};
 }

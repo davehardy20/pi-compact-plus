@@ -529,7 +529,9 @@ describe("flushPendingBatches", () => {
 			"new-batch",
 		);
 		pi.appendEntry.mockImplementationOnce(() => {
-			throw new Error("append failed after indexing");
+			throw new Error(
+				"append failed after indexing: SYNTHETIC_CREDENTIAL_MARKER",
+			);
 		});
 
 		const result = await flushPendingBatches(
@@ -550,6 +552,7 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(false);
+		expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 		expect(state.finalizedSnapshot().map((r) => r.recordId)).toEqual(
 			beforeRecordIds,
 		);

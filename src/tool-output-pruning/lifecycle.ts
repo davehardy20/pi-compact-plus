@@ -224,8 +224,7 @@ export async function flushPendingBatches(
 			indexedCount: finalizedRecords.length,
 			prunedCount: 0,
 		};
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
+	} catch {
 		// Roll back any partially finalized records to preserve atomicity.
 		state.replaceFinalizedRecords(finalizedRecordsBefore);
 		state.recordSummaryError();
@@ -234,7 +233,7 @@ export async function flushPendingBatches(
 			ok: false,
 			indexedCount: 0,
 			prunedCount: 0,
-			error: `flush error: ${message}`,
+			error: "flush error: pruning metadata persistence failed",
 		};
 	} finally {
 		state.endFlush();

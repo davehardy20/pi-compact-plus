@@ -1014,6 +1014,39 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(instructions).not.toContain("Poisoned custom-message decision");
 	});
 
+	it("drains a pending telemetry save before loading a replacement session", async () => {
+		let finishSave!: (result: { saved: boolean; issue: null }) => void;
+		const heldSave = new Promise<{ saved: boolean; issue: null }>((resolve) => {
+			finishSave = resolve;
+		});
+		vi.mocked(persist.saveTelemetryWithDiagnostics).mockImplementationOnce(
+			async () => heldSave,
+		);
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx();
+		const onContext = pi.events.get("context")?.[0];
+		const onStart = pi.events.get("session_start")?.[0];
+		if (!onContext || !onStart) throw new Error("handlers missing");
+		const contextRequest = onContext(
+			{
+				messages: [
+					{ role: "compactionSummary", summary: VALID_STRUCTURED_SUMMARY },
+					{ role: "user", content: "Continue with the current task." },
+				],
+			},
+			ctx,
+		);
+		await Promise.resolve();
+		expect(persist.saveTelemetryWithDiagnostics).toHaveBeenCalledTimes(1);
+		const newSession = onStart({}, ctx);
+		await Promise.resolve();
+		expect(persist.loadTelemetryWithDiagnostics).not.toHaveBeenCalled();
+		finishSave({ saved: true, issue: null });
+		await Promise.all([contextRequest, newSession]);
+		expect(persist.loadTelemetryWithDiagnostics).toHaveBeenCalledTimes(1);
+	});
+
 	it("resets stale runtime state at session_start when no telemetry is restored", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
