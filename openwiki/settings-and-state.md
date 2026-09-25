@@ -186,7 +186,7 @@ On `session_start`:
 3. Parse JSON. If corrupt → quarantine to `<file>.corrupt-<timestamp>` and report `corrupt-json` (with `quarantinePath`).
 4. Validate schema version (1, 2, or current `3` accepted). If unsupported → report `unsupported-version` (no quarantine).
 5. If invalid schema → report `invalid-schema`.
-6. Other errors → `permission-failed` / `read-failed`.
+6. Other errors → `read-failed`.
 
 Returns `{ telemetry: PersistedTelemetry | null, issue: TelemetryPersistenceIssue | null }`.
 
