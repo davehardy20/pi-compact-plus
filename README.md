@@ -462,4 +462,68 @@ Dev/release playbook:
 npm run typecheck
 npm run build
 npm test
+npm run test:coverage
+npm run package:check
 ```
+
+### Runtime regression matrix (F1–F11)
+
+The lockfile and `npm ci` supply the **Pi 0.83.0** coding-agent, agent-core,
+and AI packages for the main suite. The CI provider-boundary job separately
+installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
+three-package versions in both trees and fail on a configured but incomplete
+0.87.1 tree. The `^0.83.0` dev-dependency range is **not** a raised support
+floor; changing that floor requires a separate decision.
+
+- **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
+  settlement, and pending flush guards.
+- **F2 — genuine summary provenance:** `test/index.test.ts` rejects spoofed/fenced
+  summaries; `test/sdk-runtime-regression.test.ts` builds a Pi SDK compaction entry.
+- **F3 — retained current intent:** `test/index.test.ts` checks trigger-time intent;
+  `test/sdk-runtime-regression.test.ts` and `test/provider-boundary-087.test.ts`
+  check that a redirect survives Pi's cut and projection.
+- **F4 — permissive summary validation:** `test/compact-run-custom-compaction.test.ts`
+  checks schema/fences; `test/provider-boundary-087.test.ts` rejects an invalid
+  real-helper response.
+- **F5 — stale objective/continuation:** `test/snapshot-evidence.test.ts`
+  checks recent objectives, exact generated continuation, and repeated compaction.
+- **F6 — normalization title loss:** `test/compact-run-custom-compaction.test.ts`
+  checks oversized summaries and real objectives; `test/focus-echo-goldens.test.ts`
+  checks the echo shape.
+- **F7 — missing regrowth baseline:** `test/index.test.ts` checks post-compaction
+  token capture and repeat-turn guards.
+- **F8 — provider auth/routing:** `test/compaction-runtime-contract.test.ts`
+  and `test/provider-boundary-087.test.ts` check registry routing with a local stream.
+- **F9 — pruning reload:** `test/sdk-session-reload.test.ts` exercises real Pi JSONL
+  reload; `test/tool-output-pruning/coordinator.test.ts` checks reconstruction.
+- **F10 — divergent branch reconstruction:** `test/sdk-session-reload.test.ts`
+  checks A→B→A; `test/tool-output-pruning/coordinator.test.ts` checks atomic
+  failures and identity guards.
+- **F11 — ancestor-symlink telemetry:** `test/persist.test.ts` checks read/write
+  ancestors, leaf handling, and permission cases.
+
+The three SDK integration suites exercise real Pi session managers, compaction
+preparation/projection, JSONL reload, and (on 0.87.1) model runtime/registry.
+The 0.83.0 and 0.87.1 compaction tests invoke Pi's real helper. Tool execution,
+model responses, and extension event delivery are **simulated** in-process;
+no network access or interactive Pi agent run is required. Pi 0.83.0 uses native
+fallback in the extension when no stream-aware route is exposed; a separate
+local stream drives Pi's own helper to test the summary/projection boundary.
+The 0.87.1 provider test uses a registry-backed local stream, never a remote
+provider. No actual live provider/session verification is claimed by these
+checks. The 0.87.1 test skips locally when the optional runtime path is unset;
+CI always configures it. To opt in locally with an independently provisioned,
+reviewed exact 0.87.1 tree:
+
+```bash
+PI_COMPACT_PLUS_TEST_PI_087_ROOT="$PI_087_ROOT/node_modules/@earendil-works/pi-coding-agent" \
+  npm test -- test/provider-boundary-087.test.ts
+```
+
+The configured root must contain the coding-agent package and its nested
+Pi 0.87.1 AI/agent-core packages. A missing or mismatched tree fails, rather
+than silently falling back to a host-global installation. `npm test` covers
+the 0.83.0 suites, including explicit unknown post-compaction usage and
+metadata-only reload/branch reconciliation. A real interactive `/reload`,
+`/compact-plus`, and continuation check remains a separate live smoke test
+when an operator has an authorized provider/session available.
