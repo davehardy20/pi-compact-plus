@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
-// Version bridge only: Compact+ resolves the locked 0.83 package in this Vitest
+// Version bridge only: Compact+ resolves the locked 0.84 package in this Vitest
 // process, so forward its import to the isolated *real* 0.87 helper. Neither
 // the helper, Pi session manager, nor model registry behavior is substituted.
 const { invokePi087Compact } = vi.hoisted(() => ({

@@ -469,18 +469,18 @@ npm run package:check
 
 ### Runtime regression matrix (F1–F11)
 
-The lockfile and `npm ci` supply the **Pi 0.83.0** coding-agent, agent-core,
+The lockfile and `npm ci` supply the **Pi 0.84.0** coding-agent, agent-core,
 and AI packages for the main suite. The CI provider-boundary job separately
 installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
 three-package versions in both trees and fail on a configured but incomplete
-0.87.1 tree. The `^0.83.0` dev-dependency range is **not** a raised support
-floor; changing that floor requires a separate decision.
+0.87.1 tree. This 0.84.0 dev/test baseline is an intermediate security slice,
+not the agreed final Pi 0.87.1 baseline or a raised peer support floor.
 
-The transitive-advisory slice updates locked `esbuild`, `nanoid`, and `postcss`
-only. It does **not** fix Pi 0.83.0's bundled `brace-expansion` and `undici`;
-`npm audit --audit-level=high` remains nonblocking and reports those findings.
-A separate, reviewed Pi 0.87.1 SDK follow-up under `pi-compact-plus-02f1` must
-replace this baseline and make the audit blocking before that issue can close.
+The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
+`postcss`. Pi 0.84.0 also resolves Pi 0.83.0's bundled `brace-expansion` and
+`undici` advisories; the high-severity npm audit now blocks CI. A separate,
+reviewed Pi 0.87.1 SDK follow-up under `pi-compact-plus-02f1` must replace this
+intermediate baseline before that issue can close.
 
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.
@@ -511,9 +511,9 @@ replace this baseline and make the audit blocking before that issue can close.
 
 The three SDK integration suites exercise real Pi session managers, compaction
 preparation/projection, JSONL reload, and (on 0.87.1) model runtime/registry.
-The 0.83.0 and 0.87.1 compaction tests invoke Pi's real helper. Tool execution,
+The 0.84.0 and 0.87.1 compaction tests invoke Pi's real helper. Tool execution,
 model responses, and extension event delivery are **simulated** in-process;
-no network access or interactive Pi agent run is required. Pi 0.83.0 uses native
+no network access or interactive Pi agent run is required. Pi 0.84.0 uses native
 fallback in the extension when no stream-aware route is exposed; a separate
 local stream drives Pi's own helper to test the summary/projection boundary.
 The 0.87.1 provider test uses a registry-backed local stream, never a remote
@@ -530,7 +530,7 @@ PI_COMPACT_PLUS_TEST_PI_087_ROOT="$PI_087_ROOT/node_modules/@earendil-works/pi-c
 The configured root must contain the coding-agent package and its nested
 Pi 0.87.1 AI/agent-core packages. A missing or mismatched tree fails, rather
 than silently falling back to a host-global installation. `npm test` covers
-the 0.83.0 suites, including explicit unknown post-compaction usage and
+the 0.84.0 suites, including explicit unknown post-compaction usage and
 metadata-only reload/branch reconciliation. A real interactive `/reload`,
 `/compact-plus`, and continuation check remains a separate live smoke test
 when an operator has an authorized provider/session available.

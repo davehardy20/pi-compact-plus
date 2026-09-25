@@ -121,6 +121,14 @@ describe("PR Node workflow checks", () => {
 		expect(lock.packages["node_modules/@biomejs/biome"].version).toBe("2.5.8");
 	});
 
+	it("fails the PR check on high-severity dependency advisories", () => {
+		const auditStep = workflow
+			.split("\n      - name: Dependency audit if lockfile present\n")[1]
+			?.split("\n      - name: ")[0];
+		expect(auditStep).toContain("npm audit --audit-level=high");
+		expect(auditStep).not.toContain("continue-on-error");
+	});
+
 	it("runs the no-network provider-boundary test against Pi 0.87.1 in CI", () => {
 		expect(workflow).toContain("name: Pi 0.87 provider boundary");
 		expect(workflow).toContain("@earendil-works/pi-coding-agent@0.87.1");
