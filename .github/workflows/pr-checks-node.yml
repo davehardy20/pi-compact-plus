@@ -44,7 +44,8 @@ jobs:
           const lines = [
             `has_package_json=${fs.existsSync('package.json')}`,
             `has_lockfile=${hasAny(['package-lock.json', 'npm-shrinkwrap.json'])}`,
-            `has_lint=${Boolean(scripts.lint)}`,
+            `has_lint=${Boolean(scripts.lint || hasAny(['biome.json', 'biome.jsonc']))}`,
+            `has_lint_script=${Boolean(scripts.lint)}`,
             `has_typecheck=${Boolean(scripts.typecheck || hasAny(['tsconfig.json']))}`,
             `has_typecheck_script=${Boolean(scripts.typecheck)}`,
             `has_test=${Boolean(scripts.test || hasAny(['vitest.config.ts', 'vitest.config.js', 'jest.config.js', 'jest.config.ts']))}`,
@@ -80,10 +81,10 @@ jobs:
         if: steps.detect.outputs.has_package_json == 'true' && steps.detect.outputs.has_lint == 'true'
         run: |
           set -euo pipefail
-          if [ "${{ steps.detect.outputs.has_lint }}" = "true" ]; then
+          if [ "${{ steps.detect.outputs.has_lint_script }}" = "true" ]; then
             npm run lint
           elif [ -f biome.json ] || [ -f biome.jsonc ]; then
-            npx --no-install biome check .
+            ./node_modules/.bin/biome check src test scripts
           else
             echo "Lint config detected but no supported lint command was found."
             exit 1

@@ -29,6 +29,7 @@
 	],
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
+		"lint": "biome check src test scripts",
 		"test": "vitest run",
 		"test:coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=json --coverage.reportsDirectory=coverage",
 		"test:watch": "vitest",
@@ -58,6 +59,7 @@
 		}
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.5.8",
 		"@earendil-works/pi-agent-core": "^0.83.0",
 		"@earendil-works/pi-ai": "^0.83.0",
 		"@earendil-works/pi-coding-agent": "^0.83.0",
