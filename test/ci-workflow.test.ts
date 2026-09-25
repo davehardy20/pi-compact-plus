@@ -1,7 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(
@@ -53,7 +61,7 @@ describe("PR Node workflow checks", () => {
 		},
 	);
 
-	it("runs the pinned local Biome binary when config is detected without a lint script", () => {
+	it("executes the config-only lint fallback using pinned local Biome", () => {
 		const lintStep = workflow
 			.split("\n      - name: Lint if present\n")[1]
 			?.split("\n      - name: ")[0];
@@ -61,6 +69,42 @@ describe("PR Node workflow checks", () => {
 		expect(lintStep).toContain(
 			"./node_modules/.bin/biome check src test scripts",
 		);
+		const script = lintStep
+			?.split("        run: |\n")[1]
+			?.replace(/^ {10}/gm, "")
+			.replace(/\$\{\{ steps\.detect\.outputs\.has_lint_script \}\}/, "false");
+		expect(script).toBeDefined();
+		expect(script).not.toMatch(/\$\{\{/);
+		const root = mkdtempSync(join(tmpdir(), "pi-cp-ci-fallback-"));
+		try {
+			writeFileSync(
+				join(root, "package.json"),
+				JSON.stringify({ scripts: {} }),
+			);
+			writeFileSync(join(root, "biome.json"), "{}");
+			for (const dir of ["src", "test", "scripts"]) {
+				mkdirSync(join(root, dir));
+				writeFileSync(
+					join(root, dir, "probe.ts"),
+					"export const probe = true;\n",
+				);
+			}
+			const binaryDir = join(root, "node_modules/.bin");
+			mkdirSync(binaryDir, { recursive: true });
+			const execute = () =>
+				execFileSync("/bin/bash", ["-c", script ?? ""], {
+					cwd: root,
+					env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+				});
+			expect(execute).toThrow();
+			symlinkSync(
+				realpathSync(new URL("../node_modules/.bin/biome", import.meta.url)),
+				join(binaryDir, "biome"),
+			);
+			expect(execute).not.toThrow();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("pins the local lint command and Biome package", () => {
