@@ -218,9 +218,15 @@ export class ToolOutputPruningState {
 		return `t${this.shortRefCounter}`;
 	}
 
-	/** Advance short-ref allocation past restored finalized records. */
-	advanceShortRefCounterFromRecords(records: ToolOutputRecord[]): void {
-		let maxRefNumber = this.shortRefCounter;
+	/** Advance past restored records and validated policy-filtered history. */
+	advanceShortRefCounterFromRecords(
+		records: ToolOutputRecord[],
+		maxValidatedShortRefNumber = 0,
+	): void {
+		let maxRefNumber = Math.max(
+			this.shortRefCounter,
+			maxValidatedShortRefNumber,
+		);
 		for (const record of records) {
 			const match = /^t(\d+)$/.exec(record.shortRef);
 			if (!match) continue;

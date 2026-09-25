@@ -87,6 +87,8 @@ describe("ToolOutputPruningState", () => {
 		state.recordReconstructionResult({
 			ok: false,
 			records: [],
+			maxValidatedShortRefNumber: 0,
+			validatedShortRefs: [],
 			inspectedEntries: 9,
 			scannedEntries: 8,
 			scannedBytes: 700,
@@ -366,6 +368,8 @@ describe("ToolOutputPruningState", () => {
 		state.recordReconstructionResult({
 			ok: true,
 			records: reconstructed,
+			maxValidatedShortRefNumber: 0,
+			validatedShortRefs: [],
 			inspectedEntries: 5,
 			scannedEntries: 4,
 			scannedBytes: 1234,
@@ -385,6 +389,8 @@ describe("ToolOutputPruningState", () => {
 		state.recordReconstructionResult({
 			ok: true,
 			records: [],
+			maxValidatedShortRefNumber: 0,
+			validatedShortRefs: [],
 			inspectedEntries: 3,
 			scannedEntries: 3,
 			scannedBytes: 99,
@@ -399,6 +405,8 @@ describe("ToolOutputPruningState", () => {
 		state.recordReconstructionResult({
 			ok: false,
 			records: [makeToolOutputRecord({ recordId: "ignored" })],
+			maxValidatedShortRefNumber: 0,
+			validatedShortRefs: [],
 			inspectedEntries: 6,
 			scannedEntries: 6,
 			scannedBytes: 2048,

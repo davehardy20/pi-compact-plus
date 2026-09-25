@@ -122,8 +122,18 @@ const {
 	loadCompactPlusSettingsFile,
 	resolveCompactPlusSettings,
 } = await import("../src/settings.js");
-const { CHECKPOINT_CUSTOM_TYPE, CONTINUATION_PROMPT, REGROWTH_TOKENS } =
-	await import("../src/types.js");
+const {
+	CHECKPOINT_CUSTOM_TYPE,
+	CONTINUATION_PROMPT,
+	REGROWTH_TOKENS,
+	TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+} = await import("../src/types.js");
+const { buildToolPruneSummaryData } = await import(
+	"../src/tool-output-pruning/metadata.js"
+);
+const { ToolOutputPruningCoordinator } = await import(
+	"../src/tool-output-pruning/coordinator.js"
+);
 const { default: compactPlusExtension, __test__ } = await import(
 	"../src/index.js"
 );
@@ -5449,6 +5459,83 @@ describe("Tool-output pruning lifecycle boundaries", () => {
 
 		expect(pruningState.pendingRecords).toHaveLength(0);
 		expect(pruningState.finalizedRecords).toHaveLength(0);
+	});
+
+	it("restores persisted pruning before the first query and context after session_start", async () => {
+		process.env.COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING = "true";
+		process.env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE = "agent-message";
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const pruningState = __test__.getToolOutputPruningState();
+		const toolResult = {
+			role: "toolResult",
+			toolCallId: "tc1",
+			toolName: "bash",
+			content: [{ type: "text", text: "original output needle" }],
+			isError: false,
+		} as TestAgentMessage;
+		const record = {
+			recordId: "rec-tc1",
+			entryId: "entry-1",
+			toolCallId: "tc1",
+			toolName: "bash",
+			timestamp: 1234,
+			chars: 22,
+			isError: false,
+			summary: "summary",
+			shortRef: "t1",
+			argsPreview: null,
+			fallbackSnippets: null,
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: resolveCompactPlusSettings(),
+			summaryChars: 7,
+			timestamp: 555,
+		});
+		const ctx = createMockCtx();
+		ctx.sessionManager.getBranch.mockReturnValue([
+			{ type: "message", id: "entry-1", message: toolResult },
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		]);
+		const sessionStart = pi.events.get("session_start")?.[0];
+		if (!sessionStart) throw new Error("session_start handler missing");
+		await sessionStart({}, ctx);
+
+		const coordinator = new ToolOutputPruningCoordinator({
+			state: pruningState,
+			getSettings: resolveCompactPlusSettings,
+		});
+		const query = coordinator.query(
+			{ ref: "t1", includeContent: true },
+			ctx as never,
+		);
+		expect(query.matches[0]?.content).toBe("original output needle");
+		expect(pruningState.generateShortRef()).toBe("t2");
+		const contextHandler = pi.events.get("context")?.[0];
+		if (!contextHandler) throw new Error("context handler missing");
+		const transformed = (await contextHandler(
+			{ messages: [toolResult] },
+			ctx,
+		)) as ContextHandlerResult;
+		expect(transformed?.messages[0]?.content[0]?.text).toContain(
+			"Compact+ pruned a previous tool output",
+		);
+
+		const modelSelect = pi.events.get("model_select")?.[0];
+		if (!modelSelect) throw new Error("model_select handler missing");
+		await modelSelect({ model: { provider: "test", id: "old" } }, ctx);
+		await modelSelect({ model: { provider: "test", id: "new" } }, ctx);
+		expect(coordinator.query({ ref: "t1" }, ctx as never).matches).toHaveLength(
+			1,
+		);
+		expect(pruningState.generateShortRef()).toBe("t2");
 	});
 
 	it("clears pending captures and reconciles finalized records on session_tree", async () => {

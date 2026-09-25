@@ -158,13 +158,17 @@ When enabled, Compact+:
   record ids, entry ids, tool call ids, tool names, summaries, argument
   previews, and counters needed to reconstruct the runtime index safely.
 - Capture, pending/finalized state, metadata reconstruction, summarizer inputs,
-  query scanning, and query output are bounded with hard internal limits so long
-  sessions degrade by trimming/skipping instead of growing without bound.
+  query scanning, and query output are bounded with hard internal limits. A flush
+  is rejected before append if its metadata would make the branch index
+  unreconstructible; existing valid records remain usable.
 - Summarization is atomic: a flushed batch is indexed/pruned only when every
   pending record has a non-empty summary tied to its short ref.
 - Metadata reconstruction is atomic: malformed active-version metadata,
-  over-limit payloads, duplicates, excluded tools, stale branch entries, or
-  mismatched `entryId`/`toolCallId`/tool-name pairs reconstruct no records.
+  over-limit payloads, duplicates, protected/internal tools, stale branch
+  entries, or mismatched `entryId`/`toolCallId`/tool-name pairs reconstruct no
+  records. A changed user include/exclude policy instead skips validated
+  historical records for disallowed tools without dropping allowed records;
+  skipped short refs remain reserved.
 
 **Attribution and reuse:** Batch capture, LLM semantic summarization, short
 refs, branch-aware indexing, and recovery-query behavior were adapted from
@@ -312,13 +316,17 @@ compatibility. Newer entries also include a nested schema-versioned metadata
 payload that is used only after it is validated against the current active
 branch.
 
-On reload or branch-tree updates, Compact+ reconstructs finalized pruning
-records only when pruning is effectively enabled and metadata matches current
-branch tool-result entries by `entryId`, `toolCallId`, tool name, tool-result
-role, and text-only content. Older summary entries without metadata are skipped
-safely. Active-version metadata that is malformed, oversized, duplicated,
-excluded by protected/user policy, or stale fails closed and reconstructs no
-records.
+On reload, model reset, or branch-tree updates, Compact+ reconstructs finalized
+pruning records only when pruning is effectively enabled and metadata matches
+current-branch tool-result entries by `entryId`, `toolCallId`, tool name,
+tool-result role, and text-only content. Matching live legacy records and
+in-memory fallback search snippets remain usable across navigation; original
+output/snippets are never copied into durable metadata. Older summary entries
+without metadata are skipped safely. Malformed, oversized, duplicated, stale,
+or protected/internal-tool metadata fails closed for the entire index. Valid
+historical records disallowed by current user include/exclude settings are
+skipped individually while allowed records survive and all validated short
+refs remain reserved.
 
 Compact+ always registers a recovery query tool so recovery stubs can point to
 an available tool, but execution remains inactive and throws unless pruning is

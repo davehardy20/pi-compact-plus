@@ -131,18 +131,10 @@ export function getPrunableToolResult(
 	};
 }
 
-/**
- * Safely match a pruning record to one current-branch entry.
- *
- * A match requires entryId, message entry type, toolResult role, toolCallId,
- * toolName, text-only content, and the same exclusion/include policy used at
- * capture time. It fails closed for stale, non-message, non-toolResult, mixed,
- * excluded, or include-list-missing entries.
- */
-export function recordMatchesBranchEntry(
+/** Structural identity only, never an authorization check for pruning/recovery. */
+export function recordIdentityMatchesBranchEntry(
 	entry: ToolOutputBranchEntry,
 	record: Pick<ToolOutputRecord, "entryId" | "toolCallId" | "toolName">,
-	settings: ToolOutputPruningSettings,
 ): boolean {
 	if (record.entryId === null) return false;
 	if (!record.toolCallId || !record.toolName) return false;
@@ -152,9 +144,24 @@ export function recordMatchesBranchEntry(
 	if (getToolCallId(entry.message) !== record.toolCallId) return false;
 	if (getToolName(entry.message) !== record.toolName) return false;
 	if (!isTextOnlyToolResult(entry.message)) return false;
-	if (isExcludedTool(record.toolName, settings)) return false;
-	if (!isIncludedTool(record.toolName, settings)) return false;
 	return true;
+}
+
+/**
+ * Safely match a pruning record under the current policy. Metadata validation
+ * uses structural identity separately so a newly excluded historical tool can
+ * be skipped without invalidating still-allowed records.
+ */
+export function recordMatchesBranchEntry(
+	entry: ToolOutputBranchEntry,
+	record: Pick<ToolOutputRecord, "entryId" | "toolCallId" | "toolName">,
+	settings: ToolOutputPruningSettings,
+): boolean {
+	return (
+		recordIdentityMatchesBranchEntry(entry, record) &&
+		!isExcludedTool(record.toolName, settings) &&
+		isIncludedTool(record.toolName, settings)
+	);
 }
 
 /**

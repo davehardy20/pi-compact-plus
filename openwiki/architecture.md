@@ -82,7 +82,7 @@ const compactionCoordinator = new CompactionCoordinator({
 | `session_tree` | `toolOutputPruning.onSessionTree()` | Reconcile/reconstruct pruning records for new branch |
 | `session_shutdown` | `toolOutputPruning.onSessionShutdown()` | Full pruning state reset |
 | `context` | Pruning transform → focus-echo reorder | Applied to every context snapshot sent to the model |
-| `model_select` | `compactionCoordinator.onModelSelect()` | Reset model-scoped state on model change |
+| `model_select` | `compactionCoordinator.onModelSelect()`; if the model key actually changed from a known model, `toolOutputPruning.onSessionTree(ctx)` | Reset model-scoped state on model change; recover the pruning branch index before the next context transform or query |
 
 **Key sequencing invariant:** Auto-compaction runs **only** in the `agent_settled` handler — never inside `message_end`/`turn_end`, where `ctx.compact()` would abort the active run and could discard or replay tool results. `turn_end` only records `state.pendingAutoCompactTurnIndex` for the final successful assistant turn (`stopReason: "stop"`); `agent_settled` consumes it and returns early unless `ctx.isIdle()` and `ctx.hasPendingMessages()` is false. If `toolOutputPruning.hasPendingFlush()` is true at settlement, auto-compaction is skipped. A manual or native compaction (`session_before_compact`/`session_compact`) clears the pending candidate.
 

@@ -2,8 +2,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createCurrentSessionBranchView,
+	createSessionBranchView,
 	type SessionBranchEntryLike,
 } from "../session-branch-view.js";
+import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../types.js";
 import type { CaptureBatchResult } from "./capture.js";
 import {
 	buildPruningStatusDetail,
@@ -17,7 +19,10 @@ import {
 	isFinalAssistantMessageForToolPrune,
 	shouldFlushOnMessageEnd,
 } from "./lifecycle.js";
-import { reconstructToolOutputRecordsFromBranch } from "./metadata.js";
+import {
+	MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES,
+	reconstructToolOutputRecordsFromBranch,
+} from "./metadata.js";
 import { isToolOutputPruningEnabled } from "./policy.js";
 import { type ApplyPruningResult, applyToolOutputPruning } from "./pruner.js";
 import { recordMatchesBranchEntry } from "./record-identity.js";
@@ -27,6 +32,7 @@ import type {
 	QueryToolOutputParams,
 	QueryToolOutputResult,
 	ToolOutputPruningSettings,
+	ToolOutputRecord,
 } from "./types.js";
 
 export interface ToolOutputPruningCoordinatorDependencies {
@@ -59,6 +65,63 @@ interface AppendEntryPort {
 	appendEntry: (customType: string, data?: unknown) => void;
 }
 
+function reconcileBranchRecords(
+	persisted: ToolOutputRecord[],
+	inMemory: ToolOutputRecord[],
+	branchEntries: SessionBranchEntryLike[],
+	validatedShortRefs: readonly string[],
+): ToolOutputRecord[] {
+	const records = [...persisted];
+	const persistedIndexById = new Map(
+		records.map((record, index) => [record.recordId, index]),
+	);
+	const recordIds = new Set(records.map((record) => record.recordId));
+	const entryIds = new Set(records.map((record) => record.entryId));
+	const refs = new Set(records.map((record) => record.shortRef));
+	const reservedRefs = new Set(validatedShortRefs);
+	for (const record of inMemory) {
+		const persistedIndex = persistedIndexById.get(record.recordId);
+		const matching =
+			persistedIndex === undefined ? undefined : records[persistedIndex];
+		if (
+			persistedIndex !== undefined &&
+			matching &&
+			matching.entryId === record.entryId &&
+			matching.toolCallId === record.toolCallId &&
+			matching.toolName === record.toolName &&
+			matching.shortRef === record.shortRef &&
+			record.fallbackSnippets !== null
+		) {
+			// Only live memory keeps bounded original-output snippets. Preserve
+			// that search affordance without writing snippets to durable metadata.
+			records[persistedIndex] = {
+				...matching,
+				fallbackSnippets: record.fallbackSnippets,
+			};
+		}
+		// Durable metadata wins on an identity collision. Legacy records have
+		// no durable counterpart, but still represent valid live branch output.
+		if (
+			recordIds.has(record.recordId) ||
+			entryIds.has(record.entryId) ||
+			refs.has(record.shortRef) ||
+			reservedRefs.has(record.shortRef)
+		) {
+			continue;
+		}
+		records.push(record);
+		recordIds.add(record.recordId);
+		entryIds.add(record.entryId);
+		refs.add(record.shortRef);
+	}
+	// Retain the newest records if the combined index exceeds its state cap.
+	const order = new Map(branchEntries.map((entry, index) => [entry.id, index]));
+	return records.sort(
+		(a, b) =>
+			(order.get(a.entryId ?? "") ?? -1) - (order.get(b.entryId ?? "") ?? -1),
+	);
+}
+
 /**
  * Event-shaped facade for Compact+ tool-output pruning orchestration.
  *
@@ -78,6 +141,50 @@ export class ToolOutputPruningCoordinator {
 
 	onAgentStart(): void {
 		this.state.resetPending();
+	}
+
+	/** Reject an append if the resulting branch could not restore its index. */
+	private guardedAppendEntry(
+		ctx: BranchProviderContext,
+		pi: AppendEntryPort,
+		settings: ToolOutputPruningSettings,
+	): AppendEntryPort {
+		return {
+			appendEntry: (customType, data) => {
+				if (customType !== TOOL_PRUNE_SUMMARY_CUSTOM_TYPE) {
+					throw new Error("unexpected pruning metadata entry type");
+				}
+				const entries = ctx.sessionManager.getBranch();
+				if (entries.length >= MAX_RECONSTRUCTION_BRANCH_SCAN_ENTRIES) {
+					throw new Error("pruning metadata branch scan limit reached");
+				}
+				// Simulate the append against a fresh branch: this enforces the
+				// entry/byte limits, identity and duplicate rules atomically before
+				// persistence. A failed flush rolls back its in-memory additions.
+				const candidate = createSessionBranchView([
+					...entries,
+					{
+						type: "custom",
+						id: "compact-plus-pending-prune-summary",
+						customType,
+						data,
+					},
+				]);
+				const result = reconstructToolOutputRecordsFromBranch(
+					candidate,
+					settings,
+				);
+				if (!result.ok) {
+					throw new Error(`pruning metadata admission failed: ${result.error}`);
+				}
+				pi.appendEntry(customType, data);
+			},
+		};
+	}
+
+	/** Hydrate the active branch after the session state has been reset. */
+	onSessionStart(ctx: BranchProviderContext): void {
+		this.onSessionTree(ctx);
 	}
 
 	onTurnEnd(event: TurnEndPruningEvent): CaptureBatchResult | null {
@@ -115,7 +222,7 @@ export class ToolOutputPruningCoordinator {
 			settings,
 			ctx,
 			view.messageEntries(),
-			pi,
+			this.guardedAppendEntry(ctx as BranchProviderContext, pi, settings),
 		);
 	}
 
@@ -137,14 +244,25 @@ export class ToolOutputPruningCoordinator {
 					recordMatchesBranchEntry(entry, record, settings),
 				),
 			);
-		this.state.replaceFinalizedRecords(currentBranchRecords);
-		if (currentBranchRecords.length === 0) {
-			const result = reconstructToolOutputRecordsFromBranch(view, settings);
-			this.state.recordReconstructionResult(result);
-			this.state.replaceFinalizedRecords(result.ok ? result.records : []);
-			if (result.ok) {
-				this.state.advanceShortRefCounterFromRecords(result.records);
-			}
+		// Shared ancestors may survive a branch switch while branch-specific
+		// records exist only in durable metadata. Validate the whole active branch
+		// before exposing any records; a malformed entry invalidates all of them.
+		const result = reconstructToolOutputRecordsFromBranch(view, settings);
+		this.state.recordReconstructionResult(result);
+		const records = result.ok
+			? reconcileBranchRecords(
+					result.records,
+					currentBranchRecords,
+					branchEntries,
+					result.validatedShortRefs,
+				)
+			: [];
+		this.state.replaceFinalizedRecords(records);
+		if (result.ok) {
+			this.state.advanceShortRefCounterFromRecords(
+				records,
+				result.maxValidatedShortRefNumber,
+			);
 		}
 	}
 
@@ -176,13 +294,15 @@ export class ToolOutputPruningCoordinator {
 		ctx: ExtensionContext,
 		pi: AppendEntryPort,
 	): Promise<FlushResult & { message: string }> {
-		const view = createCurrentSessionBranchView(ctx as BranchProviderContext);
+		const branchCtx = ctx as BranchProviderContext;
+		const view = createCurrentSessionBranchView(branchCtx);
+		const settings = this.getSettings();
 		return manualFlushPendingBatches({
 			state: this.state,
-			settings: this.getSettings(),
+			settings,
 			ctx,
 			branchEntries: view.messageEntries(),
-			pi,
+			pi: this.guardedAppendEntry(branchCtx, pi, settings),
 		});
 	}
 

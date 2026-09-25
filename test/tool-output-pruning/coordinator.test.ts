@@ -1,12 +1,16 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolOutputPruningCoordinator } from "../../src/tool-output-pruning/coordinator.js";
-import { buildToolPruneSummaryData } from "../../src/tool-output-pruning/metadata.js";
+import {
+	buildToolPruneSummaryData,
+	MAX_RECONSTRUCTION_SCAN_ENTRIES,
+} from "../../src/tool-output-pruning/metadata.js";
 import { ToolOutputPruningState } from "../../src/tool-output-pruning/state.js";
-import type {
-	PendingToolOutputBatch,
-	ToolOutputPruningSettings,
-	ToolOutputRecord,
+import {
+	MAX_FINALIZED_RECORDS,
+	type PendingToolOutputBatch,
+	type ToolOutputPruningSettings,
+	type ToolOutputRecord,
 } from "../../src/tool-output-pruning/types.js";
 import { TOOL_PRUNE_SUMMARY_CUSTOM_TYPE } from "../../src/types.js";
 
@@ -289,6 +293,487 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(state.statusSnapshot().lastReconstructedCount).toBe(1);
 	});
 
+	it("restores all indexed records across A to B to A navigation", () => {
+		const shared = makeRecord("shared", "t1", "entry-1");
+		const specific = makeRecord("specific", "t2", "entry-2");
+		const summaryA = buildToolPruneSummaryData({
+			allRecords: [shared],
+			metadataRecords: [shared],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const summaryB = buildToolPruneSummaryData({
+			allRecords: [shared, specific],
+			metadataRecords: [specific],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 556,
+		});
+		const sharedMessage = makeToolResultMessage("shared", "shared output");
+		const specificMessage = makeToolResultMessage(
+			"specific",
+			"specific output",
+		);
+		const entriesA = [
+			{ type: "message", id: "entry-1", message: sharedMessage },
+			{
+				type: "custom",
+				id: "summary-A",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryA,
+			},
+		];
+		const branchA = makeCtxFromEntries(entriesA);
+		const branchB = makeCtxFromEntries([
+			...entriesA,
+			{ type: "message", id: "entry-2", message: specificMessage },
+			{
+				type: "custom",
+				id: "summary-B",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryB,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(coordinator.query({ ref: "t2" }, branchB).matches).toHaveLength(1);
+		expect(
+			coordinator.transformContext([sharedMessage, specificMessage], branchB)
+				?.prunedCount,
+		).toBe(2);
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(coordinator.query({ ref: "t2" }, branchA).matches).toHaveLength(0);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(state.generateShortRef()).toBe("t3");
+	});
+
+	it("preserves live fallback search for a matching durable record", () => {
+		const record = {
+			...makeRecord("tc1", "t1", "entry-1"),
+			fallbackSnippets: "needle beyond scan limit",
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [record],
+			metadataRecords: [record],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const ctx = makeCtxFromEntries([
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage(
+					"tc1",
+					`${"x".repeat(13_000)}needle beyond scan limit`,
+				),
+			},
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(record);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		expect(
+			coordinator.query({ query: "needle beyond scan limit" }, ctx).matches,
+		).toHaveLength(1);
+
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot()[0]?.fallbackSnippets).toBe(
+			"needle beyond scan limit",
+		);
+		expect(
+			coordinator.query({ query: "needle beyond scan limit" }, ctx).matches,
+		).toHaveLength(1);
+	});
+
+	it("keeps allowed records and new flushes usable after a policy change", async () => {
+		const bash = makeRecord("tc1", "t2", "entry-1");
+		const python = {
+			...makeRecord("tc2", "t1", "entry-2"),
+			toolName: "python",
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [bash, python],
+			metadataRecords: [bash, python],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const entries: Parameters<typeof makeCtxFromEntries>[0] = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("tc1"),
+			},
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("tc2", undefined, "python"),
+			},
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		];
+		const ctx = makeCtxFromEntries(entries);
+		let settings = ENABLED_SETTINGS;
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => settings,
+		});
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot()).toHaveLength(2);
+
+		settings = {
+			...ENABLED_SETTINGS,
+			toolOutputPruneExcludedTools: [
+				...ENABLED_SETTINGS.toolOutputPruneExcludedTools,
+				"bash",
+			],
+		};
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(state.statusSnapshot().lastReconstructionStatus).toBe("ok");
+		expect(coordinator.query({ ref: "t2" }, ctx).matches).toHaveLength(0);
+		state.reset(); // Simulate reload after the excluded record owned t2.
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(state.generateShortRef()).toBe("t3");
+
+		entries.push({
+			type: "message",
+			id: "entry-3",
+			message: makeToolResultMessage("tc3", undefined, "python"),
+		});
+		state.addPendingBatch(makeBatch(["rec-tc3"]), [
+			{ ...makeRecord("tc3", "t3", null), toolName: "python" },
+		]);
+		mockCompleteSimple.mockResolvedValueOnce(
+			makeSummarizerResponse("## t3\nPython summary."),
+		);
+		const pi = makeAppendPort();
+		const flush = await coordinator.manualFlush(ctx, pi);
+		expect(flush.ok).toBe(true);
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t3",
+		]);
+	});
+
+	it("does not admit a legacy record with a policy-filtered historical ref", () => {
+		const excluded = makeRecord("tc1", "t2", "entry-1");
+		const allowed = {
+			...makeRecord("tc2", "t1", "entry-2"),
+			toolName: "python",
+		};
+		const legacy = {
+			...makeRecord("tc3", "t2", "entry-3"),
+			toolName: "python",
+		};
+		const data = buildToolPruneSummaryData({
+			allRecords: [excluded, allowed],
+			metadataRecords: [excluded, allowed],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(legacy);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ({
+				...ENABLED_SETTINGS,
+				toolOutputPruneExcludedTools: [
+					...ENABLED_SETTINGS.toolOutputPruneExcludedTools,
+					"bash",
+				],
+			}),
+		});
+		const ctx = makeCtxFromEntries([
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("tc1"),
+			},
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("tc2", undefined, "python"),
+			},
+			{
+				type: "message",
+				id: "entry-3",
+				message: makeToolResultMessage("tc3", undefined, "python"),
+			},
+			{
+				type: "custom",
+				id: "summary-1",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data,
+			},
+		]);
+
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		expect(coordinator.query({ ref: "t2" }, ctx).matches).toHaveLength(0);
+		expect(state.generateShortRef()).toBe("t3");
+	});
+
+	it("retains branch-safe in-memory legacy records alongside current metadata", () => {
+		const legacy = makeRecord("legacy", "t1", "entry-1");
+		const current = makeRecord("current", "t2", "entry-2");
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [current],
+			metadataRecords: [current],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const entriesA = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("legacy"),
+			},
+			{
+				type: "custom",
+				id: "legacy-summary",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: {
+					timestamp: 1,
+					refs: "t1: bash",
+					summaryChars: 10,
+					recordCount: 1,
+				},
+			},
+		];
+		const branchA = makeCtxFromEntries(entriesA);
+		const branchB = makeCtxFromEntries([
+			...entriesA,
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("current"),
+			},
+			{
+				type: "custom",
+				id: "current-summary",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryData,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(legacy);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(coordinator.query({ ref: "t1" }, branchB).matches).toHaveLength(1);
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+		]);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot().map((record) => record.shortRef)).toEqual([
+			"t1",
+			"t2",
+		]);
+		expect(state.generateShortRef()).toBe("t3");
+	});
+
+	it("prefers durable metadata over conflicting in-memory legacy identities", () => {
+		const current = makeRecord("current", "t2", "entry-2");
+		const conflicting = makeRecord("legacy", "t2", "entry-1");
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(conflicting);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: [current],
+			metadataRecords: [current],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+
+		coordinator.onSessionTree(
+			makeCtxFromEntries([
+				{
+					type: "message",
+					id: "entry-1",
+					message: makeToolResultMessage("legacy"),
+				},
+				{
+					type: "message",
+					id: "entry-2",
+					message: makeToolResultMessage("current"),
+				},
+				{
+					type: "custom",
+					id: "current-summary",
+					customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+					data: summaryData,
+				},
+			]),
+		);
+		expect(state.finalizedSnapshot().map((record) => record.recordId)).toEqual([
+			"rec-current",
+		]);
+	});
+
+	it("bounds a mixed legacy and durable index by branch recency", () => {
+		const legacy = makeRecord("legacy", "t1", "entry-1");
+		const durable = Array.from({ length: MAX_FINALIZED_RECORDS }, (_, index) =>
+			makeRecord(`tc${index + 2}`, `t${index + 2}`, `entry-${index + 2}`),
+		);
+		const summaryData = buildToolPruneSummaryData({
+			allRecords: durable,
+			metadataRecords: durable,
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const entries = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("legacy"),
+			},
+			...durable.map((record) => ({
+				type: "message",
+				id: record.entryId ?? "",
+				message: makeToolResultMessage(record.toolCallId),
+			})),
+			{
+				type: "custom",
+				id: "durable-summary",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryData,
+			},
+		];
+		const state = new ToolOutputPruningState();
+		state.addFinalizedRecord(legacy);
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(makeCtxFromEntries(entries));
+		const restored = state.finalizedSnapshot();
+		expect(restored).toHaveLength(MAX_FINALIZED_RECORDS);
+		expect(restored[0]?.shortRef).toBe("t2");
+		expect(restored.at(-1)?.shortRef).toBe(`t${MAX_FINALIZED_RECORDS + 1}`);
+		expect(state.generateShortRef()).toBe(`t${MAX_FINALIZED_RECORDS + 2}`);
+	});
+
+	it("fails atomically when new branch metadata is invalid despite a shared survivor", () => {
+		const shared = makeRecord("shared", "t1", "entry-1");
+		const specific = makeRecord("specific", "t1", "entry-2");
+		const summaryA = buildToolPruneSummaryData({
+			allRecords: [shared],
+			metadataRecords: [shared],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 555,
+		});
+		const summaryB = buildToolPruneSummaryData({
+			allRecords: [shared, specific],
+			metadataRecords: [specific],
+			settings: ENABLED_SETTINGS,
+			summaryChars: 10,
+			timestamp: 556,
+		});
+		const entriesA = [
+			{
+				type: "message",
+				id: "entry-1",
+				message: makeToolResultMessage("shared"),
+			},
+			{
+				type: "custom",
+				id: "summary-A",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryA,
+			},
+		];
+		const branchA = makeCtxFromEntries(entriesA);
+		const branchB = makeCtxFromEntries([
+			...entriesA,
+			{
+				type: "message",
+				id: "entry-2",
+				message: makeToolResultMessage("specific"),
+			},
+			{
+				type: "custom",
+				id: "summary-B",
+				customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+				data: summaryB,
+			},
+		]);
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+
+		coordinator.onSessionTree(branchA);
+		expect(state.finalizedSnapshot()).toHaveLength(1);
+		coordinator.onSessionTree(branchB);
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.statusSnapshot().lastReconstructionStatus).toBe("error");
+		expect(state.statusSnapshot().lastReconstructionError).toContain(
+			"duplicate",
+		);
+	});
+
 	it("advances short refs after reconstruction to avoid duplicate refs", () => {
 		const toolResult = makeToolResultMessage("tc1", "original output");
 		const state = new ToolOutputPruningState();
@@ -524,6 +1009,86 @@ describe("ToolOutputPruningCoordinator", () => {
 		expect(state.finalizedSnapshot()).toHaveLength(0);
 		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
 		expect(pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("admits the last metadata slot but refuses a flush that would erase the index", async () => {
+		const entries: Parameters<typeof makeCtxFromEntries>[0] = Array.from(
+			{ length: MAX_RECONSTRUCTION_SCAN_ENTRIES - 1 },
+			(_, index) => {
+				const ref = index + 1;
+				const record = makeRecord(`tc${ref}`, `t${ref}`, `entry-${ref}`);
+				return [
+					{
+						type: "message",
+						id: `entry-${ref}`,
+						message: makeToolResultMessage(`tc${ref}`),
+					},
+					{
+						type: "custom",
+						id: `summary-${ref}`,
+						customType: TOOL_PRUNE_SUMMARY_CUSTOM_TYPE,
+						data: buildToolPruneSummaryData({
+							allRecords: [record],
+							metadataRecords: [record],
+							settings: ENABLED_SETTINGS,
+							summaryChars: 10,
+							timestamp: ref,
+						}),
+					},
+				];
+			},
+		).flat();
+		const ctx = makeCtxFromEntries(entries);
+		const state = new ToolOutputPruningState();
+		const coordinator = new ToolOutputPruningCoordinator({
+			state,
+			getSettings: () => ENABLED_SETTINGS,
+		});
+		const pi = {
+			appendEntry: vi.fn((customType: string, data?: unknown) => {
+				entries.push({
+					type: "custom",
+					id: `summary-${entries.length}`,
+					customType,
+					data,
+				});
+			}),
+		};
+		coordinator.onSessionTree(ctx);
+		expect(state.finalizedSnapshot()).toHaveLength(
+			MAX_RECONSTRUCTION_SCAN_ENTRIES - 1,
+		);
+
+		for (const ref of [
+			MAX_RECONSTRUCTION_SCAN_ENTRIES,
+			MAX_RECONSTRUCTION_SCAN_ENTRIES + 1,
+		]) {
+			entries.push({
+				type: "message",
+				id: `entry-${ref}`,
+				message: makeToolResultMessage(`tc${ref}`),
+			});
+			state.addPendingBatch(makeBatch([`rec-tc${ref}`]), [
+				makeRecord(`tc${ref}`, `t${ref}`, null),
+			]);
+			mockCompleteSimple.mockResolvedValueOnce(
+				makeSummarizerResponse(`## t${ref}\nSummary ${ref}.`),
+			);
+			const result = await coordinator.manualFlush(ctx, pi);
+			if (ref === MAX_RECONSTRUCTION_SCAN_ENTRIES) {
+				expect(result.ok).toBe(true);
+				expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+			} else {
+				expect(result.ok).toBe(false);
+				expect(result.message).toContain("too many metadata entries");
+				expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+			}
+			coordinator.onSessionTree(ctx);
+			expect(state.finalizedSnapshot()).toHaveLength(
+				MAX_RECONSTRUCTION_SCAN_ENTRIES,
+			);
+		}
+		expect(coordinator.query({ ref: "t1" }, ctx).matches).toHaveLength(1);
 	});
 
 	it("manual flush delegates with current branch entries", async () => {

@@ -214,7 +214,7 @@ npx vitest run test/classify-extract.test.ts    # Classification
 npx vitest run test/lifecycle.test.ts           # executeCompaction lifecycle
 npx vitest run test/compatibility.test.ts       # stream route selection (session/registry/native fallback)
 npx vitest run test/compaction-runtime-contract.test.ts  # real compact() helper through the registry route
-npx vitest run test/provider-boundary-087.test.ts  # skipUnless a host Pi 0.87 install exists: registry streamSimple reaches the custom provider boundary with request-time auth, no network
+npx vitest run test/provider-boundary-087.test.ts  # skipUnless a host Pi 0.87 install exists: routes the real Pi 0.87 compact() helper through runCustomCompaction to a custom provider with request-time auth, no network
 npx vitest run test/compact-run-custom-compaction.test.ts  # runCustomCompaction: auth forwarding, aborts, schema validation, normalization, native fallback
 npx vitest run test/summary-provenance.test.ts  # persisted-summary detection + schema provenance
 npx vitest run test/snapshot-evidence.test.ts   # Session evidence extraction
