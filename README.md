@@ -459,6 +459,7 @@ Dev/release playbook:
 ## Build and test
 
 ```bash
+npm run lint
 npm run typecheck
 npm run build
 npm test
