@@ -1,16 +1,22 @@
-import { promises as fs } from "node:fs";
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { constants, promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import {
+	dirname,
+	isAbsolute,
+	join,
+	normalize,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
 import type {
 	CompactionTelemetry,
 	TelemetryPersistenceIssue,
 } from "./types.js";
 
-const PERSIST_DIR = join(
-	process.env.HOME ?? process.env.USERPROFILE ?? ".",
-	".pi",
-	"agent",
-	"state",
-);
+const PERSIST_ROOT = process.env.HOME ?? process.env.USERPROFILE ?? ".";
+const PERSIST_DIR = join(PERSIST_ROOT, ".pi", "agent", "state");
 const PERSIST_FILE = join(PERSIST_DIR, "compact-plus-telemetry.json");
 const PERSIST_DIR_MODE = 0o700;
 const PERSIST_FILE_MODE = 0o600;
@@ -42,49 +48,89 @@ export interface SaveTelemetryResult {
 
 const PERSIST_VERSION = 3;
 
-function getPersistFile(options: TelemetryPersistenceOptions = {}): string {
-	return options.filePath ?? PERSIST_FILE;
+function persistPath(
+	options: TelemetryPersistenceOptions,
+	operation: "load" | "save",
+): { filePath: string; root: string; issue: TelemetryPersistenceIssue | null } {
+	const candidate = options.filePath ?? PERSIST_FILE;
+	const filePath = typeof candidate === "string" ? candidate : "";
+	// The override is only for isolated tests. The OS temp directory is its trust
+	// anchor; normal persistence is anchored at the configured user home.
+	const rawRoot = options.filePath === undefined ? PERSIST_ROOT : tmpdir();
+	// resolve removes trailing separators so dirname() can reach this boundary.
+	// Keep a relative HOME invalid rather than turning it into an implicit cwd.
+	const root = isAbsolute(rawRoot) ? resolve(rawRoot) : rawRoot;
+	const within = filePath ? relative(root, filePath) : "";
+	const valid =
+		filePath !== "" &&
+		isAbsolute(root) &&
+		isAbsolute(filePath) &&
+		normalize(filePath) === filePath &&
+		within !== "" &&
+		within !== ".." &&
+		!within.startsWith(`..${sep}`) &&
+		!isAbsolute(within);
+	return {
+		filePath,
+		root,
+		issue: valid
+			? null
+			: buildIssue(
+					operation,
+					operation === "load" ? "read-failed" : "write-failed",
+					filePath,
+					undefined,
+					"use a normalized absolute telemetry path inside the trusted root",
+				),
+	};
 }
 
-async function detectSymlink(
-	targetPath: string,
-): Promise<{ path: string; linkTarget: string } | null> {
-	try {
-		const stat = await fs.lstat(targetPath);
-		if (stat.isSymbolicLink()) {
-			const linkTarget = await fs.readlink(targetPath);
-			return { path: targetPath, linkTarget };
-		}
-	} catch {
-		// ENOENT or other errors are fine — path doesn't exist or isn't a symlink
-	}
-	return null;
-}
-
-async function detectSymlinkInPath(
+async function inspectPath(
 	filePath: string,
-): Promise<{ path: string; linkTarget: string } | null> {
+	root: string,
+	operation: "load" | "save",
+): Promise<TelemetryPersistenceIssue | null> {
 	let current = filePath;
-	while (current !== dirname(current)) {
-		const found = await detectSymlink(current);
-		if (found) return found;
-		// Stop once we reach an existing real directory; symlinks above it
-		// are typically system-level (e.g., /var on macOS) and not attack vectors.
+	for (;;) {
 		try {
-			const stat = await fs.stat(current);
-			if (stat.isDirectory()) {
-				break;
+			const stat = await fs.lstat(current);
+			if (stat.isSymbolicLink()) {
+				return buildIssue(
+					operation,
+					"symlink-detected",
+					filePath,
+					new Error(`symlink detected at ${current}`),
+					"access telemetry through a symlink",
+				);
 			}
-		} catch {
-			// path does not exist yet — keep walking upward
+			if (current !== filePath && !stat.isDirectory()) {
+				return buildIssue(
+					operation,
+					operation === "load" ? "read-failed" : "write-failed",
+					filePath,
+					undefined,
+					"access telemetry through a non-directory ancestor",
+				);
+			}
+		} catch (error) {
+			if (!isNodeError(error) || error.code !== "ENOENT" || current === root) {
+				return buildIssue(
+					operation,
+					operation === "load" ? "read-failed" : "write-failed",
+					filePath,
+					error,
+					"inspect telemetry path",
+				);
+			}
 		}
+		if (current === root) return null;
 		current = dirname(current);
 	}
-	return null;
 }
 
 async function ensureDir(
 	path: string,
+	root: string,
 ): Promise<TelemetryPersistenceIssue | null> {
 	try {
 		await fs.mkdir(path, { recursive: true, mode: PERSIST_DIR_MODE });
@@ -98,25 +144,43 @@ async function ensureDir(
 		);
 	}
 
-	return chmodBestEffort(path, PERSIST_DIR_MODE, "save", "telemetry directory");
-}
-
-async function chmodBestEffort(
-	path: string,
-	mode: number,
-	operation: "load" | "save",
-	target: string,
-): Promise<TelemetryPersistenceIssue | null> {
+	const pathIssue = await inspectPath(path, root, "save");
+	if (pathIssue) return pathIssue;
 	try {
-		await fs.chmod(path, mode);
+		const flags =
+			constants.O_RDONLY |
+			(constants.O_DIRECTORY ?? 0) |
+			(constants.O_NOFOLLOW ?? 0);
+		let handle: Awaited<ReturnType<typeof fs.open>>;
+		try {
+			handle = await fs.open(path, flags);
+		} catch (openError) {
+			if (!isNodeError(openError) || openError.code !== "EACCES") {
+				throw openError;
+			}
+			// A user-owned directory may allow search/write but not read (0300).
+			// Node cannot fchmod it without a readable directory handle. This
+			// checked pathname fallback has the documented ancestor-swap race.
+			const recheck = await inspectPath(path, root, "save");
+			if (recheck) return recheck;
+			await fs.chmod(path, PERSIST_DIR_MODE);
+			const afterChmod = await inspectPath(path, root, "save");
+			if (afterChmod) return afterChmod;
+			handle = await fs.open(path, flags);
+		}
+		try {
+			await handle.chmod(PERSIST_DIR_MODE);
+		} finally {
+			await handle.close();
+		}
 		return null;
 	} catch (error) {
 		return buildIssue(
-			operation,
+			"save",
 			"permission-failed",
 			path,
 			error,
-			`harden ${target} permissions`,
+			"harden telemetry directory permissions",
 		);
 	}
 }
@@ -124,24 +188,22 @@ async function chmodBestEffort(
 export async function loadTelemetryWithDiagnostics(
 	options: TelemetryPersistenceOptions = {},
 ): Promise<LoadTelemetryResult> {
-	const persistFile = getPersistFile(options);
-	const symlink = await detectSymlinkInPath(persistFile);
-	if (symlink) {
-		return {
-			telemetry: null,
-			issue: buildIssue(
-				"load",
-				"symlink-detected",
-				persistFile,
-				new Error(
-					`symlink detected at ${symlink.path} -> ${symlink.linkTarget}`,
-				),
-				"refuse to read telemetry through symlink",
-			),
-		};
-	}
+	const { filePath: persistFile, root, issue } = persistPath(options, "load");
+	const pathIssue = issue ?? (await inspectPath(persistFile, root, "load"));
+	if (pathIssue) return { telemetry: null, issue: pathIssue };
 	try {
-		const raw = await fs.readFile(persistFile, "utf8");
+		// O_NOFOLLOW protects the leaf at open time; ancestor swaps remain a
+		// pathname race on platforms without descriptor-relative traversal.
+		const handle = await fs.open(
+			persistFile,
+			constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+		);
+		let raw: string;
+		try {
+			raw = await handle.readFile("utf8");
+		} finally {
+			await handle.close();
+		}
 		const parsed = JSON.parse(raw) as unknown;
 
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -193,6 +255,18 @@ export async function loadTelemetryWithDiagnostics(
 		if (isNodeError(error) && error.code === "ENOENT") {
 			return { telemetry: null, issue: null };
 		}
+		if (isNodeError(error) && error.code === "ELOOP") {
+			return {
+				telemetry: null,
+				issue: buildIssue(
+					"load",
+					"symlink-detected",
+					persistFile,
+					error,
+					"read telemetry through a symlink",
+				),
+			};
+		}
 		if (error instanceof SyntaxError) {
 			return {
 				telemetry: null,
@@ -220,65 +294,65 @@ export async function saveTelemetryWithDiagnostics(
 	data: Omit<PersistedTelemetry, "version">,
 	options: TelemetryPersistenceOptions = {},
 ): Promise<SaveTelemetryResult> {
-	const persistFile = getPersistFile(options);
+	const { filePath: persistFile, root, issue } = persistPath(options, "save");
+	const pathIssue = issue ?? (await inspectPath(persistFile, root, "save"));
+	if (pathIssue) return { saved: false, issue: pathIssue };
 	const persistDir = dirname(persistFile);
-	const symlink = await detectSymlinkInPath(persistFile);
-	if (symlink) {
-		return {
-			saved: false,
-			issue: buildIssue(
-				"save",
-				"symlink-detected",
-				persistFile,
-				new Error(
-					`symlink detected at ${symlink.path} -> ${symlink.linkTarget}`,
-				),
-				"refuse to write telemetry through symlink",
-			),
-		};
-	}
-	const dirIssue = await ensureDir(persistDir);
-	if (dirIssue?.code === "write-failed") {
-		return { saved: false, issue: dirIssue };
-	}
-
-	const payload: PersistedTelemetry = {
-		...data,
-		version: PERSIST_VERSION,
-	};
-	const tempFile = `${persistFile}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-	try {
-		await fs.writeFile(tempFile, JSON.stringify(payload, null, 2), {
-			mode: PERSIST_FILE_MODE,
-		});
-	} catch (error) {
+	if (persistDir === root) {
 		return {
 			saved: false,
 			issue: buildIssue(
 				"save",
 				"write-failed",
 				persistFile,
-				error,
-				"write telemetry temp file",
+				undefined,
+				"create telemetry inside a directory below the trusted root",
 			),
 		};
 	}
+	const dirIssue = await ensureDir(persistDir, root);
+	if (dirIssue) return { saved: false, issue: dirIssue };
 
-	const chmodIssue = await chmodBestEffort(
-		tempFile,
-		PERSIST_FILE_MODE,
-		"save",
-		"telemetry temp file",
-	);
-
-	try {
-		await fs.rename(tempFile, persistFile);
-	} catch (error) {
+	const payload: PersistedTelemetry = {
+		...data,
+		version: PERSIST_VERSION,
+	};
+	const tempFile = `${persistFile}.tmp-${randomUUID()}`;
+	let created = false;
+	async function cleanupTemp(): Promise<void> {
+		if (!created || (await inspectPath(persistDir, root, "save"))) return;
 		try {
 			await fs.unlink(tempFile);
+			created = false;
 		} catch {
-			// ignore cleanup failure
+			// Best effort; never unlink through a known-unsafe parent path.
 		}
+	}
+	try {
+		const handle = await fs.open(
+			tempFile,
+			constants.O_WRONLY |
+				constants.O_CREAT |
+				constants.O_EXCL |
+				(constants.O_NOFOLLOW ?? 0),
+			PERSIST_FILE_MODE,
+		);
+		created = true;
+		try {
+			await handle.writeFile(JSON.stringify(payload, null, 2));
+			await handle.chmod(PERSIST_FILE_MODE);
+		} finally {
+			await handle.close();
+		}
+		const recheck = await inspectPath(persistFile, root, "save");
+		if (recheck) {
+			await cleanupTemp();
+			return { saved: false, issue: recheck };
+		}
+		await fs.rename(tempFile, persistFile);
+		return { saved: true, issue: null };
+	} catch (error) {
+		await cleanupTemp();
 		return {
 			saved: false,
 			issue: buildIssue(
@@ -290,8 +364,6 @@ export async function saveTelemetryWithDiagnostics(
 			),
 		};
 	}
-
-	return { saved: true, issue: chmodIssue ?? dirIssue };
 }
 
 export async function saveTelemetry(
@@ -306,24 +378,11 @@ async function quarantineCorruptTelemetry(
 	options: TelemetryPersistenceOptions,
 ): Promise<TelemetryPersistenceIssue> {
 	const quarantinePath = `${persistFile}.corrupt-${formatTimestamp(options.now?.() ?? new Date())}`;
+	const { root, issue } = persistPath(options, "load");
+	const pathIssue = issue ?? (await inspectPath(persistFile, root, "load"));
+	if (pathIssue) return pathIssue;
 	try {
 		await fs.rename(persistFile, quarantinePath);
-		const chmodIssue = await chmodBestEffort(
-			quarantinePath,
-			PERSIST_FILE_MODE,
-			"load",
-			"quarantined telemetry file",
-		);
-		return buildIssue(
-			"load",
-			"corrupt-json",
-			persistFile,
-			chmodIssue ? new Error(chmodIssue.message) : error,
-			chmodIssue
-				? "telemetry file contained invalid JSON and was quarantined, but quarantine permissions could not be hardened"
-				: "telemetry file contained invalid JSON and was quarantined",
-			quarantinePath,
-		);
 	} catch (renameError) {
 		return buildIssue(
 			"load",
@@ -333,6 +392,36 @@ async function quarantineCorruptTelemetry(
 			"telemetry file contained invalid JSON and could not be quarantined",
 		);
 	}
+	let chmodIssue: TelemetryPersistenceIssue | null = null;
+	try {
+		const handle = await fs.open(
+			quarantinePath,
+			constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+		);
+		try {
+			await handle.chmod(PERSIST_FILE_MODE);
+		} finally {
+			await handle.close();
+		}
+	} catch (chmodError) {
+		chmodIssue = buildIssue(
+			"load",
+			"permission-failed",
+			persistFile,
+			chmodError,
+			"harden quarantined telemetry file permissions",
+		);
+	}
+	return buildIssue(
+		"load",
+		"corrupt-json",
+		persistFile,
+		chmodIssue ? new Error(chmodIssue.message) : error,
+		chmodIssue
+			? "telemetry file contained invalid JSON and was quarantined, but quarantine permissions could not be hardened"
+			: "telemetry file contained invalid JSON and was quarantined",
+		quarantinePath,
+	);
 }
 
 function formatTimestamp(date: Date): string {
