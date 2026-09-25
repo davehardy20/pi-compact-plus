@@ -87,13 +87,15 @@ takes precedence over older `Task:` labels. With an active objective, only
 clear requests, redirects or cancellations replace it; ambiguous declarative
 replies remain context. To avoid treating a finite phrase list as complete,
 the existing summarizer also receives every projected user turn in chronological
-order when the complete evidence fits an 8 KiB UTF-8 budget (including per-turn
-framing allowance). It never silently samples or truncates a redirect. If the
-budget is exceeded, Compact+ cancels compaction and warns; a near-full session
-may require saving its objective before choosing another compaction path. When
-the extracted objective is provisional, the helper compares the complete
-evidence with the prior task: a clear new request supersedes it, but a
-status-only reply does not. The extension's exact "Continue with the current
+order when the complete evidence fits the available UTF-8 budget (including
+per-turn framing allowance). The default is 8 KiB; consistent native usage can
+expand it using verified context headroom, up to 256 KiB (see the runtime
+regression matrix below). It never silently samples or truncates a redirect.
+If the complete evidence exceeds the available budget, Compact+ cancels
+compaction and warns; a near-full session may require saving its objective
+before choosing another compaction path. When the extracted objective is
+provisional, the helper compares the complete evidence with the prior task:
+a clear new request supersedes it, but a status-only reply does not. The extension's exact "Continue with the current
 task." follow-up is not treated as a new objective. If no user request
 survives after the newest compaction boundary, a validated persisted summary
 supplies it; even an invalid newer summary cannot revive an older `Task:` entry.
@@ -481,6 +483,15 @@ The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `undici` advisories; the high-severity npm audit now blocks CI. A separate,
 reviewed Pi 0.87.1 SDK follow-up under `pi-compact-plus-02f1` must replace this
 intermediate baseline before that issue can close.
+
+Compact+ keeps every projected user turn since the last compaction in its
+intent-evidence prompt, including unrecognized redirects. The default 8 KiB
+budget expands only when native usage confirms spare model context: at most a
+quarter of the remaining tokens after a 16,384-token reserve, capped at 256 KiB.
+This lets a 1M-context session compact near a configured 180k-token threshold
+even when user evidence exceeds 8 KiB. If the full evidence still will not fit,
+compaction cancels rather than silently dropping instructions; estimated or
+inconsistent usage does not raise the budget.
 
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.

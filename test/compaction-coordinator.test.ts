@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
-import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
+import {
+	type CompactPlusThresholdSettings,
+	DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
+} from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import type { EffectiveUsage } from "../src/types.js";
 
@@ -18,13 +21,18 @@ const HIGH_USAGE: EffectiveUsage = {
 function createMockCtx(options?: {
 	mode?: string;
 	sessionFile?: string | undefined;
+	contextWindow?: number;
 }): ExtensionEventContext {
 	return {
 		mode: (options?.mode ?? "tui") as ExtensionEventContext["mode"],
 		hasUI: true,
 		ui: { notify: vi.fn() },
 		compact: vi.fn(),
-		model: { provider: "test", id: "model", contextWindow: 200_000 },
+		model: {
+			provider: "test",
+			id: "model",
+			contextWindow: options?.contextWindow ?? 200_000,
+		},
 		getContextUsage: vi.fn(() => ({
 			tokens: 160_000,
 			contextWindow: 200_000,
@@ -45,16 +53,18 @@ function createMockPi() {
 function createCoordinator(options?: {
 	disableAutoCompaction?: boolean;
 	state?: CompactionState;
+	usage?: EffectiveUsage;
+	thresholdSettings?: CompactPlusThresholdSettings;
 }) {
 	const state = options?.state ?? new CompactionState();
 	const coordinator = new CompactionCoordinator({
 		state,
 		pi: createMockPi(),
-		thresholdSettings: {
+		thresholdSettings: options?.thresholdSettings ?? {
 			...DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
 			thresholdMode: "percent",
 		},
-		getEffectiveUsage: () => HIGH_USAGE,
+		getEffectiveUsage: () => options?.usage ?? HIGH_USAGE,
 		persistTelemetrySnapshot: vi.fn(),
 		disableAutoCompaction: options?.disableAutoCompaction ?? false,
 	});
@@ -140,6 +150,53 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(state.isCompacting).toBe(false);
+	});
+
+	it("auto-compacts at 180k with complete >8 KiB user evidence on a 1M model", async () => {
+		const usage: EffectiveUsage = {
+			percent: 18.4,
+			tokens: 183_988,
+			contextWindow: 1_000_000,
+			source: "native",
+		};
+		const { coordinator, state } = createCoordinator({
+			usage,
+			thresholdSettings: {
+				...DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
+				thresholdMode: "effective_cap",
+				checkpointThresholdTokens: 150_000,
+				standardThresholdTokens: 180_000,
+				hardThresholdTokens: 240_000,
+			},
+		});
+		const ctx = createMockCtx({
+			mode: "tui",
+			sessionFile: "/tmp/session.jsonl",
+			contextWindow: 1_000_000,
+		});
+		const note = `Prior context ${"x".repeat(12_000)}\nI'd like to investigate login instead.`;
+		setProjectedUser(ctx, note);
+
+		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
+
+		expect(ctx.compact).toHaveBeenCalledOnce();
+		const instructions = vi.mocked(ctx.compact).mock.calls[0]?.[0]
+			?.customInstructions;
+		expect(instructions).toContain("x".repeat(12_000));
+		expect(instructions).toContain("I'd like to investigate login instead.");
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 	});
 
 	it("does not start manual or auto compaction with incomplete intent evidence", async () => {
