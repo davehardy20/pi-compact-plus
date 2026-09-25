@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	loadTelemetryWithDiagnostics,
 	saveTelemetryWithDiagnostics,
@@ -16,6 +16,7 @@ function makeTempDir(): string {
 }
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const dir of tempDirs.splice(0)) {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -146,8 +147,8 @@ describe("Compact+ telemetry persistence", () => {
 		});
 	});
 
-	it("saves telemetry and applies restrictive permissions on POSIX", async () => {
-		const filePath = path.join(makeTempDir(), "state", "telemetry.json");
+	it("saves telemetry through valid missing intermediate directories with restrictive permissions", async () => {
+		const filePath = path.join(makeTempDir(), "new", "state", "telemetry.json");
 
 		const result = await saveTelemetryWithDiagnostics(
 			{
@@ -247,6 +248,186 @@ describe("Compact+ telemetry persistence", () => {
 			code: "symlink-detected",
 			path: filePath,
 		});
+	});
+
+	it("rejects a distant symlink above an existing immediate parent without touching outside telemetry", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const outside = path.join(dir, "outside");
+		const inside = path.join(dir, "inside");
+		fs.mkdirSync(path.join(outside, "state"), { recursive: true });
+		fs.mkdirSync(inside);
+		fs.symlinkSync(outside, path.join(inside, "redirect"));
+		const outsideFile = path.join(outside, "state", "telemetry.json");
+		const original = JSON.stringify({ version: 3, lastCompactTime: 12 });
+		fs.writeFileSync(outsideFile, original);
+		const filePath = path.join(inside, "redirect", "state", "telemetry.json");
+
+		const loaded = await loadTelemetryWithDiagnostics({ filePath });
+		expect(loaded.telemetry).toBeNull();
+		expect(loaded.issue?.code).toBe("symlink-detected");
+
+		const saved = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+		expect(saved.saved).toBe(false);
+		expect(saved.issue?.code).toBe("symlink-detected");
+		expect(fs.readFileSync(outsideFile, "utf8")).toBe(original);
+		expect(fs.readdirSync(path.join(outside, "state"))).toEqual([
+			"telemetry.json",
+		]);
+	});
+
+	it("rejects distant symlinks even when intermediate directories are missing", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const outside = path.join(dir, "outside");
+		fs.mkdirSync(outside);
+		const redirect = path.join(dir, "redirect");
+		fs.symlinkSync(outside, redirect);
+		const filePath = path.join(redirect, "new", "state", "telemetry.json");
+
+		const result = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+		expect(result).toMatchObject({
+			saved: false,
+			issue: { code: "symlink-detected" },
+		});
+		expect(fs.readdirSync(outside)).toEqual([]);
+	});
+
+	it("rejects a leaf swapped to a symlink immediately before opening for read", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const filePath = path.join(dir, "telemetry.json");
+		const outside = path.join(dir, "outside.json");
+		fs.writeFileSync(filePath, "{}");
+		fs.writeFileSync(outside, JSON.stringify({ version: 3 }));
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		vi.spyOn(fs.promises, "open").mockImplementation((target, flags, mode) => {
+			fs.unlinkSync(filePath);
+			fs.symlinkSync(outside, filePath);
+			return originalOpen(target, flags, mode);
+		});
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+		expect(result.telemetry).toBeNull();
+		expect(result.issue?.code).toBe("symlink-detected");
+		expect(fs.readFileSync(outside, "utf8")).toBe(
+			JSON.stringify({ version: 3 }),
+		);
+	});
+
+	it("rejects a leaf swapped before temp creation without touching outside data", async () => {
+		if (process.platform === "win32") return;
+		const dir = makeTempDir();
+		const filePath = path.join(dir, "telemetry.json");
+		const outside = path.join(dir, "outside.json");
+		fs.writeFileSync(filePath, "original");
+		fs.writeFileSync(outside, "outside");
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		vi.spyOn(fs.promises, "open").mockImplementation((target, flags, mode) => {
+			if (typeof target === "string" && target.includes(".tmp-")) {
+				fs.unlinkSync(filePath);
+				fs.symlinkSync(outside, filePath);
+			}
+			return originalOpen(target, flags, mode);
+		});
+
+		const result = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+		expect(result).toMatchObject({
+			saved: false,
+			issue: { code: "symlink-detected" },
+		});
+		expect(fs.readFileSync(outside, "utf8")).toBe("outside");
+		expect(fs.readdirSync(dir).sort()).toEqual([
+			"outside.json",
+			"telemetry.json",
+		]);
+	});
+
+	it("rejects unnormalized traversal paths without modifying the target", async () => {
+		const dir = makeTempDir();
+		fs.mkdirSync(path.join(dir, "state"));
+		const outside = path.join(dir, "outside.json");
+		fs.writeFileSync(outside, "original");
+		const filePath = `${dir}/state/../outside.json`;
+
+		const loaded = await loadTelemetryWithDiagnostics({ filePath });
+		expect(loaded).toMatchObject({
+			telemetry: null,
+			issue: { code: "read-failed" },
+		});
+		const saved = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+		expect(saved).toMatchObject({
+			saved: false,
+			issue: { code: "write-failed" },
+		});
+		expect(fs.readFileSync(outside, "utf8")).toBe("original");
+	});
+
+	it("preserves existing telemetry and removes its temp file if rename fails", async () => {
+		const dir = makeTempDir();
+		const filePath = path.join(dir, "telemetry.json");
+		fs.writeFileSync(filePath, "original");
+		vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(
+			new Error("rename denied"),
+		);
+
+		const result = await saveTelemetryWithDiagnostics(
+			{
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			},
+			{ filePath },
+		);
+		expect(result).toMatchObject({
+			saved: false,
+			issue: { code: "write-failed" },
+		});
+		expect(fs.readFileSync(filePath, "utf8")).toBe("original");
+		expect(fs.readdirSync(dir)).toEqual(["telemetry.json"]);
 	});
 
 	it("rejects saving through a symlinked telemetry file", async () => {
