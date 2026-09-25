@@ -476,6 +476,12 @@ three-package versions in both trees and fail on a configured but incomplete
 0.87.1 tree. The `^0.83.0` dev-dependency range is **not** a raised support
 floor; changing that floor requires a separate decision.
 
+The transitive-advisory slice updates locked `esbuild`, `nanoid`, and `postcss`
+only. It does **not** fix Pi 0.83.0's bundled `brace-expansion` and `undici`;
+`npm audit --audit-level=high` remains nonblocking and reports those findings.
+A separate, reviewed Pi 0.87.1 SDK follow-up under `pi-compact-plus-02f1` must
+replace this baseline and make the audit blocking before that issue can close.
+
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.
 - **F2 — genuine summary provenance:** `test/index.test.ts` rejects spoofed/fenced
