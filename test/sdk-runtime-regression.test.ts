@@ -70,7 +70,7 @@ function assistant(
 	};
 }
 
-it("Pi 0.84: real SDK tool turn -> safe cut -> streamed summary -> echo -> continuation, with retained redirect", async () => {
+it("Pi 0.84.4: real SDK tool turn -> safe cut -> streamed summary -> echo -> continuation, with retained redirect", async () => {
 	const manifest = JSON.parse(
 		readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 	) as { devDependencies: Record<string, string> };
@@ -79,8 +79,8 @@ it("Pi 0.84: real SDK tool turn -> safe cut -> streamed summary -> echo -> conti
 		"@earendil-works/pi-agent-core",
 		"@earendil-works/pi-ai",
 	]) {
-		expect(manifest.devDependencies[pkg], pkg).toBe("0.84.0");
-		expect(installedVersion(pkg), pkg).toBe("0.84.0");
+		expect(manifest.devDependencies[pkg], pkg).toBe("0.84.4");
+		expect(installedVersion(pkg), pkg).toBe("0.84.4");
 	}
 	const session = SessionManager.inMemory();
 	session.appendMessage(user("Investigate the old issue."));
