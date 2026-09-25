@@ -308,10 +308,12 @@ settings are resolved when pruning commands and lifecycle events run, but
   Its user home is the trusted boundary: the home and every descendant path
   component are checked for symlinks before access. Missing state directories
   are created privately; reads use no-follow opens where supported, and writes
-  use an exclusive, no-follow temporary file before atomic replacement. The test-only path
-  override is confined to the OS temporary directory. These pathname checks
-  do **not** eliminate concurrent ancestor-swap races: Node lacks portable
-  descriptor-relative directory traversal/rename APIs. Assume the user-owned
+  use an exclusive, no-follow temporary file before atomic replacement. An
+  existing write-only directory may need a checked pathname `chmod` before a
+  directory handle can be opened. The test-only path override is confined to
+  the OS temporary directory. These pathname checks do **not** eliminate
+  concurrent ancestor-swap races: Node lacks portable descriptor-relative
+  directory traversal/rename APIs. Assume the user-owned
   home/state ancestry is not concurrently controlled by an adversary; fail
   closed on detected links and path or permission errors.
 - State resets when the model changes to avoid stale compaction context from a different model.

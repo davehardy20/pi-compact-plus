@@ -147,12 +147,27 @@ async function ensureDir(
 	const pathIssue = await inspectPath(path, root, "save");
 	if (pathIssue) return pathIssue;
 	try {
-		const handle = await fs.open(
-			path,
+		const flags =
 			constants.O_RDONLY |
-				(constants.O_DIRECTORY ?? 0) |
-				(constants.O_NOFOLLOW ?? 0),
-		);
+			(constants.O_DIRECTORY ?? 0) |
+			(constants.O_NOFOLLOW ?? 0);
+		let handle: Awaited<ReturnType<typeof fs.open>>;
+		try {
+			handle = await fs.open(path, flags);
+		} catch (openError) {
+			if (!isNodeError(openError) || openError.code !== "EACCES") {
+				throw openError;
+			}
+			// A user-owned directory may allow search/write but not read (0300).
+			// Node cannot fchmod it without a readable directory handle. This
+			// checked pathname fallback has the documented ancestor-swap race.
+			const recheck = await inspectPath(path, root, "save");
+			if (recheck) return recheck;
+			await fs.chmod(path, PERSIST_DIR_MODE);
+			const afterChmod = await inspectPath(path, root, "save");
+			if (afterChmod) return afterChmod;
+			handle = await fs.open(path, flags);
+		}
 		try {
 			await handle.chmod(PERSIST_DIR_MODE);
 		} finally {
@@ -368,34 +383,6 @@ async function quarantineCorruptTelemetry(
 	if (pathIssue) return pathIssue;
 	try {
 		await fs.rename(persistFile, quarantinePath);
-		const handle = await fs.open(
-			quarantinePath,
-			constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-		);
-		let chmodIssue: TelemetryPersistenceIssue | null = null;
-		try {
-			await handle.chmod(PERSIST_FILE_MODE);
-		} catch (chmodError) {
-			chmodIssue = buildIssue(
-				"load",
-				"permission-failed",
-				persistFile,
-				chmodError,
-				"harden quarantined telemetry file permissions",
-			);
-		} finally {
-			await handle.close();
-		}
-		return buildIssue(
-			"load",
-			"corrupt-json",
-			persistFile,
-			chmodIssue ? new Error(chmodIssue.message) : error,
-			chmodIssue
-				? "telemetry file contained invalid JSON and was quarantined, but quarantine permissions could not be hardened"
-				: "telemetry file contained invalid JSON and was quarantined",
-			quarantinePath,
-		);
 	} catch (renameError) {
 		return buildIssue(
 			"load",
@@ -405,6 +392,36 @@ async function quarantineCorruptTelemetry(
 			"telemetry file contained invalid JSON and could not be quarantined",
 		);
 	}
+	let chmodIssue: TelemetryPersistenceIssue | null = null;
+	try {
+		const handle = await fs.open(
+			quarantinePath,
+			constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+		);
+		try {
+			await handle.chmod(PERSIST_FILE_MODE);
+		} finally {
+			await handle.close();
+		}
+	} catch (chmodError) {
+		chmodIssue = buildIssue(
+			"load",
+			"permission-failed",
+			persistFile,
+			chmodError,
+			"harden quarantined telemetry file permissions",
+		);
+	}
+	return buildIssue(
+		"load",
+		"corrupt-json",
+		persistFile,
+		chmodIssue ? new Error(chmodIssue.message) : error,
+		chmodIssue
+			? "telemetry file contained invalid JSON and was quarantined, but quarantine permissions could not be hardened"
+			: "telemetry file contained invalid JSON and was quarantined",
+		quarantinePath,
+	);
 }
 
 function formatTimestamp(date: Date): string {

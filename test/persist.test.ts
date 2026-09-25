@@ -123,6 +123,32 @@ describe("Compact+ telemetry persistence", () => {
 		}
 	});
 
+	it("reports successful quarantine even if the later no-follow open fails", async () => {
+		const dir = makeTempDir();
+		const filePath = path.join(dir, "telemetry.json");
+		fs.writeFileSync(filePath, "{ invalid");
+		const originalOpen = fs.promises.open.bind(fs.promises);
+		vi.spyOn(fs.promises, "open").mockImplementation((target, flags, mode) => {
+			if (typeof target === "string" && target.includes(".corrupt-")) {
+				return Promise.reject(new Error("quarantine chmod denied"));
+			}
+			return originalOpen(target, flags, mode);
+		});
+
+		const result = await loadTelemetryWithDiagnostics({
+			filePath,
+			now: () => new Date("2026-05-21T10:00:00.000Z"),
+		});
+		const quarantinePath = `${filePath}.corrupt-2026-05-21T10-00-00-000Z`;
+		expect(result.issue).toMatchObject({
+			code: "corrupt-json",
+			quarantinePath,
+		});
+		expect(result.issue?.message).toContain("was quarantined");
+		expect(fs.existsSync(filePath)).toBe(false);
+		expect(fs.readFileSync(quarantinePath, "utf8")).toBe("{ invalid");
+	});
+
 	it("reports read failures distinctly from missing files", async () => {
 		const filePath = makeTempDir();
 
@@ -522,6 +548,33 @@ describe("Compact+ telemetry persistence", () => {
 			code: "symlink-detected",
 			path: filePath,
 		});
+	});
+
+	it("hardens an existing write-only state directory before saving", async () => {
+		if (process.platform === "win32" || process.getuid?.() === 0) return;
+		const dir = makeTempDir();
+		const state = path.join(dir, "state");
+		fs.mkdirSync(state);
+		fs.chmodSync(state, 0o300);
+		try {
+			const filePath = path.join(state, "telemetry.json");
+			const result = await saveTelemetryWithDiagnostics(
+				{
+					lastCompaction: null,
+					lastFallbackReason: null,
+					lastInjectedEcho: null,
+					lastCompactTime: 0,
+					lastCompactTokens: 0,
+					lastModelKey: null,
+				},
+				{ filePath },
+			);
+			expect(result).toMatchObject({ saved: true, issue: null });
+			expect(fs.statSync(state).mode & 0o777).toBe(0o700);
+			expect(fs.existsSync(filePath)).toBe(true);
+		} finally {
+			fs.chmodSync(state, 0o700);
+		}
 	});
 
 	it("reports write-failed when parent directory is read-only", async () => {
