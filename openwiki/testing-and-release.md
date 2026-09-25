@@ -6,14 +6,14 @@
 
 - **Vitest** (`vitest run` for CI, `vitest` for watch mode).
 - **Environment:** Node (`vitest.config.ts`).
-- **~529 tests** across 29 files (as of the `0.2.0` baseline).
-- **Mock strategy:** Pi core packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`) are mocked via `vi.mock` in test files. The `@earendil-works/pi-ai` mock exposes `completeSimple` and `streamSimple` for summarizer/compatibility tests.
+- **Mock strategy:** most suites mock Pi core packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`) via `vi.mock`. The `@earendil-works/pi-ai` mock exposes `completeSimple` and `streamSimple` for summarizer/compatibility tests. Two suites run against the real Pi SDK, and `test/provider-boundary-087.test.ts` uses `vi.mock` only as a forwarding bridge to the isolated real Pi 0.87.1 helper — see "Real-SDK integration suites" below.
 
 ## Test commands
 
 ```bash
 npm test                                    # vitest run (all tests)
 npm run test:watch                          # vitest (watch mode)
+npm run test:coverage                       # v8 JSON coverage → coverage/
 npx vitest run test/index.test.ts           # Main integration suite (~139 tests)
 npx vitest run test/tool-output-pruning/    # All pruning tests
 npx vitest run test/focus-echo              # All focus-echo tests (by pattern)
@@ -24,7 +24,10 @@ npx vitest run test/focus-echo              # All focus-echo tests (by pattern)
 | File | Tests | Coverage area |
 |---|---|---|
 | `test/index.test.ts` | ~139 | Policy, settings, compaction, focus-echo, usage, public API surface |
-| `test/persist.test.ts` | — | Telemetry persistence, symlink detection, schema versioning |
+| `test/persist.test.ts` | — | Telemetry persistence, trust-root/symlink/ancestor checks, schema versioning |
+| `test/sdk-runtime-regression.test.ts` | — | Real Pi 0.83.0 SDK: cut point, routed stream summary, projection, usage, echo, continuation (see below) |
+| `test/sdk-session-reload.test.ts` | — | Real Pi JSONL session reload: A→B→A branch reconciliation, metadata-only durability, recovery (see below) |
+| `test/provider-boundary-087.test.ts` | — | Real Pi 0.87.1 runtime/registry/session preparation via `PI_COMPACT_PLUS_TEST_PI_087_ROOT`; skips locally when unset |
 | `test/lifecycle.test.ts` | — | `executeCompaction` lifecycle (onComplete/onError) |
 | `test/classify-extract.test.ts` | — | Content classification, density scoring |
 | `test/snapshot-evidence.test.ts` | — | Session evidence extraction (objective, blockers, files) |
@@ -38,6 +41,16 @@ npx vitest run test/focus-echo              # All focus-echo tests (by pattern)
 | `test/focus-echo-normalization-rules.test.ts` | 2 | Rule taxonomy, per-field helpers |
 | `test/focus-echo-draft.test.ts` | — | Draft extraction from summary sections |
 | `test/tool-output-pruning/*.test.ts` | 15 files | Full pruning subsystem |
+
+### Real-SDK integration suites
+
+Three suites exercise the **real** Pi SDK:
+
+- `test/sdk-runtime-regression.test.ts` — Pi **0.83.0** (versions asserted for all three packages), resolved from the lockfile via `import.meta.resolve`, no `vi.mock`. Builds a real in-memory `SessionManager` branch from synthetically appended tool messages, drives `prepareCompaction` (asserting the cut point keeps a redirect user message), routes a local stream into Pi's real compaction helper, then exercises Pi-owned `appendCompaction` + context projection, post-compaction usage (`getEffectiveUsage` must not resurrect stale estimates), focus echo, and a manually appended continuation turn. The model response stream and extension event delivery are simulated — no tool or continuation prompt is executed, and no network access occurs.
+- `test/sdk-session-reload.test.ts` — Pi **0.83.0**, resolved from the lockfile, no `vi.mock`. Creates a real on-disk JSONL session via `SessionManager.create`, persists a tool-prune summary custom entry, reopens with `SessionManager.open`, and verifies metadata-only reconstruction (`fallbackSnippets` null; the original output is absent from the durable pruning metadata entry while remaining in Pi's JSONL tool-result message), recovery-query content bounds, and A→B→A branch reconciliation with short-ref continuity.
+- `test/provider-boundary-087.test.ts` — Pi **0.87.1** from an isolated prefix (CI) or `PI_COMPACT_PLUS_TEST_PI_087_ROOT` (local opt-in). Its `vi.mock` of `@earendil-works/pi-coding-agent` is solely a forwarding bridge to the isolated real 0.87.1 compact helper (this Vitest process resolves the locked 0.83 package); the helper, session manager, and model registry are real. Uses a registry-backed local stream; never a remote provider.
+
+The README's **"Runtime regression matrix (F1–F11)"** section is the canonical map from each regression class (F1 unsafe compaction, F2 summary provenance, … F11 ancestor-symlink telemetry) to the test files covering it.
 
 ### Test fixtures
 
@@ -77,7 +90,7 @@ npm run typecheck      # tsc --noEmit (no output)
 4. Lockfile consistency check: `npm ci --dry-run --package-lock-only` — fails if lockfile is out of sync.
 5. Typecheck: `npm run typecheck` (if `typecheck` script or `tsconfig.json` exists).
 6. Test: `npm test` (if `test` script or vitest config exists).
-7. Pi 0.87 provider boundary (if tests exist): installs an isolated `@earendil-works/pi-coding-agent@0.87.1` into `$RUNNER_TEMP/pi-087` (`npm install --prefix`, `--ignore-scripts`, no audit/fund) and runs `npx --no-install vitest run test/provider-boundary-087.test.ts` with `PI_COMPACT_PLUS_TEST_PI_087_ROOT` pointing at it. A configured-but-incomplete runtime fails the test rather than silently skipping (the local fallback path `/opt/homebrew/...` is skip-if-missing).
+7. Pi 0.87 provider boundary (if tests exist): installs an isolated `@earendil-works/pi-coding-agent@0.87.1` into `$RUNNER_TEMP/pi-087` (`npm install --prefix`, `--ignore-scripts`, no audit/fund) and runs `npx --no-install vitest run test/provider-boundary-087.test.ts` with `PI_COMPACT_PLUS_TEST_PI_087_ROOT` pointing at it. The test asserts the exact 0.87.1 versions of the coding-agent package and its nested `pi-agent-core`/`pi-ai` packages; a configured-but-incomplete runtime **fails** rather than skipping. Locally the test skips when `PI_COMPACT_PLUS_TEST_PI_087_ROOT` is unset — there is no host-global fallback path.
 8. Build: `npm run build` (if `build` script exists).
 9. Audit: `npm audit --audit-level=high` (if lockfile exists; `continue-on-error`).
 10. Secret scan: `gitleaks/gitleaks-action@v2` (`continue-on-error`).

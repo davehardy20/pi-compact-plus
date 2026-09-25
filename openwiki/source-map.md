@@ -102,6 +102,8 @@
 |---|---|---|
 | `index.test.ts` | ~139 | `src/index.ts`, `policy.ts`, `settings.ts`, `focus-echo/*`, `prompts.ts`, `usage.ts` |
 | `persist.test.ts` | — | `src/persist.ts` |
+| `sdk-runtime-regression.test.ts` | — | Real Pi 0.83.0 SDK (`compaction-coordinator.ts`, `events.ts`, `usage.ts`, `focus-echo/*`) |
+| `sdk-session-reload.test.ts` | — | `tool-output-pruning/coordinator.ts`, `metadata.ts`, `state.ts` via real Pi JSONL reload |
 | `lifecycle.test.ts` | — | `src/lifecycle.ts` |
 | `classify-extract.test.ts` | — | `src/classify.ts`, `src/session-evidence.ts` |
 | `snapshot-evidence.test.ts` | — | `src/session-evidence.ts` |

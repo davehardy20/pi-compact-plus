@@ -164,31 +164,46 @@ Sub-state for tool-output pruning. See [tool-output-pruning.md](tool-output-prun
 | `lastModelKey` | `string \| null` |
 | `version` | `number` (currently `3`) |
 
+### Trust root and path validation (`persistPath`)
+
+Every load/save first resolves a **trust root**: the configured user home (`$HOME`/`$USERPROFILE`) for normal persistence, or the OS temp directory when a test-only `options.filePath` override is supplied. The resolved file path must be absolute, normalized, and strictly **inside** the root (`relative(root, filePath)` neither empty, `..`, nor escaping). A non-absolute home is treated as invalid rather than implicitly resolving to cwd. Invalid paths fail closed as `read-failed`/`write-failed` before any filesystem access.
+
+### Ancestor inspection (`inspectPath`)
+
+Both load and save walk every path component from the file up to (and including) the root with `lstat`, before access:
+
+- Any symlink anywhere on the path — including above existing directories — is rejected as `symlink-detected`. There is no "stop at the first existing real directory" shortcut anymore.
+- A non-directory ancestor (e.g. a file where a directory is expected) is rejected as `read-failed`/`write-failed`.
+- Missing components (`ENOENT`) are tolerated except at the root itself; the walk terminates at the root, which acts as the trust boundary.
+
+Residual risk (documented in `README.md`): these are pathname checks and do not eliminate concurrent ancestor-swap races — Node lacks portable descriptor-relative directory traversal/rename APIs. The model assumes the user-owned home/state ancestry is not concurrently attacker-controlled and fails closed on detected links or path/permission errors.
+
 ### Load (`loadTelemetryWithDiagnostics`)
 
 On `session_start`:
-1. Detect symlinks in the file path or parent directories (`detectSymlinkInPath`). If found → quarantine and report `symlink-detected`.
-2. Read and parse JSON. If corrupt → quarantine and report `corrupt-json`.
-3. Validate schema version. If unsupported → quarantine and report `unsupported-version`.
-4. If invalid schema → report `invalid-schema`.
-5. If permission error → report `permission-failed`.
-6. If read error → report `read-failed`.
+1. Validate the path against the trust root, then run the ancestor walk (`inspectPath`). Any symlink on the path → `symlink-detected`; no quarantine, telemetry simply not loaded.
+2. Open the leaf with `O_RDONLY | O_NOFOLLOW` through a file handle and read from the handle. `ELOOP` from the no-follow open is also reported as `symlink-detected`.
+3. Parse JSON. If corrupt → quarantine to `<file>.corrupt-<timestamp>` and report `corrupt-json` (with `quarantinePath`).
+4. Validate schema version (1, 2, or current `3` accepted). If unsupported → report `unsupported-version` (no quarantine).
+5. If invalid schema → report `invalid-schema`.
+6. Other errors → `permission-failed` / `read-failed`.
 
 Returns `{ telemetry: PersistedTelemetry | null, issue: TelemetryPersistenceIssue | null }`.
 
 ### Save (`saveTelemetryWithDiagnostics`)
 
 Called after every compaction, focus-echo injection, and model change:
-1. Ensure directory exists (`mkdir -p`, mode `0o700`).
-2. Write JSON atomically (write to temp + rename).
-3. File mode `0o600`.
-4. Report `write-failed` on error.
+1. Validate the path and run the ancestor walk; reject a target that would sit **directly in** the trust root (it must live in a subdirectory, e.g. `~/.pi/agent/state/`).
+2. Ensure the directory exists (`mkdir -p`, mode `0o700`), re-inspect it, then harden its mode to `0o700` through an `O_DIRECTORY | O_NOFOLLOW` handle. A write-only (`0300`-style) directory that cannot be opened for reading falls back to a checked-pathname `chmod` with a re-inspection before and after — an explicitly documented ancestor-swap race window.
+3. Write the payload to `<file>.tmp-<uuid>` opened exclusively (`O_CREAT | O_EXCL | O_NOFOLLOW`, mode `0o600`), `chmod` via the handle, re-inspect the target path, then atomically `rename` over the telemetry file.
+4. On failure the temp file is unlinked **only** if the parent directory still passes `inspectPath`; it is never removed through a known-unsafe parent path.
+5. Report `write-failed` / `symlink-detected` / `permission-failed` on error.
 
 ### Telemetry persistence issues
 
 Issues are recorded in `state.telemetryPersistenceIssues` (capped at 5 most-recent). Each issue has: `operation` (load/save), `code`, `path`, `message`, `timestamp`, optional `quarantinePath`.
 
-Issue codes: `corrupt-json`, `invalid-schema`, `permission-failed`, `read-failed`, `symlink-detected`, `unsupported-version`, `write-failed`.
+Issue codes (see `TelemetryPersistenceIssueCode` in `src/types.ts`): `corrupt-json`, `invalid-schema`, `permission-failed`, `read-failed`, `symlink-detected`, `unsupported-version`, `write-failed`.
 
 ## Session evidence extraction (`src/session-evidence.ts`)
 

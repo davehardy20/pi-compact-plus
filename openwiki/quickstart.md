@@ -30,7 +30,7 @@
 | `src/policy.ts` | Threshold/band computation, checkpoint data, status snapshots |
 | `src/persist.ts` | Telemetry JSON persistence with symlink/security guards |
 | `src/session-evidence.ts` | Extracts objective, blockers, decisions, active files from session messages |
-| `test/` | Vitest test suite (~529 tests across 29 files) |
+| `test/` | Vitest test suite (run `npm test` for the current count) |
 | `scripts/` | Build verification, package checks, release scripts |
 | `.github/workflows/pr-checks-node.yml` | CI: typecheck + test |
 
