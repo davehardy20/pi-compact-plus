@@ -23,6 +23,43 @@ afterEach(() => {
 });
 
 describe("Compact+ telemetry persistence", () => {
+	it("uses a trailing-slash HOME as the default path boundary without walking to root", async () => {
+		const home = makeTempDir();
+		const stateDir = path.join(home, ".pi", "agent", "state");
+		fs.mkdirSync(stateDir, { recursive: true });
+		const filePath = path.join(stateDir, "compact-plus-telemetry.json");
+		fs.writeFileSync(filePath, JSON.stringify({ version: 3 }));
+		const originalHome = process.env.HOME;
+		process.env.HOME = `${home}/`;
+		vi.resetModules();
+		const originalLstat = fs.promises.lstat.bind(fs.promises);
+		let inspected = 0;
+		vi.spyOn(fs.promises, "lstat").mockImplementation((target, options) => {
+			if (++inspected > 20) throw new Error("walked beyond trusted home");
+			return originalLstat(target, options);
+		});
+		try {
+			const persistence = await import("../src/persist.js");
+			const loaded = await persistence.loadTelemetryWithDiagnostics();
+			expect(loaded.issue).toBeNull();
+			expect(loaded.telemetry?.version).toBe(3);
+			const saved = await persistence.saveTelemetryWithDiagnostics({
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastCompactTime: 0,
+				lastCompactTokens: 0,
+				lastModelKey: null,
+			});
+			expect(saved).toMatchObject({ saved: true, issue: null });
+			expect(inspected).toBeLessThan(20);
+		} finally {
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			vi.resetModules();
+		}
+	});
+
 	it("returns no issue when telemetry file is missing", async () => {
 		const filePath = path.join(makeTempDir(), "missing", "telemetry.json");
 

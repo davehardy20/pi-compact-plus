@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
+import {
+	dirname,
+	isAbsolute,
+	join,
+	normalize,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
 import type {
 	CompactionTelemetry,
 	TelemetryPersistenceIssue,
@@ -48,7 +56,10 @@ function persistPath(
 	const filePath = typeof candidate === "string" ? candidate : "";
 	// The override is only for isolated tests. The OS temp directory is its trust
 	// anchor; normal persistence is anchored at the configured user home.
-	const root = options.filePath === undefined ? PERSIST_ROOT : tmpdir();
+	const rawRoot = options.filePath === undefined ? PERSIST_ROOT : tmpdir();
+	// resolve removes trailing separators so dirname() can reach this boundary.
+	// Keep a relative HOME invalid rather than turning it into an implicit cwd.
+	const root = isAbsolute(rawRoot) ? resolve(rawRoot) : rawRoot;
 	const within = filePath ? relative(root, filePath) : "";
 	const valid =
 		filePath !== "" &&
