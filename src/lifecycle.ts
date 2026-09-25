@@ -19,7 +19,7 @@ export type ExtensionEventContext = Parameters<
  *
  * String-coupled to Pi's stale-context guard message emitted by
  * ExtensionRunner.invalidate() / assertActive() in
- * @earendil-works/pi-coding-agent (verified against 0.83.x and 0.84.0;
+ * @earendil-works/pi-coding-agent (verified against 0.83.x, 0.84.0 and 0.84.4;
  * "This extension ctx is stale after session replacement or reload. ...").
  * Re-verify this substring whenever the peer dependency is bumped;
  * switch to a typed/sentinel error if Pi ever exposes one.
