@@ -62,12 +62,16 @@ coordinator.transformContext()
           └── recordMatchesBranchEntry() per finalized record
                 └── buildPrunedToolResult() — clone message, replace text with stub
 
-session_tree event
+session_tree / session_start / model_select (model change) events
     │
     ▼
 coordinator.onSessionTree()
-    ├── Filter finalized records by current branch
-    └── metadata.ts: reconstructToolOutputRecordsFromBranch() [if no records match]
+    ├── Reset pending; if disabled, drop finalized records
+    ├── metadata.ts: reconstructToolOutputRecordsFromBranch()  [validates the whole branch, fail-closed]
+    └── reconcileBranchRecords() — merge persisted metadata with live records
+          ├── Durable metadata wins identity collisions (recordId/entryId/shortRef)
+          ├── Live records keep fallbackSnippets (search affordance) — never persisted
+          └── Advance short-ref counter past validated (incl. policy-skipped) refs
 ```
 
 ## Record identity & eligibility (`src/tool-output-pruning/record-identity.ts`)
@@ -217,16 +221,17 @@ V1 appends `compact-plus-tool-prune-summary` entries for summary visibility, obs
 
 ### Reconstruction (`reconstructToolOutputRecordsFromBranch`)
 
-Called on `session_tree` when no finalized records match the current branch.
+Called from `onSessionTree()` — i.e. on `session_tree`, `session_start`, and `model_select` model changes — to validate the **entire active branch**, not just entries matching live records. Shared ancestors may survive a branch switch while branch-specific records exist only in durable metadata.
 
 1. Scan branch custom entries for `TOOL_PRUNE_SUMMARY_CUSTOM_TYPE` (bounded by `MAX_RECONSTRUCTION_SCAN_ENTRIES = 100`, `MAX_RECONSTRUCTION_SCAN_BYTES = 200_000`).
 2. For each entry with active-version metadata, validate:
    - Schema version matches.
-   - Record count within `MAX_FINALIZED_RECORDS`.
-   - No duplicates.
-   - Tools not excluded by protected/user policy.
-   - `entryId`/`toolCallId`/tool-name pairs match current branch message entries.
-3. **Fail-closed:** Any malformed, oversized, duplicated, excluded, stale, or mismatched entry reconstructs **zero** records.
+   - Validated record count (including policy-skipped ones) within `MAX_FINALIZED_RECORDS`.
+   - No duplicates (recordId, entryId, shortRef).
+   - Tool is not protected-excluded or Compact+-internal — these remain **hard errors**.
+   - `entryId`/`toolCallId`/tool-name pairs match current branch message entries (structural identity only — current policy is not applied here).
+3. **Fail-closed:** any malformed, oversized, duplicated, protected/internal-tool, stale, or mismatched entry reconstructs **zero** records and `onSessionTree()` drops the whole index.
+4. **Policy filtering is per-record, not fail-closed:** records whose tool is disallowed by the *current* user include/exclude settings are validated and then skipped individually. Allowed records survive, and the skipped records' short refs stay reserved — reported as `validatedShortRefs` / `maxValidatedShortRefNumber` so the coordinator advances the short-ref counter past them and never reissues a ref that durable history already uses.
 
 ### Bounded reconstruction limits (`metadata.ts`)
 
@@ -246,13 +251,22 @@ Called on `session_tree` when no finalized records match the current branch.
 - `onAgentStart()` → reset pending
 - `onTurnEnd(event)` → capture batch
 - `hasPendingFlush()` → check pending state
-- `onMessageEnd(event, ctx, pi, options)` → flush
-- `onSessionTree(ctx)` → reconcile/reconstruct
+- `onMessageEnd(event, ctx, pi, options)` → flush (append goes through `guardedAppendEntry`)
+- `onSessionStart(ctx)` → hydrate the branch after session reset (delegates to `onSessionTree`)
+- `onSessionTree(ctx)` → reconstruct + reconcile (branch switch, session start, model change)
 - `onSessionShutdown()` → full reset
 - `transformContext(messages, ctx)` → prune
 - `buildStatusDetail()` → status for `/compact-plus tool-prune status`
-- `manualFlush(ctx, pi)` → manual flush for `/compact-plus tool-prune flush`
+- `manualFlush(ctx, pi)` → manual flush for `/compact-plus tool-prune flush` (same guarded append)
 - `query(params, ctx)` → recovery query
+
+### Branch reconciliation (`reconcileBranchRecords`)
+
+Merges reconstructed (durable) records with surviving in-memory records after navigation:
+
+- Durable metadata wins identity collisions (`recordId`, `entryId`, `shortRef`, and refs validated-but-skipped by policy). Live legacy records with no durable counterpart are still appended — they represent valid live branch output.
+- When a live record matches a durable one, the live `fallbackSnippets` are copied over: only live memory keeps bounded original-output snippets, so recovery search keeps working across reload/navigation without snippets ever entering durable metadata.
+- Result is ordered by branch position and capped at `MAX_FINALIZED_RECORDS` (newest kept).
 
 ## State (`src/tool-output-pruning/state.ts`)
 
@@ -294,9 +308,11 @@ Test fixtures: `test/fixtures/tool-output-pruning.ts`.
 | Atomic summarization (all or none) | `lifecycle.ts:buildSummarizerInputs()` + `flushPendingBatches()` |
 | Original messages preserved (stub, not delete) | `pruner.ts:cloneWithSingleTextBlock()` |
 | Durable metadata stores no original output | `metadata.ts:ToolOutputRecordMetadata.fallbackSnippets: null` |
-| Reconstruction is fail-closed | `metadata.ts:reconstructToolOutputRecordsFromBranch()` |
+| Reconstruction is fail-closed (protected/stale/malformed drop the index) | `metadata.ts:reconstructToolOutputRecordsFromBranch()` |
+| Policy changes skip disallowed historical records, keep allowed ones, reserve their refs | `metadata.ts` policyExcluded + `coordinator.ts:reconcileBranchRecords()` |
+| A flush never persists unreconstructible metadata | `coordinator.ts:guardedAppendEntry()` + lifecycle rollback |
 | All arrays/counts bounded with hard limits | `types.ts` constants + `state.ts` bounded add |
-| Branch navigation removes stale records | `coordinator.ts:onSessionTree()` |
+| Branch navigation rebuilds the index (drops stale, restores durable) | `coordinator.ts:onSessionTree()` + `reconcileBranchRecords()` |
 | Query tool always registered, execution gated | `index.ts` + `coordinator.ts:query()` |
 
 ## Safe-edit guidance
