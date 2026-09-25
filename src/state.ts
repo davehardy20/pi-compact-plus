@@ -24,11 +24,22 @@ export class CompactionState {
 	lastFallbackReason: string | null = null;
 	lastInjectedEcho: string | null = null;
 	telemetryPersistenceIssues: TelemetryPersistenceIssue[] = [];
+	private compactionEpoch = 0;
 	echoInjected = false;
 	toolOutputPruning = new ToolOutputPruningState();
 
+	/** Reject callbacks from compactions started before a session transition. */
+	invalidateCompactionCallbacks(): void {
+		this.compactionEpoch++;
+	}
+
+	get currentCompactionEpoch(): number {
+		return this.compactionEpoch;
+	}
+
 	/** Reset all state to initial values. */
 	reset(): void {
+		this.invalidateCompactionCallbacks();
 		this.selectedMode = null;
 		this.lastCompactTime = 0;
 		this.isCompacting = false;

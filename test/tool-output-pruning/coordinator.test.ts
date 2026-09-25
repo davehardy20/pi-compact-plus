@@ -1080,7 +1080,7 @@ describe("ToolOutputPruningCoordinator", () => {
 				expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 			} else {
 				expect(result.ok).toBe(false);
-				expect(result.message).toContain("too many metadata entries");
+				expect(result.message).toContain("pruning metadata persistence failed");
 				expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 			}
 			coordinator.onSessionTree(ctx);

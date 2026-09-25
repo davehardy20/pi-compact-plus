@@ -398,6 +398,46 @@ describe("flushPendingBatches", () => {
 		expect(state.statusSnapshot().isFlushing).toBe(false);
 	});
 
+	it("labels unexpected model resolution errors as summarization failures without leaking details", async () => {
+		addPendingBatchForTest(state, [
+			makeToolOutputRecord({
+				recordId: "r1",
+				toolCallId: "tc1",
+				toolName: "bash",
+				shortRef: "t1",
+			}),
+		]);
+		const ctx = makeMockContext();
+		vi.mocked(ctx.modelRegistry.find).mockImplementationOnce(() => {
+			throw new Error("SYNTHETIC_CREDENTIAL_MARKER");
+		});
+		const result = await flushPendingBatches(
+			state,
+			makeToolOutputPruningSettings({
+				toolOutputPruneMinChars: 10,
+				toolOutputSummarizerModel: "test/alternate",
+			}),
+			ctx,
+			[
+				{
+					id: "e1",
+					message: makeToolResult({
+						toolCallId: "tc1",
+						toolName: "bash",
+						text: "original",
+					}),
+				},
+			],
+			pi,
+		);
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("summarization setup failed");
+		expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
+		expect(state.finalizedSnapshot()).toHaveLength(0);
+		expect(state.pendingSnapshot().pendingBatches).toHaveLength(0);
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+	});
+
 	it("clears pending and sets error status on empty LLM response", async () => {
 		mockCompleteSimple.mockResolvedValueOnce({
 			role: "assistant",
@@ -529,7 +569,9 @@ describe("flushPendingBatches", () => {
 			"new-batch",
 		);
 		pi.appendEntry.mockImplementationOnce(() => {
-			throw new Error("append failed after indexing");
+			throw new Error(
+				"append failed after indexing: SYNTHETIC_CREDENTIAL_MARKER",
+			);
 		});
 
 		const result = await flushPendingBatches(
@@ -550,6 +592,7 @@ describe("flushPendingBatches", () => {
 		);
 
 		expect(result.ok).toBe(false);
+		expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 		expect(state.finalizedSnapshot().map((r) => r.recordId)).toEqual(
 			beforeRecordIds,
 		);

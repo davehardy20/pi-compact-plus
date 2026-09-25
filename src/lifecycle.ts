@@ -102,11 +102,13 @@ export function executeCompaction(
 ): void {
 	state.selectedMode = mode;
 	state.isCompacting = true;
+	const compactionEpoch = state.currentCompactionEpoch;
 	const hadUI = safeReadHasUI(ctx);
 
 	ctx.compact({
 		customInstructions: buildSummaryInstructions(mode, focus),
 		onComplete: (result) => {
+			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;
 			state.lastTriggerAuto = false;
@@ -132,6 +134,7 @@ export function executeCompaction(
 			}
 		},
 		onError: (error) => {
+			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;
 			state.lastTriggerAuto = false;

@@ -104,12 +104,13 @@ describe("resolveSummarizerModel", () => {
 	it("falls back for invalid model spec (no slash)", () => {
 		const ctx = makeMockContext(currentModel);
 		const result = resolveSummarizerModel(
-			{ toolOutputSummarizerModel: "invalid" },
+			{ toolOutputSummarizerModel: "SYNTHETIC_CREDENTIAL_MARKER" },
 			ctx,
 		);
 		expect(result.model).toBe(currentModel);
 		expect(result.isFallback).toBe(true);
 		expect(result.warning).toContain("Invalid summarizer model spec");
+		expect(result.warning).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 	});
 
 	it("falls back for empty provider or model id", () => {
@@ -263,7 +264,7 @@ describe("summarizeBatch", () => {
 		const ctx = makeMockContext(makeMockModel("m", "p"), {
 			getApiKeyAndHeaders: vi.fn(async () => ({
 				ok: false as const,
-				error: "no key",
+				error: "SYNTHETIC_CREDENTIAL_MARKER",
 			})),
 		});
 		const result = await summarizeBatch(
@@ -288,6 +289,7 @@ describe("summarizeBatch", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.error).toContain("Auth unavailable");
+			expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 			expect(result.aborted).toBe(false);
 		}
 	});
@@ -295,7 +297,7 @@ describe("summarizeBatch", () => {
 	it("returns failure when auth lookup rejects", async () => {
 		const ctx = makeMockContext(makeMockModel("m", "p"), {
 			getApiKeyAndHeaders: vi.fn(async () => {
-				throw new Error("vault unavailable");
+				throw new Error("vault unavailable: SYNTHETIC_CREDENTIAL_MARKER");
 			}),
 		});
 		const result = await summarizeBatch(
@@ -319,7 +321,8 @@ describe("summarizeBatch", () => {
 		);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
-			expect(result.error).toContain("vault unavailable");
+			expect(result.error).toContain("auth lookup failed");
+			expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 			expect(result.aborted).toBe(false);
 		}
 	});
@@ -658,7 +661,7 @@ describe("summarizeBatch", () => {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "error",
-			errorMessage: "Rate limited",
+			errorMessage: "Rate limited: SYNTHETIC_CREDENTIAL_MARKER",
 			timestamp: Date.now(),
 		});
 
@@ -686,7 +689,8 @@ describe("summarizeBatch", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.aborted).toBe(false);
-			expect(result.error).toContain("Rate limited");
+			expect(result.error).toContain("Summarization failed");
+			expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 		}
 	});
 
@@ -733,7 +737,7 @@ describe("summarizeBatch", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.aborted).toBe(false);
-			expect(result.error).toContain("length");
+			expect(result.error).toContain("stopped before completion");
 		}
 	});
 
@@ -784,7 +788,9 @@ describe("summarizeBatch", () => {
 	});
 
 	it("returns failure when completeSimple throws", async () => {
-		mockCompleteSimple.mockRejectedValueOnce(new Error("Network failure"));
+		mockCompleteSimple.mockRejectedValueOnce(
+			new Error("Network failure: SYNTHETIC_CREDENTIAL_MARKER"),
+		);
 
 		const ctx = makeMockContext(makeMockModel("m", "p"));
 		const result = await summarizeBatch(
@@ -809,13 +815,14 @@ describe("summarizeBatch", () => {
 
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
-			expect(result.error).toContain("Network failure");
+			expect(result.error).toContain("provider request failed");
+			expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 			expect(result.aborted).toBe(false);
 		}
 	});
 
-	it("marks aborted true for thrown AbortError", async () => {
-		const err = new Error("aborted");
+	it("marks aborted true for thrown AbortError without exposing its message", async () => {
+		const err = new Error("aborted: SYNTHETIC_CREDENTIAL_MARKER");
 		err.name = "AbortError";
 		mockCompleteSimple.mockRejectedValueOnce(err);
 
@@ -843,6 +850,7 @@ describe("summarizeBatch", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.aborted).toBe(true);
+			expect(result.error).not.toContain("SYNTHETIC_CREDENTIAL_MARKER");
 		}
 	});
 

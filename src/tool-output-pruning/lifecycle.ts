@@ -139,6 +139,7 @@ export async function flushPendingBatches(
 	// a later appendEntry side effect fails. Length-only rollback can keep failed
 	// records while dropping older finalized records.
 	const finalizedRecordsBefore = state.finalizedSnapshot();
+	let failurePhase = "summarization setup";
 
 	try {
 		const pending = state.pendingSnapshot();
@@ -174,6 +175,9 @@ export async function flushPendingBatches(
 			};
 		}
 
+		// Keep unexpected setup failures distinct from indexing/write failures,
+		// without echoing exception text from the model registry or filesystem.
+		failurePhase = "pruning metadata persistence";
 		// Build indexed batches from pending state
 		const indexedBatches: IndexedBatch[] = pending.pendingBatches
 			.map((batch) => {
@@ -224,8 +228,7 @@ export async function flushPendingBatches(
 			indexedCount: finalizedRecords.length,
 			prunedCount: 0,
 		};
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
+	} catch {
 		// Roll back any partially finalized records to preserve atomicity.
 		state.replaceFinalizedRecords(finalizedRecordsBefore);
 		state.recordSummaryError();
@@ -234,7 +237,7 @@ export async function flushPendingBatches(
 			ok: false,
 			indexedCount: 0,
 			prunedCount: 0,
-			error: `flush error: ${message}`,
+			error: `flush error: ${failurePhase} failed`,
 		};
 	} finally {
 		state.endFlush();

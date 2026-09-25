@@ -1014,6 +1014,105 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(instructions).not.toContain("Poisoned custom-message decision");
 	});
 
+	it("drains a pending telemetry save before loading a replacement session", async () => {
+		let finishSave!: (result: { saved: boolean; issue: null }) => void;
+		const heldSave = new Promise<{ saved: boolean; issue: null }>((resolve) => {
+			finishSave = resolve;
+		});
+		vi.mocked(persist.saveTelemetryWithDiagnostics).mockImplementationOnce(
+			async () => heldSave,
+		);
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx();
+		const onContext = pi.events.get("context")?.[0];
+		const onStart = pi.events.get("session_start")?.[0];
+		if (!onContext || !onStart) throw new Error("handlers missing");
+		const contextRequest = onContext(
+			{
+				messages: [
+					{ role: "compactionSummary", summary: VALID_STRUCTURED_SUMMARY },
+					{ role: "user", content: "Continue with the current task." },
+				],
+			},
+			ctx,
+		);
+		await Promise.resolve();
+		expect(persist.saveTelemetryWithDiagnostics).toHaveBeenCalledTimes(1);
+		const newSession = onStart({}, ctx);
+		await Promise.resolve();
+		expect(persist.loadTelemetryWithDiagnostics).not.toHaveBeenCalled();
+		finishSave({ saved: true, issue: null });
+		await Promise.all([contextRequest, newSession]);
+		expect(persist.loadTelemetryWithDiagnostics).toHaveBeenCalledTimes(1);
+	});
+
+	it("ignores an old compaction callback while replacement telemetry loads", async () => {
+		let finishLoad!: (result: {
+			telemetry: {
+				version: 3;
+				lastCompactTime: number;
+				lastCompactTokens: number;
+				lastCompaction: null;
+				lastFallbackReason: null;
+				lastInjectedEcho: null;
+				lastModelKey: null;
+			};
+			issue: null;
+		}) => void;
+		vi.mocked(persist.loadTelemetryWithDiagnostics).mockImplementationOnce(
+			async () =>
+				new Promise((resolve) => {
+					finishLoad = resolve;
+				}),
+		);
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		const command = pi.commands.get("compact-plus");
+		const onStart = pi.events.get("session_start")?.[0];
+		if (!command || !onStart) throw new Error("handlers missing");
+		await command.handler("", ctx);
+		const onComplete = ctx.compact.mock.calls[0]?.[0]?.onComplete;
+		if (!onComplete) throw new Error("compaction callback missing");
+		const newSession = onStart({}, ctx);
+		onComplete({ estimatedTokensAfter: 42_000 });
+		await Promise.resolve();
+		expect(persist.saveTelemetryWithDiagnostics).not.toHaveBeenCalled();
+		await vi.waitFor(() => expect(finishLoad).toBeTypeOf("function"));
+		finishLoad({
+			telemetry: {
+				version: 3,
+				lastCompactTime: 123,
+				lastCompactTokens: 456,
+				lastCompaction: null,
+				lastFallbackReason: null,
+				lastInjectedEcho: null,
+				lastModelKey: null,
+			},
+			issue: null,
+		});
+		await newSession;
+		expect(__test__.getLastCompactTime()).toBe(123);
+		expect(__test__.getLastCompactTokens()).toBe(456);
+	});
+
+	it("ignores an old compaction callback after session shutdown", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		const command = pi.commands.get("compact-plus");
+		const onShutdown = pi.events.get("session_shutdown")?.[0];
+		if (!command || !onShutdown) throw new Error("handlers missing");
+		await command.handler("", ctx);
+		const onComplete = ctx.compact.mock.calls[0]?.[0]?.onComplete;
+		if (!onComplete) throw new Error("compaction callback missing");
+		await onShutdown({}, ctx);
+		onComplete({ estimatedTokensAfter: 42_000 });
+		await Promise.resolve();
+		expect(persist.saveTelemetryWithDiagnostics).not.toHaveBeenCalled();
+	});
+
 	it("resets stale runtime state at session_start when no telemetry is restored", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
