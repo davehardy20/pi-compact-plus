@@ -32,7 +32,7 @@
 | `lifecycle.ts` | `executeCompaction` — unified lifecycle for manual+auto | onComplete/onError behavior; continuation prompt |
 | `compact.ts` | Custom summary generation, classification, normalization | Summary schema; normalization limits; validation |
 | `compatibility.ts` | Runtime feature detection; streamSimple shim; fallback paths | Pi API changes; thinking level; streamFn resolution |
-| `policy.ts` | Threshold/band math; checkpoint data; status snapshots | New threshold modes; band text; checkpoint schema |
+| `policy.ts` | Threshold/band math; checkpoint data | New threshold modes; band text; checkpoint schema |
 | `usage.ts` | Native vs estimated usage lookup | Usage estimation changes |
 | `prompts.ts` | Summary instruction building; focus block escaping | Summary prompt wording; focus block format |
 | `classify.ts` | Content-density scoring; critical/contextual/ephemeral classification | Classification rules; density scoring |
@@ -44,7 +44,8 @@
 | `types.ts` | Shared types and frozen constants | New types; constant changes (also check `settings.ts`) |
 | `state.ts` | `CompactionState` mutable container; guard helpers | New state fields; guard logic |
 | `settings.ts` | Settings resolution; env/file/default; validation | New settings; default changes; validation rules |
-| `persist.ts` | Telemetry persistence; symlink detection; schema versioning | Persistence format; security; new telemetry fields |
+| `persist.ts` | Telemetry persistence I/O; symlink detection | Persistence format; security; new telemetry fields |
+| `telemetry-validation.ts` | Pure persisted-schema validation/coercion; `PERSIST_VERSION` | Telemetry schema; validation strictness |
 | `session-evidence.ts` | Message scanning; objective/blocker/file extraction | Extraction rules; scan windows; caps |
 | `session-branch-view.ts` | Read-only Pi session branch projection | Branch entry handling; scan limits |
 | `pi-messages.ts` | Message role checking; content block extraction; tool-call parsing | New message types; content block handling |
@@ -101,7 +102,7 @@
 | File | Tests | Source under test |
 |---|---|---|
 | `index.test.ts` | ~139 | `src/index.ts`, `policy.ts`, `settings.ts`, `focus-echo/*`, `prompts.ts`, `usage.ts` |
-| `persist.test.ts` | — | `src/persist.ts` |
+| `persist.test.ts` | — | `src/persist.ts`, `src/telemetry-validation.ts` (via public API) |
 | `sdk-runtime-regression.test.ts` | — | Real Pi 0.87.1 SDK (`compaction-coordinator.ts`, `events.ts`, `usage.ts`, `focus-echo/*`) |
 | `sdk-session-reload.test.ts` | — | `tool-output-pruning/coordinator.ts`, `metadata.ts`, `state.ts` via real Pi JSONL reload |
 | `lifecycle.test.ts` | — | `src/lifecycle.ts` |
@@ -157,5 +158,5 @@
 | Change pruning eligibility | `src/tool-output-pruning/record-identity.ts` | `src/tool-output-pruning/policy.ts` | `test/tool-output-pruning/capture.test.ts` |
 | Change bounded limits | `src/tool-output-pruning/types.ts` | `src/tool-output-pruning/state.ts`, `metadata.ts` | `test/tool-output-pruning/state.test.ts` |
 | Add a new setting | `src/settings.ts` | `src/types.ts` (if needed) | `test/index.test.ts` |
-| Change telemetry persistence format | `src/persist.ts` (bump `PERSIST_VERSION`) | `src/types.ts` | `test/persist.test.ts` |
+| Change telemetry persistence format | `src/telemetry-validation.ts` (bump `PERSIST_VERSION`) | `src/types.ts` | `test/persist.test.ts` |
 | Change CI checks | `.github/workflows/pr-checks-node.yml` | — | — |

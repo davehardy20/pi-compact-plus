@@ -989,7 +989,7 @@ describe("Persisted telemetry schema validation", () => {
 	});
 
 	it("does not crash status when built from coerced invalid-schema telemetry", async () => {
-		const { buildStatusSnapshot } = await import("../src/policy.js");
+		const { buildStatusSnapshot } = await import("../src/commands.js");
 
 		const filePath = path.join(makeTempDir(), "telemetry.json");
 		fs.writeFileSync(

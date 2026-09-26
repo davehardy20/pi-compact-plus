@@ -254,6 +254,6 @@ npx vitest run test/tool-output-pruning/settings.test.ts # Pruning settings reso
 
 - **Adding a new setting**: Add to `CompactPlusSettingsFile`, `ResolvedCompactPlusSettings`, `DEFAULT_COMPACT_PLUS_SETTINGS`, and `resolveCompactPlusSettings()`. Add an env var mapping if needed. Add tests in `test/index.test.ts` and/or `test/tool-output-pruning/settings.test.ts`.
 - **Changing defaults**: Update `DEFAULT_COMPACT_PLUS_SETTINGS`. The `DEFAULT_*` exports are derived from this object. Do not change individual `DEFAULT_*` exports independently.
-- **Changing persistence format**: Bump `PERSIST_VERSION` in `persist.ts`. Add migration logic in the load path. Old versions will be quarantined as `unsupported-version`.
+- **Changing persistence format**: Bump `PERSIST_VERSION` in `telemetry-validation.ts`. Add migration logic in the load path. Old versions will be quarantined as `unsupported-version`.
 - **Adding a new telemetry field**: Add to `PersistedTelemetry`, update `save` and `load` functions, update `CompactionState` and `reset()`.
 - **Do not read the settings file in hot paths.** Settings resolution reads the filesystem. The composition root caches threshold settings at load time.
