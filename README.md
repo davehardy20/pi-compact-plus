@@ -471,7 +471,7 @@ npm run package:check
 
 ### Runtime regression matrix (F1–F11)
 
-The lockfile and `npm ci` supply the **Pi 0.84.4** coding-agent, agent-core,
+The lockfile and `npm ci` supply the **Pi 0.87.1** coding-agent, agent-core,
 and AI packages for the main suite. The CI provider-boundary job separately
 installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
 three-package versions in both trees and fail on a configured but incomplete
