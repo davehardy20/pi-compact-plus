@@ -27,8 +27,10 @@
 | `src/focus-echo/` | Summary detection, parsing, normalization, sanitization, context injection |
 | `src/tool-output-pruning/` | Experimental LLM-summarized tool-output stubbing with recovery query |
 | `src/settings.ts` | Settings resolution (env → settings.json → defaults) |
-| `src/policy.ts` | Threshold/band computation, checkpoint data, status snapshots |
+| `src/policy.ts` | Threshold/band computation, checkpoint data |
+| `src/commands.ts` | Command routing plus status snapshot assembly and formatting |
 | `src/persist.ts` | Telemetry JSON persistence with symlink/security guards |
+| `src/telemetry-validation.ts` | Pure persisted-telemetry schema validation and coercion |
 | `src/session-evidence.ts` | Extracts objective, blockers, decisions, active files from session messages |
 | `test/` | Vitest test suite (run `npm test` for the current count) |
 | `scripts/` | Build verification, package checks, release scripts |
@@ -58,7 +60,7 @@ CI runs: `npm ci`, `npm run typecheck`, `npm test`. See [testing-and-release.md]
 |---|---|
 | `/compact-plus` | `src/commands.ts` → `CompactionCoordinator.handleManualCommand("standard")` |
 | `/compact-plus hard` | `src/commands.ts` → `CompactionCoordinator.handleManualCommand("hard")` |
-| `/compact-plus status` | `src/commands.ts` → `buildStatusSnapshot` + `formatStatusLines` in `src/policy.ts` |
+| `/compact-plus status` | `src/commands.ts` → `buildStatusSnapshot` + `formatStatusLines` (same module) |
 | `/compact-plus tool-prune status` | `src/tool-output-pruning/commands.ts` → `buildPruningStatusDetail` |
 | `/compact-plus tool-prune flush` | `src/tool-output-pruning/coordinator.ts` → `manualFlush` |
 | `/compact-plus-status` | `src/extension-status.ts` → `buildCompactPlusDebugStatusMessage` |

@@ -1,6 +1,7 @@
 import { compact } from "@earendil-works/pi-coding-agent";
+import type { CompactionExecutionPath } from "./types.js";
 
-export type CompactionExecutionPath = "custom" | "native-fallback";
+export type { CompactionExecutionPath };
 
 type StreamFn = (...args: unknown[]) => Promise<{ result(): Promise<unknown> }>;
 

@@ -94,9 +94,10 @@ process.env.COMPACT_PLUS_SETTINGS_PATH = defaultSettingsPathForTests;
 const persist = await import("../src/persist.js");
 const piCore = await import("@earendil-works/pi-coding-agent");
 const { completeSimple } = piAiMocks;
+const { buildStatusSnapshot, formatStatusLines } = await import(
+	"../src/commands.js"
+);
 const {
-	buildStatusSnapshot,
-	formatStatusLines,
 	getModeFromEffectiveUsage,
 	getModeFromTokenUsage,
 	getModeFromUsage,

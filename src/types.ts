@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { CompactionExecutionPath } from "./compatibility.js";
+
+export type CompactionExecutionPath = "custom" | "native-fallback";
+
 import {
 	type CompactPlusThresholdSettings,
 	DEFAULT_CHECKPOINT_THRESHOLD_PERCENT,

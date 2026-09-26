@@ -51,7 +51,7 @@ const compactionCoordinator = new CompactionCoordinator({
 | Compaction orchestration | Manual/auto trigger, guard cascade, telemetry | `src/compaction-coordinator.ts`, `src/lifecycle.ts` |
 | Compaction execution | Custom summary generation, classification, normalization | `src/compact.ts` |
 | Compatibility | Runtime feature detection, streamSimple shim, fallback | `src/compatibility.ts` |
-| Policy | Threshold/band math, checkpoint data, status snapshots | `src/policy.ts` |
+| Policy | Threshold/band math, checkpoint data | `src/policy.ts` |
 | Usage | Native vs estimated usage lookup | `src/usage.ts` |
 | Session evidence | Message scanning, objective/blocker/file extraction | `src/session-evidence.ts` |
 | Branch view | Pi session branch projection (read-only) | `src/session-branch-view.ts` |
@@ -59,7 +59,8 @@ const compactionCoordinator = new CompactionCoordinator({
 | Prompts | Summary instruction building, focus block escaping | `src/prompts.ts` |
 | Classification | Content-density scoring for hard-mode pruning | `src/classify.ts` |
 | Settings | Env/file/default resolution, validation, fallbacks | `src/settings.ts` |
-| Persistence | Telemetry JSON with security guards | `src/persist.ts` |
+| Persistence | Telemetry JSON I/O with symlink/security guards | `src/persist.ts` |
+| Telemetry validation | Pure persisted-schema validation/coercion, `PERSIST_VERSION` | `src/telemetry-validation.ts` |
 | Types | Shared type definitions, frozen constants | `src/types.ts` |
 | State | Mutable state container, guard helpers | `src/state.ts` |
 | Focus echo | See [focus-echo.md](focus-echo.md) | `src/focus-echo/*` |

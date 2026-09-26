@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatStatusLines } from "../src/policy.js";
+import { formatStatusLines } from "../src/commands.js";
 import type { CompactPlusStatus } from "../src/types.js";
 
 const baseStatus = (
