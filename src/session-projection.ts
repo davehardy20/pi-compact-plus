@@ -7,7 +7,7 @@ import {
 /**
  * Pi's active context is authoritative for intent. Raw branch entries may
  * contain superseded compaction segments or context-edited-away messages.
- * Pinned Pi 0.84 provides compaction-aware entries instead of a projection.
+ * Pinned Pi 0.87 provides compaction-aware entries instead of a projection.
  */
 export function currentProjectedMessages(
 	ctx: Pick<ExtensionContext, "sessionManager">,
