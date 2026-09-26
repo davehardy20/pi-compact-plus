@@ -475,14 +475,14 @@ The lockfile and `npm ci` supply the **Pi 0.87.1** coding-agent, agent-core,
 and AI packages for the main suite. The CI provider-boundary job separately
 installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
 three-package versions in both trees and fail on a configured but incomplete
-0.87.1 tree. This dev/test baseline is an intermediate security slice,
-not the agreed final Pi 0.87.1 baseline or a raised peer support floor.
+0.87.1 tree. This dev/test baseline is the agreed final Pi 0.87.1 target of
+`pi-compact-plus-02f1`, not a raised peer support floor; a follow-up docs
+refresh closes that issue's remaining scope.
 
 The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
-`postcss`. The intermediate baseline also resolved Pi 0.83.0's bundled `brace-expansion` and
-`undici` advisories; the high-severity npm audit now blocks CI. A separate,
-reviewed Pi 0.87.1 SDK follow-up under `pi-compact-plus-02f1` must replace this
-intermediate baseline before that issue can close.
+`postcss`, and the 0.84.x intermediate slices resolved Pi 0.83.0's bundled
+`brace-expansion` and `undici` advisories; the high-severity npm audit now
+blocks CI.
 
 Compact+ keeps every projected user turn since the last compaction in its
 intent-evidence prompt, including unrecognized redirects. The default 8 KiB
