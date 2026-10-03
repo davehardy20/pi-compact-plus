@@ -28,6 +28,8 @@ export function prepareBoundaryCompaction(
 	let previousSummary: string | undefined;
 	let previousFileEntries: SessionEntry[] = [];
 	for (const projected of event.context.contextEntries) {
+		// The supported host snapshots projected system content/sections onto
+		// its compaction entry at commit; these instructions aren't summary data.
 		const messages = projected.messages.filter((m) => m.role !== "system");
 		if (!messages.length) continue;
 		// A compaction can project system + memory together. Use projected

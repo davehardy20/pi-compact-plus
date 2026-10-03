@@ -490,14 +490,17 @@ blocks CI.
 Compact+ avoids duplicating user turns already supplied in the summary
 transcript. Complete omitted/retained turns remain chronological intent evidence,
 including unrecognized redirects and repeated identical requests. Their allowance
-is the model window minus conservative UTF-8 accounting for the serialized
-summary input, previous memory, and a 16,384-token prompt/output reserve (at most
-half the window on small models), capped at 256 KiB. Trigger-time hints do not
+uses Pi's token estimates for serialized input and normalized previous memory,
+with a 16,384-token prompt/output allowance (at most half a small model window),
+never below the configured reserve, and a separate 256 KiB UTF-8 evidence cap. Trigger-time hints do not
 cancel before Pi has selected its cut. Truly oversized additional evidence still
 cancels safely; no retained instruction is silently truncated.
 `test/compaction-intent.test.ts` covers this accounting;
 `test/turn-boundary-compaction.test.ts` covers real-SDK cuts, streaming, split
 summaries, aborts, queued intent, branch changes, and commit-only telemetry.
+`test/agent-session-boundary.test.ts` drives the real AgentSession/ExtensionRunner
+through tool execution, draft commit, confirmation, and the next request,
+verifying preserved system instructions and no tool replay with local transport.
 
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.

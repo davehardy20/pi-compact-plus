@@ -70,6 +70,11 @@ reconciliation are updated. Pending pruning captures survive only if exactly
 matched in the committed projection; summarized/removed records are dropped.
 System-bearing prior memory and native file-operation metadata are supported
 through public Pi preparation helpers, without reviving edited-away summaries.
+The supported host snapshots the current projected system message, including
+prompt sections, onto the committed compaction entry. System instructions are
+not summarized or discarded. `test/agent-session-boundary.test.ts` drives the
+real AgentSession/ExtensionRunner and verifies this snapshot, next-request system
+content, commit-before-request ordering, and single tool execution.
 Unknown post-compaction usage never retains the pre-compaction regrowth baseline.
 The idle settled path remains available.
 
