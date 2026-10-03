@@ -1520,7 +1520,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			"Objective: deploy the retired service.",
 		);
 		expect(helperPrompt).toContain(
-			"A status-only reply does not replace the prior objective",
+			"A status-only reply preserves the preceding substantive request, not an obsolete prior objective",
 		);
 	});
 
@@ -4187,7 +4187,7 @@ describe("Compact+ prompt builders", () => {
 		expect(instructions).toContain("## Next Best Step");
 		expect(instructions).toContain("## Decisions Made");
 		expect(instructions).toContain(
-			"Retained turns may be absent from the conversation being summarized",
+			"conversation user turns followed by supplemental omitted/retained user turns",
 		);
 	});
 

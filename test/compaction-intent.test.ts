@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expect, it } from "vitest";
 import { prepareCompactionIntent } from "../src/compact.js";
 import { extractCompactionFocus } from "../src/compaction-intent.js";
+import { buildSummaryInstructions } from "../src/prompts.js";
 
 function user(text: string) {
 	return { role: "user" as const, content: text, timestamp: 1 };
@@ -120,6 +121,44 @@ it("allows bounded retained evidence on a small model with a fitting reserve", (
 	expect(focus.intentEvidence?.overflow).toBeUndefined();
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
 });
+
+it.each([false, true])(
+	"resolves summarized unfamiliar redirects with retained status=%s",
+	(hasStatus) => {
+		const original = user("Task: deploy the retired service.");
+		const redirect = user("I'd like to investigate login instead.");
+		const status = user("All tests passed.");
+		const source = preparation([original, redirect]);
+		const focus = extractCompactionFocus(
+			[original, redirect, ...(hasStatus ? [status] : [])],
+			source,
+			200_000,
+		);
+		expect(focus.intentEvidence?.priorObjective).toBe(
+			"deploy the retired service.",
+		);
+		expect(focus.intentEvidence?.recentUserTurns).toEqual(
+			hasStatus ? [status.content] : [],
+		);
+		expect(source.messagesToSummarize).toEqual([original, redirect]);
+		const instructions = buildSummaryInstructions("standard", focus, {
+			previousSummary: "Old memory: deploy the retired service.",
+			isSplitTurn: false,
+			turnPrefixCount: 0,
+		});
+		expect(instructions).not.toContain(redirect.content);
+		expect(instructions).toContain("Supplemental projected user turns");
+		expect(
+			instructions
+				.split("\n")
+				.filter(
+					(line) =>
+						line.includes("conversation user turns") &&
+						line.includes("supplemental omitted/retained user turns"),
+				),
+		).toHaveLength(2);
+	},
+);
 
 it("honors a large configured output reserve when budgeting additional evidence", () => {
 	const source = user("x".repeat(600_000));
