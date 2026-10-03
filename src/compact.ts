@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
 import { classifyMessages } from "./classify.js";
+import { extractCompactionFocus } from "./compaction-intent.js";
 import type { CompactionRuntimeCompatibility } from "./compatibility.js";
 import {
 	getAssistantIdBearingToolCallBlocks,
@@ -245,6 +246,15 @@ function normalizePreviousSummary(
 	);
 }
 
+export function normalizeCompactionPreparation(
+	preparation: Parameters<typeof compact>[0],
+): Parameters<typeof compact>[0] {
+	return {
+		...preparation,
+		previousSummary: normalizePreviousSummary(preparation.previousSummary),
+	};
+}
+
 function normalizeCompactionResult(result: CompactionResult): CompactionResult {
 	const summary = result.summary ?? "";
 	const normalizedSummary = normalizeStructuredSummary(
@@ -402,13 +412,37 @@ function applyHardModePruning(
 	};
 }
 
+export function prepareCompactionIntent(
+	preparation: CompactionPreparation,
+	mode: CompactionMode,
+): CompactionPreparation {
+	return applyHardModePruning(
+		normalizeCompactionPreparation(preparation),
+		mode,
+	);
+}
+
 function prepareCompactionContext(
 	preparation: CompactionPreparation,
 	mode: CompactionMode,
 	intent?: CompactionIntent,
 ): PreparedCompactionContext {
 	const focusSource = getCompactionFocusSource(preparation);
-	const prunedPreparation = applyHardModePruning(preparation, mode);
+	// Pi's split-prefix helper ignores customInstructions and appends a native
+	// schema (e.g. ## Original Request). Use one structured request for both
+	// spans while preserving Pi's original retained-entry cut and file ops.
+	const pruned = applyHardModePruning(preparation, mode);
+	const prunedPreparation = preparation.isSplitTurn
+		? {
+				...pruned,
+				messagesToSummarize: [
+					...pruned.messagesToSummarize,
+					...pruned.turnPrefixMessages,
+				],
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+			}
+		: pruned;
 	const normalizedPreviousSummary = normalizePreviousSummary(
 		prunedPreparation.previousSummary,
 	);
@@ -422,8 +456,8 @@ function prepareCompactionContext(
 		{
 			previousSummary: normalizedPreviousSummary,
 			customInstructions: intent?.customInstructions,
-			isSplitTurn: normalizedPreparation.isSplitTurn,
-			turnPrefixCount: normalizedPreparation.turnPrefixMessages?.length ?? 0,
+			isSplitTurn: preparation.isSplitTurn,
+			turnPrefixCount: preparation.turnPrefixMessages?.length ?? 0,
 		},
 	);
 
@@ -554,13 +588,19 @@ export async function runCustomCompaction(
 			return { result: undefined, fallbackReason: "model unavailable" };
 		}
 
+		const normalized = normalizeCompactionPreparation(preparation);
 		const focus =
 			intent?.focus ??
-			extractCurrentFocus(getCompactionFocusSource(preparation));
+			extractCompactionFocus(
+				getCompactionFocusSource(normalized),
+				prepareCompactionIntent(normalized, mode),
+				model.contextWindow,
+			);
 		if (focus.intentEvidence?.overflow) {
 			return {
 				result: undefined,
-				fallbackReason: "intent evidence exceeds the 8 KiB safety budget",
+				fallbackReason:
+					"additional intent evidence exceeds the summary request budget",
 			};
 		}
 
@@ -579,7 +619,7 @@ export async function runCustomCompaction(
 		}
 		if (!auth.ok) return authUnavailableResult();
 
-		const prepared = prepareCompactionContext(preparation, mode, {
+		const prepared = prepareCompactionContext(normalized, mode, {
 			...intent,
 			focus,
 		});

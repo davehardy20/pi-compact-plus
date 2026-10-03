@@ -28,6 +28,7 @@ function createMockCtx(options?: {
 		hasUI: true,
 		ui: { notify: vi.fn() },
 		compact: vi.fn(),
+		isIdle: vi.fn(() => true),
 		model: {
 			provider: "test",
 			id: "model",
@@ -182,8 +183,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(ctx.compact).toHaveBeenCalledOnce();
 		const instructions = vi.mocked(ctx.compact).mock.calls[0]?.[0]
 			?.customInstructions;
-		expect(instructions).toContain("x".repeat(12_000));
-		expect(instructions).toContain("I'd like to investigate login instead.");
+		expect(instructions).not.toContain("x".repeat(12_000));
 		const result = await coordinator.onSessionBeforeCompact(
 			{
 				preparation: {
@@ -199,7 +199,46 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 	});
 
-	it("does not start manual or auto compaction with incomplete intent evidence", async () => {
+	it("starts manual compaction near full context without rejecting duplicate user evidence before preparation", async () => {
+		const { coordinator } = createCoordinator({
+			usage: { ...HIGH_USAGE, tokens: 190_000, percent: 95 },
+		});
+		const ctx = createMockCtx({ sessionFile: "/tmp/session.jsonl" });
+		setProjectedUser(ctx, `Task: repair the issue.\n${"x".repeat(12_000)}`);
+
+		await coordinator.handleManualCommand("standard", ctx);
+
+		expect(ctx.compact).toHaveBeenCalledOnce();
+	});
+
+	it("accepts large user evidence already included in the summary transcript", async () => {
+		const { coordinator, state } = createCoordinator({
+			usage: { ...HIGH_USAGE, tokens: 190_000, percent: 95 },
+		});
+		state.selectedMode = "standard";
+		const ctx = createMockCtx({ sessionFile: "/tmp/session.jsonl" });
+		const text = `Task: repair the issue.\n${"x".repeat(12_000)}`;
+		setProjectedUser(ctx, text);
+
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [
+						{ role: "user", content: [{ type: "text", text }] },
+					],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+
+		expect(result).not.toEqual({ cancel: true });
+		expect(state.lastFallbackReason).not.toContain("intent evidence exceeds");
+	});
+
+	it("defers evidence budgeting until Pi supplies the actual preparation", async () => {
 		const { coordinator, state } = createCoordinator();
 		const ctx = createMockCtx({
 			mode: "tui",
@@ -210,23 +249,22 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		await coordinator.handleManualCommand("standard", ctx);
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expect(ctx.compact).not.toHaveBeenCalled();
-		expect(state.isCompacting).toBe(false);
-		expect(state.selectedMode).toBeNull();
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("intent evidence exceeds"),
-			"warning",
-		);
+		expect(ctx.compact).toHaveBeenCalledOnce();
+		expect(state.isCompacting).toBe(true);
+		expect(state.selectedMode).toBe("standard");
 	});
 
-	it("cancels a compaction if evidence overflows after the trigger", async () => {
+	it("cancels a compaction if omitted evidence exceeds the actual request budget", async () => {
 		const { coordinator, state } = createCoordinator();
 		state.selectedMode = "standard";
 		const ctx = createMockCtx({
 			mode: "tui",
 			sessionFile: "/tmp/session.jsonl",
 		});
-		setProjectedUser(ctx, `Task: ${"x".repeat(9_000)}`);
+		Object.defineProperty(ctx, "modelRegistry", {
+			value: { streamSimple: vi.fn() },
+		});
+		setProjectedUser(ctx, `Task: ${"x".repeat(300_000)}`);
 		const result = await coordinator.onSessionBeforeCompact(
 			{
 				preparation: {
@@ -246,6 +284,41 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			expect.stringContaining("intent evidence exceeds"),
 			"warning",
 		);
+	});
+
+	it("waits for idle before manual compaction can interrupt an active run", async () => {
+		const { coordinator } = createCoordinator();
+		const ctx = createMockCtx({ sessionFile: "/tmp/session.jsonl" });
+		let release = () => {};
+		const idle = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		Object.defineProperty(ctx, "waitForIdle", { value: () => idle });
+		const command = coordinator.handleManualCommand("standard", ctx);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		release();
+		await command;
+		expect(ctx.compact).toHaveBeenCalledOnce();
+	});
+
+	it("allows native compatibility fallback even when omitted evidence is oversized", async () => {
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		const ctx = createMockCtx({ sessionFile: "/tmp/session.jsonl" });
+		setProjectedUser(ctx, "x".repeat(300_000));
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 	});
 
 	it("still allows manual compaction in an ephemeral json child", async () => {

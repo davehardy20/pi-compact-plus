@@ -19,7 +19,8 @@ const piAiMocks = vi.hoisted(() => ({
 }));
 
 // Mock Pi core packages before importing the extension
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
 	estimateTokens: vi.fn(() => 100),
 	compact: vi.fn(),
 	sessionEntryToContextMessages: vi.fn(

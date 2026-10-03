@@ -266,6 +266,48 @@ export class ToolOutputPruningCoordinator {
 		}
 	}
 
+	/** Retain only pending captures still present after a boundary commit. */
+	onBoundaryCompaction(ctx: ExtensionContext): void {
+		const pending = this.state.pendingSnapshot();
+		this.onSessionTree(ctx as BranchProviderContext);
+		const settings = this.getSettings();
+		if (!isToolOutputPruningEnabled(settings)) return;
+		const entries = ctx.sessionManager
+			.buildSessionProjection()
+			.entries.flatMap((projected) =>
+				projected.messages.map((message) => ({
+					type: "message" as const,
+					id: projected.sourceEntry.id,
+					message,
+				})),
+			);
+		const records = pending.pendingRecords.flatMap((record) => {
+			const matches = entries.filter(
+				(entry) =>
+					(record.entryId === null || record.entryId === entry.id) &&
+					recordMatchesBranchEntry(
+						entry,
+						{ ...record, entryId: entry.id },
+						settings,
+					),
+			);
+			return matches.length === 1
+				? [{ ...record, entryId: matches[0].id }]
+				: [];
+		});
+		for (const batch of pending.pendingBatches) {
+			const retained = records.filter((record) =>
+				batch.recordIds.includes(record.recordId),
+			);
+			if (!retained.length) continue;
+			this.state.addPendingBatch(
+				{ ...batch, recordIds: retained.map((record) => record.recordId) },
+				retained,
+			);
+		}
+		this.state.advanceShortRefCounterFromRecords(records);
+	}
+
 	onSessionShutdown(): void {
 		this.state.reset();
 	}

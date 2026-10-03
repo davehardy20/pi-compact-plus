@@ -55,8 +55,11 @@ practical working-memory range. A 1M-token model at 20% usage still hits the
 200,000 standard token threshold, so Compact+ standard-compacts there instead of
 waiting for 70% (~700k tokens).
 
-Auto-compaction is evaluated after a successful assistant turn at `agent_settled`,
-once tools, queued messages, retries, and pruning flushes have finished.
+On Pi runtimes with transactional turn boundaries and a safe provider stream,
+Compact+ checks thresholds after each completed tool batch, before the next
+assistant request. It returns a compaction draft for Pi to commit; it never
+calls `ctx.compact()` during an active run or replays tool results. The idle
+`agent_settled` check remains the compatibility/final-response path.
 Cooldown and post-compaction token regrowth guards avoid thrashing; if Pi cannot
 report a valid post-compaction token count, only cooldown applies.
 
@@ -86,20 +89,20 @@ superseded or context-edited messages, so the latest substantive user request
 takes precedence over older `Task:` labels. With an active objective, only
 clear requests, redirects or cancellations replace it; ambiguous declarative
 replies remain context. To avoid treating a finite phrase list as complete,
-the existing summarizer also receives every projected user turn in chronological
-order when the complete evidence fits the available UTF-8 budget (including
-per-turn framing allowance). The default is 8 KiB; consistent native usage can
-expand it using verified context headroom, up to 256 KiB (see the runtime
-regression matrix below). It never silently samples or truncates a redirect.
-If the complete evidence exceeds the available budget, Compact+ cancels
-compaction and warns; a near-full session may require saving its objective
-before choosing another compaction path. When the extracted objective is
+the summarizer sees chronological user turns in its conversation transcript,
+plus complete projected user turns omitted from that transcript (including
+retained redirects) in the intent prompt. Already-supplied turns are not copied
+again. The additional evidence allowance uses the actual serialized summary
+request, not the nearly-full live session, and is capped at 256 KiB. It never
+silently samples or truncates a redirect. Only genuinely oversized additional
+evidence cancels compaction with a warning. When the extracted objective is
 provisional, the helper compares the complete evidence with the prior task:
 a clear new request supersedes it, but a status-only reply does not. The extension's exact "Continue with the current
 task." follow-up is not treated as a new objective. If no user request
 survives after the newest compaction boundary, a validated persisted summary
 supplies it; even an invalid newer summary cannot revive an older `Task:` entry.
-Split turns remain continuity context. Checkpoints use the same authoritative
+Split history and turn prefixes use one structured summary request, preserving
+Pi's retained-entry cut without appending a second, incompatible native schema. Checkpoints use the same authoritative
 active projection, not raw branch history, and do not certify an older objective if newer
 substantive user turns cannot be classified: they mark it unverified and carry
 bounded chronological evidence (or explicitly report evidence overflow). Branch
@@ -484,14 +487,17 @@ The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `brace-expansion` and `undici` advisories; the high-severity npm audit now
 blocks CI.
 
-Compact+ keeps every projected user turn since the last compaction in its
-intent-evidence prompt, including unrecognized redirects. The default 8 KiB
-budget expands only when native usage confirms spare model context: at most a
-quarter of the remaining tokens after a 16,384-token reserve, capped at 256 KiB.
-This lets a 1M-context session compact near a configured 180k-token threshold
-even when user evidence exceeds 8 KiB. If the full evidence still will not fit,
-compaction cancels rather than silently dropping instructions; estimated or
-inconsistent usage does not raise the budget.
+Compact+ avoids duplicating user turns already supplied in the summary
+transcript. Complete omitted/retained turns remain chronological intent evidence,
+including unrecognized redirects and repeated identical requests. Their allowance
+is the model window minus conservative UTF-8 accounting for the serialized
+summary input, previous memory, and a 16,384-token prompt/output reserve (at most
+half the window on small models), capped at 256 KiB. Trigger-time hints do not
+cancel before Pi has selected its cut. Truly oversized additional evidence still
+cancels safely; no retained instruction is silently truncated.
+`test/compaction-intent.test.ts` covers this accounting;
+`test/turn-boundary-compaction.test.ts` covers real-SDK cuts, streaming, split
+summaries, aborts, queued intent, branch changes, and commit-only telemetry.
 
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.

@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { compactMock } = vi.hoisted(() => ({ compactMock: vi.fn() }));
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
 	compact: compactMock,
 }));
 
@@ -230,7 +231,7 @@ describe("runCustomCompaction characterization", () => {
 		expect(attempt.fallbackReason).toBe("compaction aborted");
 	});
 
-	it("declines custom compaction when complete user evidence overflows", async () => {
+	it("does not duplicate large user text already in the summary request", async () => {
 		const attempt = await runCustomCompaction(
 			preparation({
 				messages: [message("user", `Task: ${"x".repeat(9_000)}`)],
@@ -239,9 +240,9 @@ describe("runCustomCompaction characterization", () => {
 			context(),
 			compatibility(),
 		);
-		expect(attempt.result).toBeUndefined();
-		expect(attempt.fallbackReason).toContain("intent evidence exceeds");
-		expect(compactMock).not.toHaveBeenCalled();
+		expect(attempt.result).toBeDefined();
+		expect(compactMock).toHaveBeenCalledOnce();
+		expect(compactMock.mock.calls[0]?.[4]).not.toContain("x".repeat(9_000));
 	});
 
 	it("passes standard-mode input and the six base helper arguments safely", async () => {
@@ -489,17 +490,17 @@ describe("runCustomCompaction characterization", () => {
 			call,
 			result,
 			user,
-		]);
-		expectSameMessages(compactPreparation.turnPrefixMessages, [
 			prefixContextual,
 			prefixCall,
 			prefixResult,
 			prefixUser,
 		]);
+		expect(compactPreparation.turnPrefixMessages).toEqual([]);
+		expect(compactPreparation.isSplitTurn).toBe(false);
 		expect(attempt.classifiedCounts).toEqual({
-			critical: 2,
-			contextual: 1,
-			ephemeral: 1,
+			critical: 4,
+			contextual: 2,
+			ephemeral: 2,
 		});
 		expect(compactMock.mock.calls[0]?.[4]).toContain("Hard-mode constraints");
 	});
@@ -515,7 +516,7 @@ describe("runCustomCompaction characterization", () => {
 		);
 
 		expectSameMessages(
-			compactMock.mock.calls[0]?.[0].turnPrefixMessages,
+			compactMock.mock.calls[0]?.[0].messagesToSummarize,
 			prefix,
 		);
 	});

@@ -54,6 +54,25 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 **Common failure mode:** If auto-compaction never triggers, check: (0) Is `disableAutoCompaction` set (env `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` or settings file)? Is this an ephemeral headless child (json/print/rpc mode with no session file)? (1) is `getEffectiveUsage` returning valid data? (2) Is cooldown too long? (3) Is regrowth guard blocking because `lastCompactTokens` is close to current tokens? (4) Is pruning flush in progress?
 
+### Safe tool-turn boundaries
+
+On Pi 0.87 transactional `turn_end` events, `maybeAutoCompactAtBoundary` applies
+threshold/cooldown/regrowth/runtime guards after the tools are persisted. It
+returns a validated compaction draft, never calls `ctx.compact`, and requests no
+extra continuation (the existing tool loop continues naturally). Preparation
+uses public `findCutPoint` and Pi's resolved compaction settings over the
+context-edited projection. Queued input, prior drafts, unsupported multi-message
+entries, missing routes, aborts, and in-flight pruning defer safely.
+
+Generation is not success: the draft's marker must appear in the latest committed
+compaction at `turn_start` or settlement before telemetry/cooldown and pruning
+reconciliation are updated. Pending pruning captures survive only if exactly
+matched in the committed projection; summarized/removed records are dropped.
+System-bearing prior memory and native file-operation metadata are supported
+through public Pi preparation helpers, without reviving edited-away summaries.
+Unknown post-compaction usage never retains the pre-compaction regrowth baseline.
+The idle settled path remains available.
+
 ## Usage resolution (`src/usage.ts`)
 
 `getEffectiveUsage(ctx)` returns `EffectiveUsage | null`:
@@ -69,12 +88,12 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 `CompactionCoordinator.handleManualCommand(mode, ctx)`:
 
 1. Guard: if `isCompacting`, notify warning and return.
-2. Set `lastTriggerAuto = false`.
-3. Extract current focus from the branch: `extractCurrentFocusFromBranch(cmdBranchView)`.
+2. Await the command context's `waitForIdle()`, then recheck epoch, `isCompacting`, and idle state. Never abort an active tool run.
+3. Set `lastTriggerAuto = false` and extract bounded trigger hints from the authoritative projection.
 4. Notify user.
 5. Call `executeCompaction(mode, focus, ...)`.
 
-**No cooldown or regrowth guards for manual compaction.** Only the `isCompacting` guard applies.
+**No cooldown or regrowth guards for manual compaction.** Session/idle and concurrent-compaction guards still apply.
 
 ## Compaction lifecycle (`src/lifecycle.ts`)
 
@@ -95,8 +114,8 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 1. Read `state.selectedMode` — if null, return `undefined` (let Pi handle natively).
 2. Extract focus from the active session projection (`currentProjectedMessages(ctx)` in `src/session-projection.ts`) — Pi omits retained messages from `preparation.messagesToSummarize`, and an empty projection is authoritative.
-3. Abort check (`event.signal`/`ctx.signal`) → `cancelAbortedCompaction()`. Intent-evidence overflow → cancel with warning.
-4. Resolve compatibility: `resolveCompactionRuntimeCompatibility({ event, modelRegistry: ctx.modelRegistry })` (`src/compaction-coordinator.ts`).
+3. Abort check (`event.signal`/`ctx.signal`) → `cancelAbortedCompaction()`.
+4. Resolve compatibility before enforcing custom-only evidence limits. `extractCompactionFocus` budgets complete projected user turns omitted from the actual hard-pruned/unified transcript; already-supplied chronological prefixes are not duplicated. Pi's token estimator accounts for serialized input and normalized previous memory (both prompt copies), with at least 16,384 tokens/configured output reserve and a separate 256 KiB evidence cap. Genuine additional-evidence overflow cancels custom generation with warning; native fallback retains omitted messages verbatim and remains available. Trigger hints preserve bounded evidence but never reject before preparation exists.
 5. Build telemetry base.
 6. **If execution path is `native-fallback`**: Set `pendingCompaction` with fallback reason, persist, notify warning, return `undefined` (Pi does native compaction).
 7. **Otherwise**: Call `runCustomCompaction(preparation, mode, ctx, compatibility, event.signal, { focus, customInstructions })`; a post-run abort check cancels before applying any result.
@@ -171,6 +190,15 @@ Both validation and focus-echo draft extraction (`src/focus-echo/draft.ts`) pars
 - **Structure**: out-of-fence content before the first section, or an unterminated fence, is rejected.
 - **Critical sections**: the four `CRITICAL_HEADINGS` exported from `src/summary-schema.ts` (`## Current Objective`, `## Current Task State`, `## Next Best Step`, `## Continuity Instruction`) require substantive text outside fences — their out-of-fence section lines, joined and trimmed, must be non-empty, not just `None`/`N/A` (an optional list marker is tolerated), and not solely the `FENCED_EXAMPLE_OMISSION` marker. A critical section whose only content sits inside a fence, or whose entire body is the omission marker, fails validation.
 
+### Split-turn requests
+
+Pi's separate native prefix summarizer ignores custom instructions and adds its
+own headings (such as `## Original Request`). Compact+ therefore unifies history
+and prefix into one structured summary request after hard-mode pruning. The
+original `firstKeptEntryId`, token count, and file operations remain unchanged.
+Strict schema validation is not relaxed; incompatible appended sections are
+prevented rather than silently discarded.
+
 ### Summary normalization (`src/compact.ts`)
 
 `runCustomCompaction` validates the raw summary **before** normalizing (`finalizeCompactionAttempt`), then normalizes, then re-validates the normalized result with the same schema — a lossy rewrite can never drop a required heading and still be accepted.
@@ -212,6 +240,8 @@ See [settings-and-state.md](settings-and-state.md) for persistence details.
 npx vitest run test/index.test.ts              # policy, settings, compaction, focus-echo, usage
 npx vitest run test/classify-extract.test.ts    # Classification
 npx vitest run test/lifecycle.test.ts           # executeCompaction lifecycle
+npx vitest run test/compaction-intent.test.ts    # complete omitted evidence and request budget
+npx vitest run test/turn-boundary-compaction.test.ts # real SDK cut/stream/split and commit safety
 npx vitest run test/compatibility.test.ts       # stream route selection (session/registry/native fallback)
 npx vitest run test/compaction-runtime-contract.test.ts  # real compact() helper through the registry route
 npx vitest run test/provider-boundary-087.test.ts  # skipUnless a host Pi 0.87 install exists: routes the real Pi 0.87 compact() helper through runCustomCompaction to a custom provider with request-time auth, no network
