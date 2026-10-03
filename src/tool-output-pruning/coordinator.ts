@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -282,15 +283,21 @@ export class ToolOutputPruningCoordinator {
 				})),
 			);
 		const records = pending.pendingRecords.flatMap((record) => {
-			const matches = entries.filter(
-				(entry) =>
+			const matches = entries.filter((entry) => {
+				const raw = ctx.sessionManager.getEntry(entry.id);
+				return (
+					raw?.type === "message" &&
+					raw.message.role === "toolResult" &&
+					entry.message.role === "toolResult" &&
+					isDeepStrictEqual(raw.message.content, entry.message.content) &&
 					(record.entryId === null || record.entryId === entry.id) &&
 					recordMatchesBranchEntry(
 						entry,
 						{ ...record, entryId: entry.id },
 						settings,
-					),
-			);
+					)
+				);
+			});
 			return matches.length === 1
 				? [{ ...record, entryId: matches[0].id }]
 				: [];

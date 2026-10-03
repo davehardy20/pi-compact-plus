@@ -457,6 +457,31 @@ it("reconciles pending pruning captures against the committed projection", async
 	]);
 });
 
+it("drops pending originals when a context edit replaces retained tool output", async () => {
+	const f = fixture(true);
+	const boundary = (await runBoundary(f)) as
+		| { entries: CompactionEntryDraft[] }
+		| undefined;
+	const draft = boundary?.entries[0];
+	if (!draft) throw new Error("missing boundary draft");
+	expect(
+		f.state.toolOutputPruning.pendingRecords[0]?.fallbackSnippets,
+	).toContain("Latest result");
+	f.session.appendCompaction(
+		draft.summary,
+		draft.firstKeptEntryId,
+		160_000,
+		draft.details,
+		true,
+	);
+	f.session.appendContextEdit(f.event.toolResultEntryIds[0], {
+		content: [{ type: "text", text: "Replacement output".repeat(100) }],
+	});
+	await f.pi.events.get("turn_start")?.[0]?.({ type: "turn_start" }, f.ctx);
+	expect(f.state.toolOutputPruning.pendingRecords).toEqual([]);
+	expect(f.state.toolOutputPruning.hasPending()).toBe(false);
+});
+
 it("does not race a tool-output pruning flush", async () => {
 	const f = fixture();
 	f.state.toolOutputPruning.isFlushing = true;
