@@ -58,7 +58,7 @@ export function extractCompactionFocus(
 	// in both Pi's prompt and Compact+'s merging guidance. The caller supplies
 	// the normalized memory actually sent, not an oversized historical draft.
 	const reserve = Math.max(
-		REQUEST_RESERVE_TOKENS,
+		Math.min(REQUEST_RESERVE_TOKENS, Math.floor(contextWindow / 2)),
 		preparation.settings?.reserveTokens ?? 0,
 	);
 	const available = Number.isSafeInteger(contextWindow)

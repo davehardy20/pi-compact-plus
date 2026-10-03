@@ -109,6 +109,18 @@ it("budgets the hard-mode transcript after pruning ephemeral acknowledgements", 
 	expect(after.intentEvidence?.overflow).toBeUndefined();
 });
 
+it("allows bounded retained evidence on a small model with a fitting reserve", () => {
+	const source = user("Task: repair login.");
+	const retained = user("Keep the tests intact.");
+	const focus = extractCompactionFocus(
+		[source, retained],
+		{ ...preparation([source]), settings: { reserveTokens: 2048 } },
+		8192,
+	);
+	expect(focus.intentEvidence?.overflow).toBeUndefined();
+	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
+});
+
 it("honors a large configured output reserve when budgeting additional evidence", () => {
 	const source = user("x".repeat(600_000));
 	const retained = user("Keep this instruction.".repeat(4000));
