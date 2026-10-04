@@ -1,6 +1,21 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	estimateTokens,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { expect, it } from "vitest";
 import { extractCompactionFocus } from "../src/compaction-intent.js";
+
+const sdkRoot = dirname(
+	fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
+);
+const sdkCompaction = await import(
+	/* @vite-ignore */ pathToFileURL(
+		join(sdkRoot, "core/compaction/compaction.js"),
+	).href
+);
 
 function user(text: string) {
 	return { role: "user" as const, content: text, timestamp: 1 };
@@ -27,6 +42,34 @@ it("budgets only omitted user intent against the actual summary request", () => 
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([
 		redirect.content.trim(),
 	]);
+});
+
+it("native preparation includes users retained before a previous compaction entry", () => {
+	const session = SessionManager.inMemory();
+	session.appendMessage(user("Task: deploy the obsolete service."));
+	const supplied = user(`Task: repair login.\n${"detail ".repeat(30_000)}`);
+	const kept = session.appendMessage(supplied);
+	session.appendCompaction("Prior memory.", kept, 60_000);
+	const retained = user("Preserve the audit trail too.");
+	session.appendMessage(retained);
+	const projected = session.buildSessionContext().messages;
+	const prepared = sdkCompaction.prepareCompaction(session.getBranch(), {
+		enabled: true,
+		reserveTokens: 2048,
+		keepRecentTokens: 1,
+	}) as Parameters<typeof extractCompactionFocus>[1] | undefined;
+	expect(prepared).toBeDefined();
+	if (!prepared) throw new Error("Native preparation was not generated");
+	const source = prepared.isSplitTurn
+		? [...prepared.messagesToSummarize, ...prepared.turnPrefixMessages]
+		: prepared.messagesToSummarize;
+	const suppliedUsers = source.filter((message) => message.role === "user");
+	const projectedUsers = projected.filter((message) => message.role === "user");
+	expect(suppliedUsers.length).toBe(1);
+	expect(projectedUsers.slice(0, suppliedUsers.length)).toEqual(suppliedUsers);
+	const focus = extractCompactionFocus(projected, prepared, 200_000);
+	expect(focus.intentEvidence?.overflow).toBeUndefined();
+	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
 });
 
 it("keeps later identical requests instead of deduplicating them as a text set", () => {
@@ -73,6 +116,14 @@ it("counts split-prefix users as supplied to the unified structured request", ()
 
 it("still fails closed for genuinely oversized retained UTF-8 intent", () => {
 	const retained = user("約".repeat(100_000));
+	const focus = extractCompactionFocus([retained], preparation([]), 1_000_000);
+	expect(focus.intentEvidence?.overflow).toBe(true);
+	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("reports the independent byte cap even with model token headroom", () => {
+	const retained = user("x".repeat(300_000));
+	expect(estimateTokens(retained)).toBeLessThan(1_000_000 - 16_384);
 	const focus = extractCompactionFocus([retained], preparation([]), 1_000_000);
 	expect(focus.intentEvidence?.overflow).toBe(true);
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
