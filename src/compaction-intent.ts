@@ -15,9 +15,6 @@ interface IntentPreparation {
 	settings?: { reserveTokens: number };
 }
 
-// Independent request-size safety bound, not a proxy for model token capacity.
-// Overflow is explicit: integrated callers must cancel, never omit and proceed.
-const MAX_EVIDENCE_BYTES = 256 * 1024;
 const REQUEST_RESERVE_TOKENS = 16_384;
 
 function textTokens(text: string): number {
@@ -53,41 +50,53 @@ export function extractCompactionFocus(
 			extractTextContent(message) === extractTextContent(users[index]),
 	);
 	const omitted = prefixMatches ? users.slice(supplied.length) : users;
-	const evidence = extractCurrentFocus(
-		omitted,
-		MAX_EVIDENCE_BYTES,
-	).intentEvidence;
 	const transcript = serializeConversation(convertToLlm(source));
 	// Keep units consistent with Pi's token estimator. Previous memory appears
 	// in both Pi's prompt and Compact+'s merging guidance. The caller supplies
 	// the normalized memory actually sent, not an oversized historical draft.
+	const configuredReserve = preparation.settings?.reserveTokens ?? 0;
+	const validBudget =
+		Number.isSafeInteger(contextWindow) &&
+		contextWindow > 0 &&
+		Number.isSafeInteger(configuredReserve) &&
+		configuredReserve >= 0;
 	const reserve = Math.max(
 		Math.min(REQUEST_RESERVE_TOKENS, Math.floor(contextWindow / 2)),
-		preparation.settings?.reserveTokens ?? 0,
+		configuredReserve,
 	);
-	const available = Number.isSafeInteger(contextWindow)
+	const available = validBudget
 		? contextWindow -
 			textTokens(transcript) -
 			2 * textTokens(preparation.previousSummary ?? "") -
 			reserve
-		: 0;
-	const evidenceTokens =
-		evidence?.recentUserTurns.reduce(
-			(total, turn) => total + textTokens(turn) + 48,
-			0,
-		) ?? 0;
-	const overflow =
-		evidence?.overflow || evidenceTokens > Math.max(0, available);
+		: -1;
+	// Checkpoint/trigger byte bounds remain unchanged. Compaction evidence is
+	// bounded by this actual request, not an unrelated fixed byte allowance.
+	const recentUserTurns: string[] = [];
+	let evidenceTokens = 0;
+	let overflow = available < 0;
+	for (const message of omitted) {
+		if (overflow) break;
+		const text = extractTextContent(message).trim();
+		if (!text) continue;
+		evidenceTokens += textTokens(text) + 48;
+		if (evidenceTokens > available) {
+			overflow = true;
+			break;
+		}
+		recentUserTurns.push(text);
+	}
 	return {
 		...focus,
-		intentEvidence: focus.intentEvidence
-			? {
-					priorObjective: focus.objective,
-					certainty: focus.intentEvidence.certainty,
-					recentUserTurns: overflow ? [] : (evidence?.recentUserTurns ?? []),
-					...(overflow ? { overflow: true } : {}),
-				}
-			: undefined,
+		intentEvidence:
+			focus.intentEvidence || overflow
+				? {
+						priorObjective: focus.objective,
+						certainty: focus.intentEvidence?.certainty ?? "provisional",
+						recentUserTurns: overflow ? [] : recentUserTurns,
+						...(overflow ? { overflow: true } : {}),
+					}
+				: undefined,
 	};
 }
 
