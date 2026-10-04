@@ -474,13 +474,11 @@ npm run package:check
 
 ### Runtime regression matrix (F1–F11)
 
-The lockfile and `npm ci` supply the **Pi 0.87.1** coding-agent, agent-core,
-and AI packages for the main suite. The CI provider-boundary job separately
-installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
-three-package versions in both trees and fail on a configured but incomplete
-0.87.1 tree. This dev/test baseline is the agreed final Pi 0.87.1 target of
-`pi-compact-plus-02f1`, not a raised peer support floor; a follow-up docs
-refresh closes that issue's remaining scope.
+The lockfile and `npm ci` supply the exact **Pi 1.0.1** SDK triplet.
+CI independently provisions **0.87.1 and 1.0.1** provider-test trees and
+requires both; configured missing, incomplete, or mismatched trees fail.
+This changes the dev/test baseline, not the peer support floor or installed
+Pi CLI. Compatibility tests do not establish whole-setup 1.0.1 upgrade readiness.
 
 The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `postcss`, and the 0.84.x intermediate slices resolved Pi 0.83.0's bundled
@@ -529,27 +527,24 @@ verifying preserved system instructions and no tool replay with local transport.
 - **F11 — ancestor-symlink telemetry:** `test/persist.test.ts` checks read/write
   ancestors, leaf handling, and permission cases.
 
-The three SDK integration suites exercise real Pi session managers, compaction
-preparation/projection, JSONL reload, and (on 0.87.1) model runtime/registry.
-The locked-baseline and 0.87.1 compaction tests invoke Pi's real helper. Tool execution,
-model responses, and extension event delivery are **simulated** in-process;
-no network access or interactive Pi agent run is required. The locked baseline uses native
-fallback in the extension when no stream-aware route is exposed; a separate
-local stream drives Pi's own helper to test the summary/projection boundary.
-The 0.87.1 provider test uses a registry-backed local stream, never a remote
-provider. No actual live provider/session verification is claimed by these
-checks. The 0.87.1 test skips locally when the optional runtime path is unset;
-CI always configures it. To opt in locally with an independently provisioned,
-reviewed exact 0.87.1 tree:
+SDK suites exercise real session managers, compaction helpers, projection and
+JSONL reload. Provider tests use each version's real model runtime/registry
+with a scripted local stream. The host-boundary test also uses real AgentSession,
+Agent and ExtensionRunner dispatch/commit/continuation; only transport/auth are
+scripted. No remote provider or interactive/live-session verification is claimed.
+The 1.0.1 provider case defaults to the reviewed lockfile tree; the optional 0.87.1
+case skips locally unless configured. CI sets both roots and requires both cases.
+To opt in with an independently provisioned, reviewed exact 0.87.1 tree:
 
 ```bash
 PI_COMPACT_PLUS_TEST_PI_087_ROOT="$PI_087_ROOT/node_modules/@earendil-works/pi-coding-agent" \
   npm test -- test/provider-boundary-087.test.ts
 ```
 
-The configured root must contain the coding-agent package and its nested
-Pi 0.87.1 AI/agent-core packages. A missing or mismatched tree fails, rather
-than silently falling back to a host-global installation. `npm test` covers
+The 0.87.1 root must contain coding-agent and its nested AI/agent-core packages.
+`PI_COMPACT_PLUS_TEST_PI_101_ROOT` optionally selects a separately provisioned
+1.0.1 coding-agent tree with sibling AI/agent-core packages. Invalid configured
+trees fail, never silently falling back to a host-global installation. `npm test` covers
 the locked-baseline suites, including explicit unknown post-compaction usage and
 metadata-only reload/branch reconciliation. A real interactive `/reload`,
 `/compact-plus`, and continuation check remains a separate live smoke test

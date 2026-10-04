@@ -50,8 +50,6 @@ const compactionCoordinator = new CompactionCoordinator({
 | Events | Pi lifecycle event registration; delegates to coordinators | `src/events.ts` |
 | Compaction orchestration | Manual/auto trigger, guard cascade, telemetry | `src/compaction-coordinator.ts`, `src/lifecycle.ts` |
 | Compaction execution | Custom summary generation, classification, normalization | `src/compact.ts` |
-| Compaction intent | Avoid duplicate transcript evidence; budget complete omitted intent | `src/compaction-intent.ts` |
-| Turn boundary preparation | Public Pi cut policy over finalized, context-edited messages | `src/boundary-preparation.ts` |
 | Compatibility | Runtime feature detection, streamSimple shim, fallback | `src/compatibility.ts` |
 | Policy | Threshold/band math, checkpoint data | `src/policy.ts` |
 | Usage | Native vs estimated usage lookup | `src/usage.ts` |
@@ -76,10 +74,9 @@ const compactionCoordinator = new CompactionCoordinator({
 |---|---|---|
 | `session_start` | Load persisted telemetry, reset state | Restore cross-session compaction history |
 | `agent_start` | Reset `lastCompactTurnIndex`, `toolOutputPruning.onAgentStart()` | Pi restarts `turnIndex` per run, so same-turn suppression is run-scoped |
-| `turn_end` | Capture tool batch; check safe transactional compaction for `toolUse`; record idle candidate for `stop` | Boundary draft only after tools complete, with valid projection and safe provider route |
-| `turn_start` | Confirm boundary compaction actually committed | Reconcile telemetry and pruning state; never count an uncommitted draft |
+| `turn_end` | Capture tool batch, record auto-compact candidate | Candidate only when assistant message has `stopReason: "stop"` |
 | `message_end` | Flush pending pruning | Assistant messages only; never compacts |
-| `agent_settled` | Confirm boundary commit; idle auto-compaction compatibility/final-response path | Requires recorded candidate, `ctx.isIdle()`, no pending messages, no pending pruning flush |
+| `agent_settled` | Maybe auto-compact — the **only** auto-compaction boundary | Requires recorded candidate, `ctx.isIdle()`, no pending messages, no pending pruning flush |
 | `session_before_compact` | Clear pending auto-compact candidate, `compactionCoordinator.onSessionBeforeCompact()` | Manual/native compaction supersedes a queued auto candidate; custom summary generation or native fallback |
 | `session_compact` | Clear pending auto-compact candidate, `compactionCoordinator.onSessionCompact()` | Record final telemetry |
 | `session_before_tree` | Build branch instructions from focus | Custom instructions for session-tree compaction |
@@ -88,7 +85,7 @@ const compactionCoordinator = new CompactionCoordinator({
 | `context` | Pruning transform → focus-echo reorder | Applied to every context snapshot sent to the model |
 | `model_select` | `compactionCoordinator.onModelSelect()`; if the model key actually changed from a known model, `toolOutputPruning.onSessionTree(ctx)` | Reset model-scoped state on model change; recover the pruning branch index before the next context transform or query |
 
-**Key sequencing invariant:** Never call `ctx.compact()` inside an active `message_end`/`turn_end` handler. On supported Pi runtimes, a completed `toolUse` boundary can return a validated compaction draft without interrupting the run. Public `findCutPoint` preserves tool pairs, and the original session/model/leaf must remain unchanged during summarization. Queued input, earlier boundary drafts, multi-message source contributions, in-flight pruning, unavailable routes, and aborted/error turns defer. Pending pruning batches may remain during generation; they are reconciled only after commit. `turn_start`/`agent_settled` confirm the draft marker in the latest persisted compaction before recording success or cooldown. `turn_end` still records an idle candidate for a successful final `stop`; `agent_settled` consumes it only when idle with no queued messages or pending pruning flush. Manual/native compaction clears the candidate.
+**Key sequencing invariant:** Auto-compaction runs **only** in the `agent_settled` handler — never inside `message_end`/`turn_end`, where `ctx.compact()` would abort the active run and could discard or replay tool results. `turn_end` only records `state.pendingAutoCompactTurnIndex` for the final successful assistant turn (`stopReason: "stop"`); `agent_settled` consumes it and returns early unless `ctx.isIdle()` and `ctx.hasPendingMessages()` is false. If `toolOutputPruning.hasPendingFlush()` is true at settlement, auto-compaction is skipped. A manual or native compaction (`session_before_compact`/`session_compact`) clears the pending candidate.
 
 **The `context` event pipeline:** Pruning stubs first (`toolOutputPruning.transformContext`), then focus-echo reordering (`reorderForPositioning`). Both are no-ops when their respective conditions aren't met.
 
@@ -106,7 +103,6 @@ const compactionCoordinator = new CompactionCoordinator({
 | `lastCompactTokens` | `number` | Updated post-compaction; used by regrowth guard |
 | `lastCompactTurnIndex` | `number` | Reset to -1 on `agent_start` (turnIndex is run-scoped); set on auto-compaction |
 | `pendingAutoCompactTurnIndex` | `number \| null` | Set by `turn_end`; consumed by `agent_settled`; cleared on reset/model change/manual-native compaction |
-| `pendingBoundaryMarker` | `string \| null` | A generated draft awaiting commit; cleared on confirmation, discard, reset, or model change |
 | `lastModelKey` | `string \| null` | Set on model_select; never reset |
 | `lastCompaction` | `CompactionTelemetry \| null` | Set on session_compact |
 | `echoInjected` | `boolean` | Set true after context reorder; false on compaction |
