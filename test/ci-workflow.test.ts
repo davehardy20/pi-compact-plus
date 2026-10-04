@@ -129,9 +129,14 @@ describe("PR Node workflow checks", () => {
 		expect(auditStep).not.toContain("continue-on-error");
 	});
 
-	it("runs the no-network provider-boundary test against Pi 0.87.1 in CI", () => {
-		expect(workflow).toContain("name: Pi 0.87 provider boundary");
+	it("requires real provider boundaries for installed and candidate Pi hosts", () => {
+		expect(workflow).toContain("name: Pi host compatibility boundary");
 		expect(workflow).toContain("@earendil-works/pi-coding-agent@0.87.1");
+		expect(workflow).toContain("PI_COMPACT_PLUS_TEST_PI_101_ROOT:");
+		expect(workflow).toContain('PI_COMPACT_PLUS_TEST_REQUIRE_RUNTIMES: "1"');
+		for (const pkg of ["pi-coding-agent", "pi-ai", "pi-agent-core"]) {
+			expect(workflow).toContain(`@earendil-works/${pkg}@1.0.1`);
+		}
 		expect(workflow).toContain("PI_COMPACT_PLUS_TEST_PI_087_ROOT:");
 		expect(workflow).toContain("vitest run test/provider-boundary-087.test.ts");
 	});
