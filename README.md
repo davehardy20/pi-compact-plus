@@ -86,11 +86,11 @@ superseded or context-edited messages, so the latest substantive user request
 takes precedence over older `Task:` labels. With an active objective, only
 clear requests, redirects or cancellations replace it; ambiguous declarative
 replies remain context. To avoid treating a finite phrase list as complete,
-the existing summarizer also receives every projected user turn in chronological
-order when the complete evidence fits the available UTF-8 budget (including
-per-turn framing allowance). The default is 8 KiB; consistent native usage can
-expand it using verified context headroom, up to 256 KiB (see the runtime
-regression matrix below). It never silently samples or truncates a redirect.
+the summarizer receives the complete fitting projected user history in
+chronological order. Transcript-covered turns are not duplicated in supplemental
+intent. Capacity is checked against the actual SDK-rendered request and output
+allowance, not a fixed byte cap or pre-cut usage heuristic. It never silently
+samples or truncates a redirect.
 If the complete evidence exceeds the available budget, Compact+ cancels
 compaction and warns; a near-full session may require saving its objective
 before choosing another compaction path. When the extracted objective is
@@ -471,27 +471,25 @@ npm run package:check
 
 ### Runtime regression matrix (F1–F11)
 
-The lockfile and `npm ci` supply the **Pi 0.87.1** coding-agent, agent-core,
-and AI packages for the main suite. The CI provider-boundary job separately
-installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
-three-package versions in both trees and fail on a configured but incomplete
-0.87.1 tree. This dev/test baseline is the agreed final Pi 0.87.1 target of
-`pi-compact-plus-02f1`, not a raised peer support floor; a follow-up docs
-refresh closes that issue's remaining scope.
+The lockfile and `npm ci` supply **Pi 1.0.1** coding-agent, agent-core, and AI
+packages for the main suite. CI provisions isolated **Pi 0.87.1** and **Pi 1.0.1**
+provider-boundary trees and requires both. Tests assert all three package
+versions and fail on a configured but incomplete or mismatched tree. This is a
+dev/test baseline; peer ranges remain unchanged and the installed CLI is not
+upgraded.
 
 The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `postcss`, and the 0.84.x intermediate slices resolved Pi 0.83.0's bundled
 `brace-expansion` and `undici` advisories; the high-severity npm audit now
 blocks CI.
 
-Compact+ keeps every projected user turn since the last compaction in its
-intent-evidence prompt, including unrecognized redirects. The default 8 KiB
-budget expands only when native usage confirms spare model context: at most a
-quarter of the remaining tokens after a 16,384-token reserve, capped at 256 KiB.
-This lets a 1M-context session compact near a configured 180k-token threshold
-even when user evidence exceeds 8 KiB. If the full evidence still will not fit,
-compaction cancels rather than silently dropping instructions; estimated or
-inconsistent usage does not raise the budget.
+Custom summaries preserve complete fitting projected intent, including
+unrecognized redirects. Budgeting captures the SDK's actual normalized,
+hard-pruned request locally before credentials or provider work, including
+native system text, wrappers, memory, guidance, and effective output allowance.
+The checked preparation and instructions are reused verbatim. Oversized requests
+or session/model/leaf/epoch/queued-input changes decline safely; existing
+checkpoint and trigger-hint byte guards are unchanged.
 
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.
@@ -520,18 +518,17 @@ inconsistent usage does not raise the budget.
 - **F11 — ancestor-symlink telemetry:** `test/persist.test.ts` checks read/write
   ancestors, leaf handling, and permission cases.
 
-The three SDK integration suites exercise real Pi session managers, compaction
-preparation/projection, JSONL reload, and (on 0.87.1) model runtime/registry.
-The locked-baseline and 0.87.1 compaction tests invoke Pi's real helper. Tool execution,
-model responses, and extension event delivery are **simulated** in-process;
-no network access or interactive Pi agent run is required. The locked baseline uses native
-fallback in the extension when no stream-aware route is exposed; a separate
-local stream drives Pi's own helper to test the summary/projection boundary.
-The 0.87.1 provider test uses a registry-backed local stream, never a remote
-provider. No actual live provider/session verification is claimed by these
-checks. The 0.87.1 test skips locally when the optional runtime path is unset;
-CI always configures it. To opt in locally with an independently provisioned,
-reviewed exact 0.87.1 tree:
+SDK integration suites exercise real session managers, native preparation,
+projection, JSONL reload, compaction helpers, and provider runtime/registry APIs.
+Tool execution, model responses, and extension event delivery are **simulated**
+in-process, with registry-backed local streams rather than remote providers.
+These checks do not establish live-provider or whole-setup readiness.
+
+Locally, the provider matrix uses an explicit 0.87.1 root or discovers a
+version-verified installed `pi` package through `PATH`, without executing its
+CLI. It skips 0.87.1 only when neither is available and strict runtime mode is
+unset; CI explicitly configures and requires both roots. To provide an
+independently provisioned, reviewed exact 0.87.1 tree:
 
 ```bash
 PI_COMPACT_PLUS_TEST_PI_087_ROOT="$PI_087_ROOT/node_modules/@earendil-works/pi-coding-agent" \
@@ -539,8 +536,8 @@ PI_COMPACT_PLUS_TEST_PI_087_ROOT="$PI_087_ROOT/node_modules/@earendil-works/pi-c
 ```
 
 The configured root must contain the coding-agent package and its nested
-Pi 0.87.1 AI/agent-core packages. A missing or mismatched tree fails, rather
-than silently falling back to a host-global installation. `npm test` covers
+Pi 0.87.1 AI/agent-core packages. An explicitly configured missing or mismatched
+tree fails; it does not fall back to discovery. `npm test` covers
 the locked-baseline suites, including explicit unknown post-compaction usage and
 metadata-only reload/branch reconciliation. A real interactive `/reload`,
 `/compact-plus`, and continuation check remains a separate live smoke test

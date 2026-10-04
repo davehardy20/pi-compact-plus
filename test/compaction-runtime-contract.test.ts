@@ -13,6 +13,7 @@ it("routes a real Pi compaction helper through the registry without a network ca
 		id: "route-test",
 		api: "openai-completions",
 		baseUrl: "https://original.example.test/v1",
+		contextWindow: 200_000,
 		maxTokens: 4096,
 	};
 	const abort = new AbortController();

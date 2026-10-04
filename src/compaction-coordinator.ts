@@ -1,11 +1,14 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	CompactionResult,
 	ExtensionAPI,
+	ExtensionCommandContext,
 	SessionBeforeCompactEvent,
 	SessionCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 
 import { runCustomCompaction } from "./compact.js";
+import { extractTriggerFocus } from "./compaction-intent.js";
 import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
@@ -14,11 +17,7 @@ import { buildPersistedFocusEcho } from "./focus-echo/index.js";
 import { type ExtensionEventContext, executeCompaction } from "./lifecycle.js";
 import { isAssistantMessage } from "./pi-messages.js";
 import { getModeFromEffectiveUsage, modelKey } from "./policy.js";
-import {
-	extractCurrentFocus,
-	extractTextContent,
-	intentEvidenceBudgetForUsage,
-} from "./session-evidence.js";
+import { extractTextContent } from "./session-evidence.js";
 import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
@@ -97,16 +96,24 @@ export class CompactionCoordinator {
 			return;
 		}
 
-		this.state.lastTriggerAuto = false;
-
-		const cmdFocus = extractCurrentFocus(
-			currentProjectedMessages(ctx),
-			intentEvidenceBudgetForUsage(this.getEffectiveUsage(ctx)),
-		);
-		if (cmdFocus.intentEvidence?.overflow) {
-			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+		const epoch = this.state.currentCompactionEpoch;
+		const commandContext = ctx as ExtensionEventContext &
+			Partial<Pick<ExtensionCommandContext, "waitForIdle">>;
+		await commandContext.waitForIdle?.();
+		if (this.state.currentCompactionEpoch !== epoch) return;
+		if (this.state.isCompacting) return;
+		if (typeof ctx.isIdle !== "function" || !ctx.isIdle()) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					"Compact+ is waiting for an idle session; retry after the current run.",
+					"warning",
+				);
+			}
 			return;
 		}
+		this.state.lastTriggerAuto = false;
+
+		const cmdFocus = extractTriggerFocus(currentProjectedMessages(ctx));
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
@@ -169,17 +176,7 @@ export class CompactionCoordinator {
 		// Prevent double-triggering within the same turn.
 		if (this.state.isSameTurn(turnIndex)) return;
 
-		const autoFocus = extractCurrentFocus(
-			currentProjectedMessages(ctx),
-			intentEvidenceBudgetForUsage(usage),
-		);
-		if (autoFocus.intentEvidence?.overflow) {
-			// Throttle repeated warnings at the settled boundary without starting
-			// a compaction that cannot carry all projected user evidence.
-			this.state.lastCompactTime = now;
-			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
-			return;
-		}
+		const autoFocus = extractTriggerFocus(currentProjectedMessages(ctx));
 
 		this.state.selectedMode = mode;
 		this.state.isCompacting = true;
@@ -208,6 +205,8 @@ export class CompactionCoordinator {
 	async onSessionBeforeCompact(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
+		nativeFallbackAvailable = true,
+		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
 		const mode = this.state.selectedMode;
 
@@ -215,6 +214,14 @@ export class CompactionCoordinator {
 			return undefined;
 		}
 
+		const epoch = this.state.currentCompactionEpoch;
+		// Only the exact prompt this lifecycle issued is an SDK echo. Caller
+		// guidance, even generated-looking or modified text, is not ours to drop.
+		const customInstructions =
+			event.customInstructions === this.state.lastIssuedCompactionInstructions
+				? undefined
+				: event.customInstructions;
+		this.state.lastIssuedCompactionInstructions = null;
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction();
 		}
@@ -224,24 +231,12 @@ export class CompactionCoordinator {
 		// prior compactions. An empty projection is authoritative: never revive
 		// edited-away requests from raw branch entries or preparation messages.
 		const usage = this.getEffectiveUsage(ctx);
-		const focus = extractCurrentFocus(
-			currentProjectedMessages(ctx),
-			intentEvidenceBudgetForUsage(usage),
-		);
-		if (focus.intentEvidence?.overflow) {
-			this.state.selectedMode = null;
-			this.state.isCompacting = false;
-			this.state.lastTriggerAuto = false;
-			this.state.clearPendingCompaction();
-			this.state.lastFallbackReason = "intent evidence exceeds safety budget";
-			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
-			return { cancel: true };
-		}
 		const compatibility = resolveCompactionRuntimeCompatibility({
 			event,
 			modelRegistry: ctx.modelRegistry as { streamSimple?: unknown },
 		});
-
+		const projected = boundary?.projected ?? currentProjectedMessages(ctx);
+		const focus = extractTriggerFocus(projected);
 		const triggerSource: TriggerSource = this.state.lastTriggerAuto
 			? event.preparation.isSplitTurn
 				? "message_end"
@@ -283,6 +278,7 @@ export class CompactionCoordinator {
 			};
 			this.state.lastFallbackReason = compatibility.reason;
 			await this.persistTelemetrySnapshot();
+			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -294,16 +290,56 @@ export class CompactionCoordinator {
 			return undefined;
 		}
 
+		const sessionId = ctx.sessionManager.getSessionId();
+		const leaf = ctx.sessionManager.getLeafId();
+		const selectedModel = modelKey(ctx.model);
+		const isCurrent = (): boolean => {
+			try {
+				return (
+					this.state.currentCompactionEpoch === epoch &&
+					ctx.sessionManager.getSessionId() === sessionId &&
+					ctx.sessionManager.getLeafId() === leaf &&
+					modelKey(ctx.model) === selectedModel &&
+					!ctx.hasPendingMessages() &&
+					!this.state.toolOutputPruning.isFlushing &&
+					(boundary?.isCurrent() ?? true)
+				);
+			} catch {
+				return false;
+			}
+		};
+		const cancelCustom = (reason: string): { cancel: true } => {
+			this.state.selectedMode = null;
+			this.state.isCompacting = false;
+			this.state.lastTriggerAuto = false;
+			this.state.clearPendingCompaction();
+			this.state.lastFallbackReason = reason;
+			return { cancel: true };
+		};
 		const attempt = await runCustomCompaction(
 			event.preparation,
 			mode,
 			ctx,
 			compatibility,
 			event.signal,
-			{ focus, customInstructions: event.customInstructions },
+			{ projected, customInstructions, isCurrent },
 		);
+		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction();
+		}
+		if (!isCurrent()) return cancelCustom("compaction context changed");
+		if (attempt.cancel) {
+			const overflow =
+				attempt.fallbackReason ===
+				"additional intent evidence exceeds the summary request budget";
+			if (overflow && ctx.hasUI)
+				ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return cancelCustom(
+				overflow
+					? "intent evidence exceeds safety budget"
+					: (attempt.fallbackReason ?? "custom compaction cancelled"),
+			);
 		}
 
 		if (attempt.result) {
@@ -314,6 +350,8 @@ export class CompactionCoordinator {
 			};
 			this.state.lastFallbackReason = attempt.fallbackReason;
 			await this.persistTelemetrySnapshot();
+			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
+			if (!isCurrent()) return cancelCustom("compaction context changed");
 
 			return {
 				compaction: {
@@ -347,10 +385,14 @@ export class CompactionCoordinator {
 				telemetryBase.compatibilityReason ?? this.state.lastFallbackReason,
 		};
 		await this.persistTelemetrySnapshot();
+		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
+		if (!isCurrent()) return cancelCustom("compaction context changed");
 
 		if (ctx.hasUI) {
 			ctx.ui.notify(
-				"Compact+ custom summarization unavailable; falling back to default compaction.",
+				nativeFallbackAvailable
+					? "Compact+ custom summarization unavailable; falling back to default compaction."
+					: "Compact+ turn-boundary summary unavailable; session unchanged. Native Pi compaction remains available.",
 				"warning",
 			);
 		}
@@ -413,9 +455,13 @@ export class CompactionCoordinator {
 		this.state.echoInjected = false;
 		this.state.clearPendingCompaction();
 		const postUsage = ctx.getContextUsage();
-		if (postUsage && typeof postUsage.tokens === "number") {
-			this.state.lastCompactTokens = postUsage.tokens;
-		}
+		this.state.lastCompactTokens =
+			typeof details.compactPlusBoundary !== "string" &&
+			typeof postUsage?.tokens === "number" &&
+			Number.isSafeInteger(postUsage.tokens) &&
+			postUsage.tokens > 0
+				? postUsage.tokens
+				: 0;
 		await this.persistTelemetrySnapshot();
 	}
 
