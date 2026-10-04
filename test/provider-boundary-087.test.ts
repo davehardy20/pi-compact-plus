@@ -4,9 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
-// Version bridge only: forward the locked SDK import to each real host helper.
-// Cover the installed 0.87.1 host and candidate 1.0.1 independently. Neither
-// the helper, Pi session manager, nor model registry behavior is substituted.
+// Only the import bridge is mocked; helpers, session managers and registries are real.
 const { invokePi087Compact } = vi.hoisted(() => ({
 	invokePi087Compact: vi.fn(),
 }));
@@ -18,8 +16,7 @@ import { runCustomCompaction } from "../src/compact.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
-// CI must supply both exact trees. Locally the installed-host tree is opt-in;
-// the candidate falls back only to the reviewed repository lockfile.
+// CI requires both trees; locally the old host is opt-in.
 const runtimes = [
 	{ version: "0.87.1", root: process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT },
 	{
@@ -35,7 +32,7 @@ const runtimes = [
 ];
 
 it.for(runtimes)(
-	"routes real Pi $version preparation and compaction through the custom provider without network I/O",
+	"real Pi $version: provider routing and compaction",
 	async ({ version, root }, ctx) => {
 		if (!root) {
 			if (process.env.PI_COMPACT_PLUS_TEST_REQUIRE_RUNTIMES === "1") {
@@ -58,7 +55,7 @@ it.for(runtimes)(
 			stream: join(dependencies, "pi-ai/dist/utils/event-stream.js"),
 		};
 		if (!Object.values(paths).every(existsSync)) {
-			throw new Error("Configured Pi test runtime is incomplete");
+			throw new Error("Pi test runtime incomplete");
 		}
 		const installed = JSON.parse(
 			readFileSync(join(root, "package.json"), "utf8"),
