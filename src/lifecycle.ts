@@ -105,13 +105,16 @@ export function executeCompaction(
 	const compactionEpoch = state.currentCompactionEpoch;
 	const hadUI = safeReadHasUI(ctx);
 
+	const instructions = buildSummaryInstructions(mode, focus);
+	state.lastIssuedCompactionInstructions = instructions;
 	ctx.compact({
-		customInstructions: buildSummaryInstructions(mode, focus),
+		customInstructions: instructions,
 		onComplete: (result) => {
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;
 			state.lastTriggerAuto = false;
+			state.lastIssuedCompactionInstructions = null;
 			state.lastCompactTime = state.lastCompaction?.timestamp ?? Date.now();
 			state.echoInjected = false;
 			const postUsage = safeGetContextUsage(ctx);

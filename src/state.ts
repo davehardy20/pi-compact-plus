@@ -24,6 +24,8 @@ export class CompactionState {
 	/** Awaiting Pi's transactional commit, not yet a successful compaction. */
 	pendingBoundaryMarker: string | null = null;
 	lastFallbackReason: string | null = null;
+	/** Exact lifecycle-issued prompt; transient ownership, never telemetry. */
+	lastIssuedCompactionInstructions: string | null = null;
 	lastInjectedEcho: string | null = null;
 	telemetryPersistenceIssues: TelemetryPersistenceIssue[] = [];
 	private compactionEpoch = 0;
@@ -33,6 +35,7 @@ export class CompactionState {
 	/** Reject callbacks from compactions started before a session transition. */
 	invalidateCompactionCallbacks(): void {
 		this.compactionEpoch++;
+		this.lastIssuedCompactionInstructions = null;
 	}
 
 	get currentCompactionEpoch(): number {
@@ -82,6 +85,7 @@ export class CompactionState {
 			this.pendingCompaction = null;
 			this.pendingBoundaryMarker = null;
 			this.lastFallbackReason = null;
+			this.lastIssuedCompactionInstructions = null;
 			this.lastInjectedEcho = null;
 			this.echoInjected = false;
 			this.toolOutputPruning.reset();
@@ -103,6 +107,7 @@ export class CompactionState {
 	clearPendingCompaction(): void {
 		this.pendingCompaction = null;
 		this.pendingBoundaryMarker = null;
+		this.lastIssuedCompactionInstructions = null;
 	}
 
 	// ── Guard helpers ────────────────────────────────────────────────

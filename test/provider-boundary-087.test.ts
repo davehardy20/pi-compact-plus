@@ -21,10 +21,16 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 import { runCustomCompaction } from "../src/compact.js";
 import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
+import { findInstalledPiRuntime } from "./fixtures/pi-runtime-discovery.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 const runtimes = [
-	{ version: "0.87.1", root: process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT },
+	{
+		version: "0.87.1",
+		root:
+			process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT ??
+			findInstalledPiRuntime("0.87.1"),
+	},
 	{
 		version: "1.0.1",
 		root:
@@ -36,6 +42,8 @@ const runtimes = [
 			),
 	},
 ];
+
+const completedRuntimes: string[] = [];
 
 it.for(runtimes)(
 	"real Pi $version: provider routing and compaction",
@@ -421,5 +429,12 @@ it.for(runtimes)(
 		expect(invalid.fallbackReason).toMatch(/^compaction summary invalid:/);
 		expect(session.getEntries()).toHaveLength(entriesBefore);
 		expect(providerStream).toHaveBeenCalledTimes(2);
+		completedRuntimes.push(version);
 	},
 );
+
+it("executes every discovered/configured SDK in the full matrix", () => {
+	expect(completedRuntimes).toEqual(
+		runtimes.filter(({ root }) => root).map(({ version }) => version),
+	);
+});

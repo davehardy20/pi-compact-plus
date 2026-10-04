@@ -368,6 +368,13 @@ export class CompactionCoordinator {
 		}
 
 		const epoch = this.state.currentCompactionEpoch;
+		// Only the exact prompt this lifecycle issued is an SDK echo. Caller
+		// guidance, even generated-looking or modified text, is not ours to drop.
+		const customInstructions =
+			event.customInstructions === this.state.lastIssuedCompactionInstructions
+				? undefined
+				: event.customInstructions;
+		this.state.lastIssuedCompactionInstructions = null;
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction();
 		}
@@ -468,7 +475,7 @@ export class CompactionCoordinator {
 			ctx,
 			compatibility,
 			event.signal,
-			{ projected, customInstructions: event.customInstructions, isCurrent },
+			{ projected, customInstructions, isCurrent },
 		);
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {

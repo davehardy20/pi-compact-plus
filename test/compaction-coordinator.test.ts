@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import {
 	type CompactPlusThresholdSettings,
@@ -6,6 +6,29 @@ import {
 } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import type { EffectiveUsage } from "../src/types.js";
+
+const { mutateDuringBudget } = vi.hoisted(() => ({
+	mutateDuringBudget: vi.fn(),
+}));
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
+	return {
+		...actual,
+		generateSummaryWithUsage: (
+			...args: Parameters<typeof actual.generateSummaryWithUsage>
+		) => {
+			mutateDuringBudget();
+			return actual.generateSummaryWithUsage(...args);
+		},
+	};
+});
+
+afterEach(() => {
+	mutateDuringBudget.mockReset();
+	vi.restoreAllMocks();
+});
 
 type ExtensionEventContext = Parameters<
 	Parameters<import("@earendil-works/pi-coding-agent").ExtensionAPI["on"]>[1]
@@ -87,6 +110,15 @@ function setProjectedUser(ctx: ExtensionEventContext, text: string): void {
 }
 
 describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
+	it("clears boundary drafts and issued prompt ownership together", () => {
+		const { state } = createCoordinator();
+		state.pendingBoundaryMarker = "uncommitted boundary";
+		state.lastIssuedCompactionInstructions = "issued prompt";
+		state.clearPendingCompaction();
+		expect(state.pendingBoundaryMarker).toBeNull();
+		expect(state.lastIssuedCompactionInstructions).toBeNull();
+	});
+
 	it("skips auto-compaction in an ephemeral json child with no session file", async () => {
 		const { coordinator, state } = createCoordinator();
 		const ctx = createMockCtx({ mode: "json", sessionFile: undefined });
@@ -305,6 +337,77 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			expect.stringContaining("intent evidence exceeds"),
 			"warning",
 		);
+	});
+
+	it.each([
+		"queue",
+		"session",
+		"leaf",
+		"model",
+		"model capacity",
+		"epoch",
+		"pruning flush",
+	])("cancels %s changes during budgeting before auth", async (kind) => {
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		const ctx = createMockCtx({ sessionFile: "/tmp/session.jsonl" });
+		const auth = vi.fn();
+		const stream = vi.fn();
+		Object.defineProperty(ctx, "modelRegistry", {
+			value: { getApiKeyAndHeaders: auth, streamSimple: stream },
+		});
+		mutateDuringBudget.mockImplementationOnce(() => {
+			switch (kind) {
+				case "queue":
+					vi.spyOn(ctx, "hasPendingMessages").mockReturnValue(true);
+					break;
+				case "session":
+					vi.spyOn(ctx.sessionManager, "getSessionId").mockReturnValue(
+						"replacement",
+					);
+					break;
+				case "leaf":
+					vi.spyOn(ctx.sessionManager, "getLeafId").mockReturnValue("new-leaf");
+					break;
+				case "model":
+					if (!ctx.model) throw new Error("Missing fixture model");
+					ctx.model = { ...ctx.model, id: "replacement" };
+					break;
+				case "model capacity":
+					if (!ctx.model) throw new Error("Missing fixture model");
+					ctx.model.maxTokens = 1024;
+					break;
+				case "epoch":
+					state.invalidateCompactionCallbacks();
+					state.selectedMode = "hard";
+					break;
+				case "pruning flush":
+					state.toolOutputPruning.isFlushing = true;
+					break;
+			}
+		});
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+					settings: {
+						enabled: true,
+						keepRecentTokens: 100,
+						reserveTokens: 4096,
+					},
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+		expect(result).toEqual({ cancel: true });
+		expect(mutateDuringBudget).toHaveBeenCalledOnce();
+		expect(auth).not.toHaveBeenCalled();
+		expect(stream).not.toHaveBeenCalled();
+		expect(state.lastCompaction).toBeNull();
+		expect(state.selectedMode).toBe(kind === "epoch" ? "hard" : null);
 	});
 
 	it("waits for idle before manual compaction can interrupt an active run", async () => {
