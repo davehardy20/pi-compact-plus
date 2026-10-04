@@ -471,13 +471,13 @@ npm run package:check
 
 ### Runtime regression matrix (F1–F11)
 
-The lockfile and `npm ci` supply the **Pi 1.0.1** coding-agent, agent-core,
-and AI packages for the main suite. This dev/test baseline removes the old
-SDK's published shrinkwrap pin on vulnerable `brace-expansion`; fresh installs
-resolve 5.0.12 and pass the blocking high-severity audit. Peer ranges remain
-unchanged; this is not a universal compatibility or live-provider claim.
-The isolated **Pi 0.87.1** provider-compatibility test remains unchanged in
-this dependency slice; its migration follows separately to stay within PR budgets.
+The lockfile and `npm ci` supply the **Pi 0.87.1** coding-agent, agent-core,
+and AI packages for the main suite. The CI provider-boundary job separately
+installs **Pi 0.87.1** into an isolated temporary prefix. Tests assert the exact
+three-package versions in both trees and fail on a configured but incomplete
+0.87.1 tree. This dev/test baseline is the agreed final Pi 0.87.1 target of
+`pi-compact-plus-02f1`, not a raised peer support floor; a follow-up docs
+refresh closes that issue's remaining scope.
 
 The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `postcss`, and the 0.84.x intermediate slices resolved Pi 0.83.0's bundled
