@@ -156,18 +156,61 @@ it.for(runtimes)(
 		// replacement/omission edits must affect preparation and projection alike.
 		for (const split of [false, true]) {
 			const history = SessionManager.inMemory();
-			const removedId = history.appendMessage({
+			history.appendMessage({
 				role: "user",
-				content: "Task: deploy the obsolete service.",
+				content: "Task: investigate the initial service.",
+				timestamp: 0,
+			});
+			const earlierId = history.appendMessage({
+				role: "user",
+				content: "Preserve earlier retained context.",
 				timestamp: 1,
 			});
-			const replacedId = history.appendMessage({
-				role: "user",
-				content: "Investigate the withdrawn login request.",
+			const removedMessage = {
+				role: "user" as const,
+				content: "Task: deploy the obsolete service.",
 				timestamp: 2,
+			};
+			const removedId = history.appendMessage(removedMessage);
+			const replacedMessage = {
+				role: "user" as const,
+				content: "Investigate the withdrawn login request.",
+				timestamp: 3,
+			};
+			const replacedId = history.appendMessage(replacedMessage);
+			const firstCut = prepareCompaction(history.getBranch(), {
+				enabled: true,
+				reserveTokens: 1024,
+				keepRecentTokens:
+					estimateTokens(removedMessage) + estimateTokens(replacedMessage) + 1,
 			});
-			history.appendCompaction("First memory.", removedId, 100);
-			history.appendCompaction("Latest memory.", removedId, 100);
+			if (!firstCut) throw new Error("Expected the first native lifecycle cut");
+			expect(firstCut.firstKeptEntryId).toBe(earlierId);
+			history.appendCompaction(
+				"First memory.",
+				firstCut.firstKeptEntryId,
+				firstCut.tokensBefore,
+			);
+			const intervening = {
+				role: "user" as const,
+				content: "Confirm routing repair only.",
+				timestamp: 4,
+			};
+			history.appendMessage(intervening);
+			const secondCut = prepareCompaction(history.getBranch(), {
+				enabled: true,
+				reserveTokens: 1024,
+				keepRecentTokens:
+					estimateTokens(replacedMessage) + estimateTokens(intervening) + 1,
+			});
+			if (!secondCut)
+				throw new Error("Expected the second native lifecycle cut");
+			expect(secondCut.firstKeptEntryId).toBe(removedId);
+			history.appendCompaction(
+				"Latest memory.",
+				secondCut.firstKeptEntryId,
+				secondCut.tokensBefore,
+			);
 			history.appendContextEdit(removedId, null);
 			const replacement = `Repair routing instead. ${"routing detail ".repeat(8000)}`;
 			history.appendContextEdit(replacedId, { content: replacement });
@@ -208,7 +251,7 @@ it.for(runtimes)(
 			);
 			expect(
 				users.map((message: { content: unknown }) => message.content),
-			).toEqual([replacement, latest]);
+			).toEqual([replacement, intervening.content, latest]);
 			expect(users.slice(0, supplied.length)).toEqual(supplied);
 			const result = await prepareBudgetedCompactionFocus(projection, native, {
 				model: { ...model, contextWindow: 35_000 },
