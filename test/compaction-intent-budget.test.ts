@@ -9,6 +9,7 @@ import {
 import { expect, it, vi } from "vitest";
 import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { buildSummaryInstructions } from "../src/prompts.js";
+import { CONTINUATION_PROMPT } from "../src/types.js";
 
 const sdkRoot = dirname(
 	fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
@@ -365,6 +366,21 @@ it("fits the exact captured total but rejects one token less", async () => {
 			expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
 			expect(budgeted.renderedInstructions).toBeUndefined();
 		}
+	}
+});
+
+it("omits only the exact generated continuation after verifying the native prefix", async () => {
+	const source = user("Task: repair login.");
+	const generated = user(CONTINUATION_PROMPT);
+	const real = user(`${CONTINUATION_PROMPT} Preserve the audit constraints.`);
+	for (const supplied of [[source], [source, generated]]) {
+		const focus = await extractCompactionFocus(
+			[source, generated, real],
+			preparation(supplied),
+			200_000,
+		);
+		expect(focus.intentEvidence?.overflow).toBeUndefined();
+		expect(focus.intentEvidence?.recentUserTurns).toEqual([real.content]);
 	}
 });
 

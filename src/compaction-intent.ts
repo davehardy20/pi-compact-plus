@@ -4,7 +4,7 @@ import {
 	generateSummaryWithUsage,
 } from "@earendil-works/pi-coding-agent";
 import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
-import type { CurrentFocus } from "./types.js";
+import { CONTINUATION_PROMPT, type CurrentFocus } from "./types.js";
 
 interface IntentPreparation {
 	messagesToSummarize: AgentMessage[];
@@ -106,7 +106,7 @@ export async function prepareBudgetedCompactionFocus<
 	let evidenceLowerBound = 0;
 	for (const message of omitted) {
 		const text = extractTextContent(message).trim();
-		if (!text) continue;
+		if (!text || text === CONTINUATION_PROMPT) continue;
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.
 		evidenceLowerBound += Math.max(
