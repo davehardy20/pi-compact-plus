@@ -5,14 +5,21 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
 // Real SDKs; mock only the import bridge.
-const { invokePi087Compact } = vi.hoisted(() => ({
-	invokePi087Compact: vi.fn(),
-}));
+const { invokePi087Compact, invokeSummary, invokeEstimate } = vi.hoisted(
+	() => ({
+		invokePi087Compact: vi.fn(),
+		invokeSummary: vi.fn(),
+		invokeEstimate: vi.fn(),
+	}),
+);
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	compact: (...args: unknown[]) => invokePi087Compact(...args),
+	generateSummaryWithUsage: (...args: unknown[]) => invokeSummary(...args),
+	estimateTokens: (...args: unknown[]) => invokeEstimate(...args),
 }));
 
 import { runCustomCompaction } from "../src/compact.js";
+import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
@@ -67,7 +74,12 @@ it.for(runtimes)(
 			expect(nested.version, pkg).toBe(version);
 		}
 		const [
-			{ compact: compact087, prepareCompaction },
+			{
+				compact: compact087,
+				prepareCompaction,
+				generateSummaryWithUsage,
+				estimateTokens,
+			},
 			{ SessionManager },
 			{ ModelRuntime },
 			{ ModelRegistry },
@@ -78,6 +90,8 @@ it.for(runtimes)(
 				(path) => import(/* @vite-ignore */ pathToFileURL(path).href),
 			),
 		);
+		invokeSummary.mockImplementation(generateSummaryWithUsage);
+		invokeEstimate.mockImplementation(estimateTokens);
 		const runtime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
 			modelsPath: null,
@@ -88,10 +102,167 @@ it.for(runtimes)(
 		const model = {
 			provider: "test-custom-route",
 			id: "route-test",
-			api: "openai-completions",
+			api: "openai-completions" as const,
+			name: "Routing test",
+			reasoning: false,
+			input: ["text" as const],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			baseUrl: "https://original.example.test/v1",
+			contextWindow: 200_000,
 			maxTokens: 4096,
 		};
+		const budgetSource = {
+			role: "user" as const,
+			content: "Task: repair login.",
+			timestamp: 1,
+		};
+		const budgetPreparation = {
+			messagesToSummarize: [budgetSource],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			settings: { reserveTokens: 1024 },
+		};
+		const budgeted = await prepareBudgetedCompactionFocus(
+			[budgetSource],
+			budgetPreparation,
+			{ model, renderInstructions: () => "Keep the task." },
+		);
+		expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+		expect(budgeted.renderedInstructions).toBe("Keep the task.");
+		invokeSummary.mockImplementationOnce(async (...args) => {
+			try {
+				await generateSummaryWithUsage(...args);
+			} catch {
+				throw new Error("wrapped SDK capture failure");
+			}
+		});
+		const wrapped = await prepareBudgetedCompactionFocus(
+			[budgetSource],
+			budgetPreparation,
+			{ model, renderInstructions: () => "Keep the task." },
+		);
+		expect(wrapped.focus.intentEvidence?.overflow).toBe(true);
+		expect(wrapped.renderedInstructions).toBeUndefined();
+		invokeSummary.mockResolvedValueOnce({ text: "unexpected SDK completion" });
+		const uncaptured = await prepareBudgetedCompactionFocus(
+			[budgetSource],
+			budgetPreparation,
+			{ model, renderInstructions: () => "Keep the task." },
+		);
+		expect(uncaptured.focus.intentEvidence?.overflow).toBe(true);
+		expect(uncaptured.renderedInstructions).toBeUndefined();
+		// Stress the disputed prefix using real native cuts, not fabricated input.
+		// The latest retained raw range contains an older compaction entry;
+		// replacement/omission edits must affect preparation and projection alike.
+		for (const split of [false, true]) {
+			const history = SessionManager.inMemory();
+			history.appendMessage({
+				role: "user",
+				content: "Task: investigate the initial service.",
+				timestamp: 0,
+			});
+			const earlierId = history.appendMessage({
+				role: "user",
+				content: "Preserve earlier retained context.",
+				timestamp: 1,
+			});
+			const removedMessage = {
+				role: "user" as const,
+				content: "Task: deploy the obsolete service.",
+				timestamp: 2,
+			};
+			const removedId = history.appendMessage(removedMessage);
+			const replacedMessage = {
+				role: "user" as const,
+				content: "Investigate the withdrawn login request.",
+				timestamp: 3,
+			};
+			const replacedId = history.appendMessage(replacedMessage);
+			const firstCut = prepareCompaction(history.getBranch(), {
+				enabled: true,
+				reserveTokens: 1024,
+				keepRecentTokens:
+					estimateTokens(removedMessage) + estimateTokens(replacedMessage) + 1,
+			});
+			if (!firstCut) throw new Error("Expected the first native lifecycle cut");
+			expect(firstCut.firstKeptEntryId).toBe(earlierId);
+			history.appendCompaction(
+				"First memory.",
+				firstCut.firstKeptEntryId,
+				firstCut.tokensBefore,
+			);
+			const intervening = {
+				role: "user" as const,
+				content: "Confirm routing repair only.",
+				timestamp: 4,
+			};
+			history.appendMessage(intervening);
+			const secondCut = prepareCompaction(history.getBranch(), {
+				enabled: true,
+				reserveTokens: 1024,
+				keepRecentTokens:
+					estimateTokens(replacedMessage) + estimateTokens(intervening) + 1,
+			});
+			if (!secondCut)
+				throw new Error("Expected the second native lifecycle cut");
+			expect(secondCut.firstKeptEntryId).toBe(removedId);
+			history.appendCompaction(
+				"Latest memory.",
+				secondCut.firstKeptEntryId,
+				secondCut.tokensBefore,
+			);
+			history.appendContextEdit(removedId, null);
+			const replacement = `Repair routing instead. ${"routing detail ".repeat(8000)}`;
+			history.appendContextEdit(replacedId, { content: replacement });
+			// Prevent the native cut from rewinding over context-invisible edits.
+			history.appendCustomMessageEntry(
+				"native-prefix-fixture",
+				"Preserved visible progress.",
+				false,
+			);
+			const latest = "Preserve the audit trail too.";
+			history.appendMessage({ role: "user", content: latest, timestamp: 3 });
+			if (split) {
+				history.appendMessage({
+					role: "assistant",
+					content: [{ type: "text", text: "Active progress ".repeat(200) }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					stopReason: "stop",
+					usage: { input: 1, output: 1, totalTokens: 2 },
+					timestamp: 4,
+				});
+			}
+			const native = prepareCompaction(history.getBranch(), {
+				enabled: true,
+				reserveTokens: 1024,
+				keepRecentTokens: 1,
+			});
+			if (!native) throw new Error("Expected a native edited-history cut");
+			expect(native.isSplitTurn).toBe(split);
+			const projection = history.buildSessionProjection().messages;
+			const supplied = [
+				...native.messagesToSummarize,
+				...native.turnPrefixMessages,
+			].filter((message: { role: string }) => message.role === "user");
+			const users = projection.filter(
+				(message: { role: string }) => message.role === "user",
+			);
+			expect(
+				users.map((message: { content: unknown }) => message.content),
+			).toEqual([replacement, intervening.content, latest]);
+			expect(users.slice(0, supplied.length)).toEqual(supplied);
+			const result = await prepareBudgetedCompactionFocus(projection, native, {
+				model: { ...model, contextWindow: 35_000 },
+				renderInstructions: (focus) =>
+					`Preserve current intent: ${JSON.stringify(focus.intentEvidence)}`,
+			});
+			expect(result.focus.intentEvidence?.overflow).toBeUndefined();
+			expect(result.focus.intentEvidence?.recentUserTurns).toEqual(
+				split ? [] : [latest],
+			);
+		}
 		const credential = ["sentinel", "secret"].join("-");
 		let summaryText = VALID_STRUCTURED_SUMMARY;
 		const providerStream = vi.fn((requestModel, _context, options) => {
