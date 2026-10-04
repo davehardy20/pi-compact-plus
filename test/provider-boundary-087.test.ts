@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
-// Only the import bridge is mocked; helpers, session managers and registries are real.
+// Real SDKs; mock only the import bridge.
 const { invokePi087Compact } = vi.hoisted(() => ({
 	invokePi087Compact: vi.fn(),
 }));
@@ -16,7 +16,6 @@ import { runCustomCompaction } from "../src/compact.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
-// CI requires both trees; locally the old host is opt-in.
 const runtimes = [
 	{ version: "0.87.1", root: process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT },
 	{
