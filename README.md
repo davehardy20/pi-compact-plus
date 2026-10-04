@@ -93,8 +93,8 @@ the summarizer sees chronological user turns in its conversation transcript,
 plus complete projected user turns omitted from that transcript (including
 retained redirects) in the intent prompt. Already-supplied turns are not copied
 again. The additional evidence allowance uses the actual serialized summary
-request, not the nearly-full live session, and is capped at 256 KiB. It never
-silently samples or truncates a redirect. Only genuinely oversized additional
+request and configured reserve, not the nearly-full live session or the
+checkpoint byte limit. It never silently samples or truncates a redirect. Only genuinely oversized additional
 evidence cancels compaction with a warning. When the extracted objective is
 provisional, the helper compares the complete evidence with the prior task:
 a clear new request supersedes it, but a status-only reply does not. The extension's exact "Continue with the current
@@ -490,8 +490,9 @@ transcript. Complete omitted/retained turns remain chronological intent evidence
 including unrecognized redirects and repeated identical requests. Their allowance
 uses Pi's token estimates for serialized input and normalized previous memory,
 with a 16,384-token prompt/output allowance (at most half a small model window),
-never below the configured reserve, and a separate 256 KiB UTF-8 evidence cap. Trigger-time hints do not
-cancel before Pi has selected its cut. Truly oversized additional evidence still
+never below the configured reserve. Complete additional evidence is bounded by
+that actual request; checkpoint and trigger hints keep their separate byte limits.
+Trigger-time hints do not cancel before Pi has selected its cut. Truly oversized additional evidence still
 cancels safely; no retained instruction is silently truncated.
 `test/compaction-intent.test.ts` covers this accounting;
 `test/turn-boundary-compaction.test.ts` covers real-SDK cuts, streaming, split

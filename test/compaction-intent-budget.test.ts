@@ -114,19 +114,19 @@ it("counts split-prefix users as supplied to the unified structured request", ()
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
 });
 
-it("still fails closed for genuinely oversized retained UTF-8 intent", () => {
+it("still fails closed for retained UTF-8 intent exceeding the request budget", () => {
 	const retained = user("約".repeat(100_000));
-	const focus = extractCompactionFocus([retained], preparation([]), 1_000_000);
+	const focus = extractCompactionFocus([retained], preparation([]), 8192);
 	expect(focus.intentEvidence?.overflow).toBe(true);
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
 });
 
-it("reports the independent byte cap even with model token headroom", () => {
+it("preserves complete additional ASCII above the old cap when the request fits", () => {
 	const retained = user("x".repeat(300_000));
 	expect(estimateTokens(retained)).toBeLessThan(1_000_000 - 16_384);
 	const focus = extractCompactionFocus([retained], preparation([]), 1_000_000);
-	expect(focus.intentEvidence?.overflow).toBe(true);
-	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+	expect(focus.intentEvidence?.overflow).toBeUndefined();
+	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
 });
 
 it("accepts large ASCII history that still fits the model token budget", () => {
@@ -150,6 +150,28 @@ it("allows bounded retained evidence on a small model with a fitting reserve", (
 	);
 	expect(focus.intentEvidence?.overflow).toBeUndefined();
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
+});
+
+it.each([
+	{ contextWindow: 0, reserveTokens: 2048 },
+	{ contextWindow: Number.NaN, reserveTokens: 2048 },
+	{ contextWindow: 8192, reserveTokens: Number.NaN },
+	{ contextWindow: 8192, reserveTokens: -1 },
+])("rejects invalid request budgets %j", (settings) => {
+	const focus = extractCompactionFocus(
+		[user("Keep the constraints.")],
+		{ ...preparation([]), settings },
+		settings.contextWindow,
+	);
+	expect(focus.intentEvidence?.overflow).toBe(true);
+	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("rejects an oversized transcript even when no additional intent is omitted", () => {
+	const source = user("x".repeat(40_000));
+	const focus = extractCompactionFocus([source], preparation([source]), 8192);
+	expect(focus.intentEvidence?.overflow).toBe(true);
+	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
 });
 
 it("honors a large configured output reserve when budgeting additional evidence", () => {

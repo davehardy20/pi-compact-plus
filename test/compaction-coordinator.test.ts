@@ -260,6 +260,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		const ctx = createMockCtx({
 			mode: "tui",
 			sessionFile: "/tmp/session.jsonl",
+			contextWindow: 64_000,
 		});
 		Object.defineProperty(ctx, "modelRegistry", {
 			value: { streamSimple: vi.fn() },

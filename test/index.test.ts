@@ -1983,7 +1983,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			throw new Error("required handlers not registered");
 		}
 
-		const ctx = createMockCtx();
+		const ctx = createMockCtx({ contextWindow: 200_000 });
 		await compactPlusCommand.handler("", ctx);
 		await beforeCompactHandler(
 			{
