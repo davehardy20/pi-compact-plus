@@ -151,6 +151,75 @@ it.for(runtimes)(
 		);
 		expect(uncaptured.focus.intentEvidence?.overflow).toBe(true);
 		expect(uncaptured.renderedInstructions).toBeUndefined();
+		// Stress the disputed prefix using real native cuts, not fabricated input.
+		// The latest retained raw range contains an older compaction entry;
+		// replacement/omission edits must affect preparation and projection alike.
+		for (const split of [false, true]) {
+			const history = SessionManager.inMemory();
+			const removedId = history.appendMessage({
+				role: "user",
+				content: "Task: deploy the obsolete service.",
+				timestamp: 1,
+			});
+			const replacedId = history.appendMessage({
+				role: "user",
+				content: "Investigate the withdrawn login request.",
+				timestamp: 2,
+			});
+			history.appendCompaction("First memory.", removedId, 100);
+			history.appendCompaction("Latest memory.", removedId, 100);
+			history.appendContextEdit(removedId, null);
+			const replacement = `Repair routing instead. ${"routing detail ".repeat(8000)}`;
+			history.appendContextEdit(replacedId, { content: replacement });
+			// Prevent the native cut from rewinding over context-invisible edits.
+			history.appendCustomMessageEntry(
+				"native-prefix-fixture",
+				"Preserved visible progress.",
+				false,
+			);
+			const latest = "Preserve the audit trail too.";
+			history.appendMessage({ role: "user", content: latest, timestamp: 3 });
+			if (split) {
+				history.appendMessage({
+					role: "assistant",
+					content: [{ type: "text", text: "Active progress ".repeat(200) }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					stopReason: "stop",
+					usage: { input: 1, output: 1, totalTokens: 2 },
+					timestamp: 4,
+				});
+			}
+			const native = prepareCompaction(history.getBranch(), {
+				enabled: true,
+				reserveTokens: 1024,
+				keepRecentTokens: 1,
+			});
+			if (!native) throw new Error("Expected a native edited-history cut");
+			expect(native.isSplitTurn).toBe(split);
+			const projection = history.buildSessionProjection().messages;
+			const supplied = [
+				...native.messagesToSummarize,
+				...native.turnPrefixMessages,
+			].filter((message: { role: string }) => message.role === "user");
+			const users = projection.filter(
+				(message: { role: string }) => message.role === "user",
+			);
+			expect(
+				users.map((message: { content: unknown }) => message.content),
+			).toEqual([replacement, latest]);
+			expect(users.slice(0, supplied.length)).toEqual(supplied);
+			const result = await prepareBudgetedCompactionFocus(projection, native, {
+				model: { ...model, contextWindow: 35_000 },
+				renderInstructions: (focus) =>
+					`Preserve current intent: ${JSON.stringify(focus.intentEvidence)}`,
+			});
+			expect(result.focus.intentEvidence?.overflow).toBeUndefined();
+			expect(result.focus.intentEvidence?.recentUserTurns).toEqual(
+				split ? [] : [latest],
+			);
+		}
 		const credential = ["sentinel", "secret"].join("-");
 		let summaryText = VALID_STRUCTURED_SUMMARY;
 		const providerStream = vi.fn((requestModel, _context, options) => {
