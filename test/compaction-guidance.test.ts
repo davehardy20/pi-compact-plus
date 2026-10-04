@@ -31,8 +31,12 @@ function fixture() {
 		persistTelemetrySnapshot: () => {},
 	});
 	runCustom.mockResolvedValue({ fallbackReason: "fixture has no summary" });
-	const beforeCompact = (customInstructions: string) =>
-		coordinator.onSessionBeforeCompact(
+	const issue = (mode: "standard" | "hard" = "standard") => {
+		executeCompaction(mode, focus, state, ctx as never, pi as never);
+		return ctx.compact.mock.calls.at(-1)?.[0];
+	};
+	const forward = async (customInstructions: string) => {
+		await coordinator.onSessionBeforeCompact(
 			{
 				preparation: {
 					messagesToSummarize: [],
@@ -44,7 +48,9 @@ function fixture() {
 			} as never,
 			ctx as never,
 		);
-	return { state, ctx, pi, beforeCompact };
+		return runCustom.mock.calls.at(-1)?.[5].customInstructions;
+	};
+	return { state, issue, forward };
 }
 
 it.each(["standard", "hard"] as const)(
@@ -75,10 +81,7 @@ it.each(["standard", "hard"] as const)(
 	"suppresses only the exact %s prompt issued by the active lifecycle",
 	async (mode) => {
 		const f = fixture();
-		executeCompaction(mode, focus, f.state, f.ctx as never, f.pi as never);
-		const issued = f.ctx.compact.mock.calls[0]?.[0].customInstructions;
-		await f.beforeCompact(issued);
-		expect(runCustom.mock.calls[0]?.[5].customInstructions).toBeUndefined();
+		expect(await f.forward(f.issue(mode).customInstructions)).toBeUndefined();
 	},
 );
 
@@ -86,23 +89,14 @@ it.each(["append", "prepend", "whitespace"])(
 	"preserves caller %s changes",
 	async (kind) => {
 		const f = fixture();
-		executeCompaction(
-			"standard",
-			focus,
-			f.state,
-			f.ctx as never,
-			f.pi as never,
-		);
-		const issued = f.ctx.compact.mock.calls[0]?.[0]
-			.customInstructions as string;
+		const issued = f.issue().customInstructions as string;
 		const changed =
 			kind === "append"
 				? `${issued}\nPreserve the retry diagnostic.`
 				: kind === "prepend"
 					? `Preserve the retry diagnostic.\n${issued}`
 					: ` ${issued}`;
-		await f.beforeCompact(changed);
-		expect(runCustom.mock.calls[0]?.[5].customInstructions).toBe(changed);
+		expect(await f.forward(changed)).toBe(changed);
 	},
 );
 
@@ -112,22 +106,14 @@ describe("instruction provenance is attempt-scoped", () => {
 		async (kind) => {
 			const f = fixture();
 			f.state.resetOnModelChange("old-model");
-			executeCompaction(
-				"standard",
-				focus,
-				f.state,
-				f.ctx as never,
-				f.pi as never,
-			);
-			const options = f.ctx.compact.mock.calls[0]?.[0];
+			const options = f.issue();
 			if (kind === "reset") f.state.reset();
 			if (kind === "epoch") f.state.invalidateCompactionCallbacks();
 			if (kind === "model") f.state.resetOnModelChange("new-model");
 			if (kind === "complete") options.onComplete({});
 			if (kind === "error") options.onError(new Error("fixture error"));
 			f.state.selectedMode = "standard";
-			await f.beforeCompact(options.customInstructions);
-			expect(runCustom.mock.calls[0]?.[5].customInstructions).toBe(
+			expect(await f.forward(options.customInstructions)).toBe(
 				options.customInstructions,
 			);
 		},
