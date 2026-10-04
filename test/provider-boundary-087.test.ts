@@ -5,14 +5,21 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
 // Real SDKs; mock only the import bridge.
-const { invokePi087Compact } = vi.hoisted(() => ({
-	invokePi087Compact: vi.fn(),
-}));
+const { invokePi087Compact, invokeSummary, invokeEstimate } = vi.hoisted(
+	() => ({
+		invokePi087Compact: vi.fn(),
+		invokeSummary: vi.fn(),
+		invokeEstimate: vi.fn(),
+	}),
+);
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	compact: (...args: unknown[]) => invokePi087Compact(...args),
+	generateSummaryWithUsage: (...args: unknown[]) => invokeSummary(...args),
+	estimateTokens: (...args: unknown[]) => invokeEstimate(...args),
 }));
 
 import { runCustomCompaction } from "../src/compact.js";
+import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
@@ -67,7 +74,12 @@ it.for(runtimes)(
 			expect(nested.version, pkg).toBe(version);
 		}
 		const [
-			{ compact: compact087, prepareCompaction },
+			{
+				compact: compact087,
+				prepareCompaction,
+				generateSummaryWithUsage,
+				estimateTokens,
+			},
 			{ SessionManager },
 			{ ModelRuntime },
 			{ ModelRegistry },
@@ -78,6 +90,8 @@ it.for(runtimes)(
 				(path) => import(/* @vite-ignore */ pathToFileURL(path).href),
 			),
 		);
+		invokeSummary.mockImplementation(generateSummaryWithUsage);
+		invokeEstimate.mockImplementation(estimateTokens);
 		const runtime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
 			modelsPath: null,
@@ -88,10 +102,55 @@ it.for(runtimes)(
 		const model = {
 			provider: "test-custom-route",
 			id: "route-test",
-			api: "openai-completions",
+			api: "openai-completions" as const,
+			name: "Routing test",
+			reasoning: false,
+			input: ["text" as const],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			baseUrl: "https://original.example.test/v1",
+			contextWindow: 200_000,
 			maxTokens: 4096,
 		};
+		const budgetSource = {
+			role: "user" as const,
+			content: "Task: repair login.",
+			timestamp: 1,
+		};
+		const budgetPreparation = {
+			messagesToSummarize: [budgetSource],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			settings: { reserveTokens: 1024 },
+		};
+		const budgeted = await prepareBudgetedCompactionFocus(
+			[budgetSource],
+			budgetPreparation,
+			{ model, renderInstructions: () => "Keep the task." },
+		);
+		expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+		expect(budgeted.renderedInstructions).toBe("Keep the task.");
+		invokeSummary.mockImplementationOnce(async (...args) => {
+			try {
+				await generateSummaryWithUsage(...args);
+			} catch {
+				throw new Error("wrapped SDK capture failure");
+			}
+		});
+		const wrapped = await prepareBudgetedCompactionFocus(
+			[budgetSource],
+			budgetPreparation,
+			{ model, renderInstructions: () => "Keep the task." },
+		);
+		expect(wrapped.focus.intentEvidence?.overflow).toBe(true);
+		expect(wrapped.renderedInstructions).toBeUndefined();
+		invokeSummary.mockResolvedValueOnce({ text: "unexpected SDK completion" });
+		const uncaptured = await prepareBudgetedCompactionFocus(
+			[budgetSource],
+			budgetPreparation,
+			{ model, renderInstructions: () => "Keep the task." },
+		);
+		expect(uncaptured.focus.intentEvidence?.overflow).toBe(true);
+		expect(uncaptured.renderedInstructions).toBeUndefined();
 		const credential = ["sentinel", "secret"].join("-");
 		let summaryText = VALID_STRUCTURED_SUMMARY;
 		const providerStream = vi.fn((requestModel, _context, options) => {
