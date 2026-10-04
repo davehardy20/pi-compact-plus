@@ -5,11 +5,19 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
 // Real SDKs; mock only the import bridge.
-const { invokePi087Compact } = vi.hoisted(() => ({
-	invokePi087Compact: vi.fn(),
+const bridge = vi.hoisted(() => ({
+	compact: vi.fn(),
+	convertToLlm: vi.fn(),
+	estimateTokens: vi.fn(),
+	serializeConversation: vi.fn(),
 }));
+const invokePi087Compact = bridge.compact;
 vi.mock("@earendil-works/pi-coding-agent", () => ({
-	compact: (...args: unknown[]) => invokePi087Compact(...args),
+	compact: (...args: unknown[]) => bridge.compact(...args),
+	convertToLlm: (...args: unknown[]) => bridge.convertToLlm(...args),
+	estimateTokens: (...args: unknown[]) => bridge.estimateTokens(...args),
+	serializeConversation: (...args: unknown[]) =>
+		bridge.serializeConversation(...args),
 }));
 
 import { runCustomCompaction } from "../src/compact.js";
@@ -40,7 +48,7 @@ it.for(runtimes)(
 			ctx.skip();
 			return;
 		}
-		invokePi087Compact.mockReset();
+		for (const helper of Object.values(bridge)) helper.mockReset();
 		const dependencies =
 			version === "0.87.1"
 				? join(root, "node_modules/@earendil-works")
@@ -52,6 +60,8 @@ it.for(runtimes)(
 			registry: join(root, "dist/core/model-registry.js"),
 			credentials: join(dependencies, "pi-ai/dist/auth/credential-store.js"),
 			stream: join(dependencies, "pi-ai/dist/utils/event-stream.js"),
+			messages: join(root, "dist/core/messages.js"),
+			helpers: join(root, "dist/core/compaction/index.js"),
 		};
 		if (!Object.values(paths).every(existsSync)) {
 			throw new Error("Pi test runtime incomplete");
@@ -73,11 +83,16 @@ it.for(runtimes)(
 			{ ModelRegistry },
 			{ InMemoryCredentialStore },
 			{ createAssistantMessageEventStream },
+			{ convertToLlm },
+			{ estimateTokens, serializeConversation },
 		] = await Promise.all(
 			Object.values(paths).map(
 				(path) => import(/* @vite-ignore */ pathToFileURL(path).href),
 			),
 		);
+		bridge.convertToLlm.mockImplementation(convertToLlm);
+		bridge.estimateTokens.mockImplementation(estimateTokens);
+		bridge.serializeConversation.mockImplementation(serializeConversation);
 		const runtime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
 			modelsPath: null,
