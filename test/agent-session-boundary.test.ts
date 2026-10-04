@@ -79,6 +79,7 @@ it("host preserves system content and commit order", async () => {
 	const state = new CompactionState();
 	const order: string[] = [];
 	const errors: unknown[] = [];
+	let promptSections: Record<string, string> | undefined;
 	const model: Model<"openai-completions"> = {
 		id: "boundary-test",
 		name: "Local scripted test",
@@ -106,7 +107,10 @@ it("host preserves system content and commit order", async () => {
 			requests++;
 			order.push(`assistant-request-${requests}`);
 			expect(systemText).toContain(sentinel);
+			expect(system?.toolsAdded?.map((tool) => tool.name)).toContain("probe");
 			if (requests === 1) {
+				expect(systemText).toContain("section-v1");
+				expect(systemText).toContain("withdraw-this-section");
 				message = response(
 					[
 						{
@@ -121,6 +125,9 @@ it("host preserves system content and commit order", async () => {
 				);
 			} else {
 				expect(requests).toBe(2);
+				expect(systemText).toContain("section-v2");
+				expect(systemText).not.toContain("section-v1");
+				expect(systemText).not.toContain("withdraw-this-section");
 				const compaction = manager
 					.getBranch()
 					.find((entry) => entry.type === "compaction");
@@ -165,6 +172,11 @@ it("host preserves system content and commit order", async () => {
 		getError: () => undefined,
 	} as unknown as ModelRuntime;
 	const extension: ExtensionFactory = (pi) => {
+		pi.on("before_agent_start", (event) => {
+			promptSections = event.systemPromptOptions.sections;
+			promptSections.compact_plus_probe = "section-v1";
+			promptSections.compact_plus_withdrawn = "withdraw-this-section";
+		});
 		const pruning = new ToolOutputPruningCoordinator({
 			state: state.toolOutputPruning,
 			getSettings: () => ({
@@ -203,6 +215,9 @@ it("host preserves system content and commit order", async () => {
 	});
 	const execute = vi.fn(async () => {
 		order.push("tool-executed");
+		if (!promptSections) throw new Error("missing native prompt options");
+		promptSections.compact_plus_probe = "section-v2";
+		delete promptSections.compact_plus_withdrawn;
 		return {
 			content: [{ type: "text" as const, text: "Tool output ".repeat(500) }],
 			details: {},
@@ -242,6 +257,13 @@ it("host preserves system content and commit order", async () => {
 		if (last?.role === "assistant" && last.stopReason === "error") {
 			throw new Error(last.errorMessage ?? "scripted request failed");
 		}
+		const projectedSystem = getCurrentSystemMessage(
+			manager.buildSessionProjection().messages,
+		);
+		expect(projectedSystem?.sections?.compact_plus_probe).toContain(
+			"section-v2",
+		);
+		expect(projectedSystem?.sections?.compact_plus_withdrawn).toBeUndefined();
 		expect(errors).toEqual([]);
 		expect(execute).toHaveBeenCalledOnce();
 		expect(compact).not.toHaveBeenCalled();
