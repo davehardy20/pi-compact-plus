@@ -10,7 +10,7 @@ export interface CompactionRuntimeCompatibility {
 	helperArity: number;
 	helperSupportsThinkingLevel: boolean;
 	helperSupportsStreamFn: boolean;
-	thinkingLevel?: string;
+	thinkingLevel?: Parameters<typeof compact>[6];
 	streamFn?: StreamFn;
 	streamRoute?: "session" | "registry";
 	reason: string | null;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	BoundaryResult,
 	CompactionResult,
@@ -10,15 +11,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { prepareBoundaryCompaction } from "./boundary-preparation.js";
-import {
-	normalizeCompactionPreparation,
-	prepareCompactionIntent,
-	runCustomCompaction,
-} from "./compact.js";
-import {
-	extractCompactionFocus,
-	extractTriggerFocus,
-} from "./compaction-intent.js";
+import { runCustomCompaction } from "./compact.js";
+import { extractTriggerFocus } from "./compaction-intent.js";
 import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
@@ -272,6 +266,10 @@ export class CompactionCoordinator {
 				} as SessionBeforeCompactEvent,
 				ctx,
 				false,
+				{
+					projected: event.context.contextMessages,
+					isCurrent: () => event.context?.pendingMessages.length === 0,
+				},
 			);
 			if (this.state.currentCompactionEpoch !== epoch) return undefined;
 			if (
@@ -361,6 +359,7 @@ export class CompactionCoordinator {
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
 		nativeFallbackAvailable = true,
+		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
 		const mode = this.state.selectedMode;
 
@@ -382,27 +381,8 @@ export class CompactionCoordinator {
 			event,
 			modelRegistry: ctx.modelRegistry as { streamSimple?: unknown },
 		});
-		const preparation = normalizeCompactionPreparation(event.preparation);
-		const focus =
-			compatibility.executionPath === "custom"
-				? extractCompactionFocus(
-						currentProjectedMessages(ctx),
-						prepareCompactionIntent(preparation, mode),
-						ctx.model?.contextWindow ?? 0,
-					)
-				: extractTriggerFocus(currentProjectedMessages(ctx));
-		if (
-			compatibility.executionPath === "custom" &&
-			focus.intentEvidence?.overflow
-		) {
-			this.state.selectedMode = null;
-			this.state.isCompacting = false;
-			this.state.lastTriggerAuto = false;
-			this.state.clearPendingCompaction();
-			this.state.lastFallbackReason = "intent evidence exceeds safety budget";
-			if (ctx.hasUI) ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
-			return { cancel: true };
-		}
+		const projected = boundary?.projected ?? currentProjectedMessages(ctx);
+		const focus = extractTriggerFocus(projected);
 		const triggerSource: TriggerSource = this.state.lastTriggerAuto
 			? event.preparation.isSplitTurn
 				? "message_end"
@@ -456,17 +436,56 @@ export class CompactionCoordinator {
 			return undefined;
 		}
 
+		const sessionId = ctx.sessionManager.getSessionId();
+		const leaf = ctx.sessionManager.getLeafId();
+		const selectedModel = modelKey(ctx.model);
+		const isCurrent = (): boolean => {
+			try {
+				return (
+					this.state.currentCompactionEpoch === epoch &&
+					ctx.sessionManager.getSessionId() === sessionId &&
+					ctx.sessionManager.getLeafId() === leaf &&
+					modelKey(ctx.model) === selectedModel &&
+					!ctx.hasPendingMessages() &&
+					!this.state.toolOutputPruning.isFlushing &&
+					(boundary?.isCurrent() ?? true)
+				);
+			} catch {
+				return false;
+			}
+		};
+		const cancelCustom = (reason: string): { cancel: true } => {
+			this.state.selectedMode = null;
+			this.state.isCompacting = false;
+			this.state.lastTriggerAuto = false;
+			this.state.clearPendingCompaction();
+			this.state.lastFallbackReason = reason;
+			return { cancel: true };
+		};
 		const attempt = await runCustomCompaction(
-			preparation,
+			event.preparation,
 			mode,
 			ctx,
 			compatibility,
 			event.signal,
-			{ focus, customInstructions: event.customInstructions },
+			{ projected, customInstructions: event.customInstructions, isCurrent },
 		);
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction();
+		}
+		if (!isCurrent()) return cancelCustom("compaction context changed");
+		if (attempt.cancel) {
+			const overflow =
+				attempt.fallbackReason ===
+				"additional intent evidence exceeds the summary request budget";
+			if (overflow && ctx.hasUI)
+				ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
+			return cancelCustom(
+				overflow
+					? "intent evidence exceeds safety budget"
+					: (attempt.fallbackReason ?? "custom compaction cancelled"),
+			);
 		}
 
 		if (attempt.result) {
@@ -478,6 +497,7 @@ export class CompactionCoordinator {
 			this.state.lastFallbackReason = attempt.fallbackReason;
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
+			if (!isCurrent()) return cancelCustom("compaction context changed");
 
 			return {
 				compaction: {
@@ -512,6 +532,7 @@ export class CompactionCoordinator {
 		};
 		await this.persistTelemetrySnapshot();
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
+		if (!isCurrent()) return cancelCustom("compaction context changed");
 
 		if (ctx.hasUI) {
 			ctx.ui.notify(

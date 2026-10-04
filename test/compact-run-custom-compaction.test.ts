@@ -2,12 +2,25 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { compactMock } = vi.hoisted(() => ({ compactMock: vi.fn() }));
-
-vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
-	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
-	compact: compactMock,
+const { compactMock, captureProbe } = vi.hoisted(() => ({
+	compactMock: vi.fn(),
+	captureProbe: vi.fn(),
 }));
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
+	return {
+		...actual,
+		compact: compactMock,
+		generateSummaryWithUsage: (
+			...args: Parameters<typeof actual.generateSummaryWithUsage>
+		) => {
+			captureProbe(...args);
+			return actual.generateSummaryWithUsage(...args);
+		},
+	};
+});
 
 import { runCustomCompaction } from "../src/compact.js";
 import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
@@ -48,6 +61,7 @@ function preparation(options?: {
 		messagesToSummarize: options?.messages ?? [],
 		turnPrefixMessages: options?.prefix ?? [],
 		previousSummary: options?.previousSummary,
+		settings: { enabled: true, keepRecentTokens: 100, reserveTokens: 4096 },
 	} as never;
 }
 
@@ -77,6 +91,8 @@ function context(options?: {
 						id: "test-model",
 						provider: "test",
 						contextWindow: 100_000,
+						maxTokens: 4096,
+						api: "openai-completions",
 					} as never),
 		modelRegistry: {
 			getApiKeyAndHeaders: vi.fn(async () =>
@@ -116,6 +132,73 @@ describe("runCustomCompaction characterization", () => {
 	beforeEach(() => {
 		compactMock.mockReset();
 		compactMock.mockResolvedValue(successfulResult());
+		captureProbe.mockReset();
+	});
+
+	it("budgets the exact normalized hard-mode request before resolving auth", async () => {
+		const source = message("user", "Task: repair routing.");
+		const prefix = message("user", "Preserve the audit controls.");
+		const ctx = context();
+		const attempt = await runCustomCompaction(
+			preparation({
+				messages: [source, message("assistant", "ok".repeat(50))],
+				prefix: [prefix],
+				isSplitTurn: true,
+				previousSummary: "old memory ".repeat(2000),
+			}),
+			"hard",
+			ctx,
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBeNull();
+		expect(captureProbe).toHaveBeenCalledTimes(1);
+		const capture = captureProbe.mock.calls[0];
+		const sent = compactMock.mock.calls[0];
+		expect(sent[0].messagesToSummarize).toBe(capture[0]);
+		expect(sent[0].messagesToSummarize).toEqual([source, prefix]);
+		expect(sent[0].isSplitTurn).toBe(false);
+		expect(sent[0].turnPrefixMessages).toEqual([]);
+		expect(sent[0].previousSummary).toBe(capture[7]);
+		expect(sent[0].previousSummary.length).toBeLessThan(22_000);
+		expect(sent[4]).toBe(capture[6]);
+		expect(sent[4]).toContain("This compaction includes a split turn");
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledTimes(1);
+	});
+
+	it("declines an oversized native request without resolving auth or calling compact", async () => {
+		const ctx = context();
+		if (!ctx.model) throw new Error("Missing test model");
+		ctx.model = { ...ctx.model, contextWindow: 1024, maxTokens: 512 };
+		const attempt = await runCustomCompaction(
+			preparation({ messages: [message("user", "Task: repair routing.")] }),
+			"standard",
+			ctx,
+			compatibility(),
+		);
+		expect(attempt.fallbackReason).toBe(
+			"additional intent evidence exceeds the summary request budget",
+		);
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects supersession during the local budget await before auth", async () => {
+		const ctx = context();
+		let current = true;
+		captureProbe.mockImplementationOnce(() => {
+			current = false;
+		});
+		const attempt = await runCustomCompaction(
+			preparation({ messages: [message("user", "Task: repair routing.")] }),
+			"standard",
+			ctx,
+			compatibility(),
+			undefined,
+			{ isCurrent: () => current },
+		);
+		expect(attempt.fallbackReason).toBe("compaction context changed");
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(compactMock).not.toHaveBeenCalled();
 	});
 
 	it("fails closed when the model is unavailable without requesting auth", async () => {
@@ -168,11 +251,16 @@ describe("runCustomCompaction characterization", () => {
 		type Auth = Awaited<
 			ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>
 		>;
+		let notifyAuth!: () => void;
+		const authStarted = new Promise<void>((resolve) => {
+			notifyAuth = resolve;
+		});
 		let resolveAuth!: (value: Auth) => void;
 		vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementation(
 			() =>
 				new Promise<Auth>((resolve) => {
 					resolveAuth = resolve;
+					notifyAuth();
 				}),
 		);
 		const pending = runCustomCompaction(
@@ -182,6 +270,7 @@ describe("runCustomCompaction characterization", () => {
 			compatibility(),
 			event.signal,
 		);
+		await authStarted;
 		contextAbort.abort();
 		resolveAuth({ ok: true });
 		const attempt = await pending;
@@ -196,11 +285,16 @@ describe("runCustomCompaction characterization", () => {
 		type Auth = Awaited<
 			ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>
 		>;
+		let notifyAuth!: () => void;
+		const authStarted = new Promise<void>((resolve) => {
+			notifyAuth = resolve;
+		});
 		let resolveAuth!: (value: Auth) => void;
 		vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementation(
 			() =>
 				new Promise<Auth>((resolve) => {
 					resolveAuth = resolve;
+					notifyAuth();
 				}),
 		);
 		const pending = runCustomCompaction(
@@ -209,6 +303,7 @@ describe("runCustomCompaction characterization", () => {
 			ctx,
 			compatibility(),
 		);
+		await authStarted;
 		abort.abort();
 		resolveAuth({ ok: true, apiKey: ["sentinel", "secret"].join("-") });
 		const attempt = await pending;
@@ -274,7 +369,7 @@ describe("runCustomCompaction characterization", () => {
 		expect(args[0]).not.toBe(prep);
 		expect(args[0]).toMatchObject({
 			messagesToSummarize: history,
-			turnPrefixMessages: prefix,
+			turnPrefixMessages: [],
 			previousSummary: undefined,
 		});
 		expect(args[1]).toBe(ctx.model);
@@ -427,7 +522,9 @@ describe("runCustomCompaction characterization", () => {
 			},
 		);
 		const prompt = compactMock.mock.calls[0]?.[4] as string;
-		expect(prompt).toContain("Objective: Cancel deployment and repair login");
+		expect(prompt).toContain(
+			"Prior objective (provisional): Cancel deployment and repair login",
+		);
 		expect(prompt).toContain("Preserve the latest cancellation");
 		expect(prompt).toContain("This compaction includes a split turn");
 		expect(prompt).toContain("Old deployment");
@@ -533,7 +630,8 @@ describe("runCustomCompaction characterization", () => {
 			compatibility(),
 		);
 
-		expect(compactMock.mock.calls[0]?.[0].turnPrefixMessages).toBe(prefix);
+		expect(compactMock.mock.calls[0]?.[0].turnPrefixMessages).toEqual([]);
+		expect(compactMock.mock.calls[0]?.[0].messagesToSummarize).toEqual([]);
 	});
 
 	it("treats a missing turn prefix as zero messages", async () => {

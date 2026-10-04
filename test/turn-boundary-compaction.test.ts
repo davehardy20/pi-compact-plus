@@ -10,6 +10,25 @@ import {
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
+
+const { mutateDuringBudget } = vi.hoisted(() => ({
+	mutateDuringBudget: vi.fn(),
+}));
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
+	return {
+		...actual,
+		generateSummaryWithUsage: (
+			...args: Parameters<typeof actual.generateSummaryWithUsage>
+		) => {
+			mutateDuringBudget();
+			return actual.generateSummaryWithUsage(...args);
+		},
+	};
+});
+
 import { runCustomCompaction } from "../src/compact.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
@@ -181,7 +200,72 @@ function fixture(enablePruning = false) {
 	return { ctx, pi, state, session, stream, event, persist };
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	mutateDuringBudget.mockReset();
+	vi.restoreAllMocks();
+});
+
+it.each([
+	"event queue",
+	"context queue",
+	"session",
+	"leaf",
+	"model",
+	"model capacity",
+	"epoch",
+	"pruning flush",
+])("defers %s during budgeting", async (kind) => {
+	const f = fixture();
+	mutateDuringBudget.mockImplementationOnce(() => {
+		switch (kind) {
+			case "event queue":
+				f.event.context?.pendingMessages.push({
+					role: "user",
+					content: "Use the new objective instead.",
+					timestamp: 4,
+				});
+				break;
+			case "context queue":
+				vi.spyOn(f.ctx, "hasPendingMessages").mockReturnValue(true);
+				break;
+			case "session":
+				f.ctx.sessionManager = SessionManager.inMemory();
+				break;
+			case "leaf":
+				f.session.appendMessage({
+					role: "user",
+					content: "A new retained instruction.",
+					timestamp: 4,
+				});
+				break;
+			case "model":
+				if (!f.ctx.model) throw new Error("Missing fixture model");
+				f.ctx.model = { ...f.ctx.model, id: "replacement" };
+				break;
+			case "model capacity":
+				if (!f.ctx.model) throw new Error("Missing fixture model");
+				f.ctx.model.maxTokens = 1024;
+				break;
+			case "epoch":
+				f.state.invalidateCompactionCallbacks();
+				f.state.pendingBoundaryMarker = "replacement marker";
+				break;
+			case "pruning flush":
+				f.state.toolOutputPruning.isFlushing = true;
+				break;
+		}
+	});
+	const result = await f.pi.events.get("turn_end")?.[0]?.(f.event, f.ctx);
+	expect(result).toBeUndefined();
+	expect(mutateDuringBudget).toHaveBeenCalledOnce();
+	expect(f.stream).not.toHaveBeenCalled();
+	expect(f.ctx.compact).not.toHaveBeenCalled();
+	expect(f.pi.sendUserMessage).not.toHaveBeenCalled();
+	expect(f.state.lastCompaction).toBeNull();
+	expect(f.state.pendingBoundaryMarker).toBe(
+		kind === "epoch" ? "replacement marker" : null,
+	);
+});
 
 it("checks thresholds between tool turns without aborting or replaying the active run", async () => {
 	const { ctx, pi, state, session, stream, event } = fixture();

@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { expect, it } from "vitest";
 import { prepareCompactionIntent } from "../src/compact.js";
-import { extractCompactionFocus } from "../src/compaction-intent.js";
+import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { buildSummaryInstructions } from "../src/prompts.js";
 
 function user(text: string) {
@@ -12,10 +12,34 @@ function preparation(messages: AgentMessage[], prefix: AgentMessage[] = []) {
 		messagesToSummarize: messages,
 		turnPrefixMessages: prefix,
 		isSplitTurn: prefix.length > 0,
+		settings: { enabled: true, keepRecentTokens: 100, reserveTokens: 16_384 },
 	};
 }
 
-it("budgets the hard-mode transcript after pruning ephemeral acknowledgements", () => {
+async function extractCompactionFocus(
+	projected: AgentMessage[],
+	prepared: ReturnType<typeof preparation>,
+	contextWindow: number,
+) {
+	const budgeted = await prepareBudgetedCompactionFocus(projected, prepared, {
+		model: {
+			id: "intent-integration",
+			provider: "test",
+			api: "openai-completions",
+			contextWindow,
+			maxTokens: 16_384,
+		} as never,
+		renderInstructions: (focus) =>
+			buildSummaryInstructions("standard", focus, {
+				previousSummary: "Old memory: deploy the retired service.",
+				isSplitTurn: prepared.isSplitTurn,
+				turnPrefixCount: prepared.turnPrefixMessages.length,
+			}),
+	});
+	return budgeted.focus;
+}
+
+it("budgets the hard-mode transcript after pruning ephemeral acknowledgements", async () => {
 	const source = user("Task: repair login.");
 	const retained = user("Keep this instruction.".repeat(1000));
 	const history = [
@@ -27,21 +51,21 @@ it("budgets the hard-mode transcript after pruning ephemeral acknowledgements", 
 	];
 	const projected = [...history, retained];
 	const original = preparation(history);
-	const before = extractCompactionFocus(projected, original, 200_000);
+	const before = await extractCompactionFocus(projected, original, 200_000);
 	expect(before.intentEvidence?.overflow).toBe(true);
 	const hard = prepareCompactionIntent(original as never, "hard");
-	const after = extractCompactionFocus(projected, hard, 200_000);
+	const after = await extractCompactionFocus(projected, hard, 200_000);
 	expect(after.intentEvidence?.overflow).toBeUndefined();
 });
 
 it.each([false, true])(
 	"resolves summarized unfamiliar redirects with retained status=%s",
-	(hasStatus) => {
+	async (hasStatus) => {
 		const original = user("Task: deploy the retired service.");
 		const redirect = user("I'd like to investigate login instead.");
 		const status = user("All tests passed.");
 		const source = preparation([original, redirect]);
-		const focus = extractCompactionFocus(
+		const focus = await extractCompactionFocus(
 			[original, redirect, ...(hasStatus ? [status] : [])],
 			source,
 			200_000,

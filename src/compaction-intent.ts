@@ -1,36 +1,88 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
-	convertToLlm,
 	estimateTokens,
-	serializeConversation,
+	generateSummaryWithUsage,
 } from "@earendil-works/pi-coding-agent";
 import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
-import type { CurrentFocus } from "./types.js";
+import { CONTINUATION_PROMPT, type CurrentFocus } from "./types.js";
 
 interface IntentPreparation {
 	messagesToSummarize: AgentMessage[];
 	turnPrefixMessages: AgentMessage[];
 	isSplitTurn: boolean;
 	previousSummary?: string;
-	settings?: { reserveTokens: number };
+	settings: { reserveTokens: number };
 }
 
-const REQUEST_RESERVE_TOKENS = 16_384;
+type SummaryModel = Parameters<typeof generateSummaryWithUsage>[1];
+type SummaryThinking = Parameters<typeof generateSummaryWithUsage>[8];
+type UnifiedPreparation<T extends IntentPreparation> = Omit<
+	T,
+	"messagesToSummarize" | "turnPrefixMessages" | "isSplitTurn"
+> & {
+	messagesToSummarize: AgentMessage[];
+	turnPrefixMessages: AgentMessage[];
+	isSplitTurn: false;
+};
 
-function textTokens(text: string): number {
-	return estimateTokens({ role: "user", content: text, timestamp: 0 });
+interface BudgetedIntent<T extends IntentPreparation> {
+	focus: CurrentFocus;
+	preparation: UnifiedPreparation<T>;
+	/** Reuse verbatim; absent on every failed or oversized capture. */
+	renderedInstructions?: string;
 }
 
-/** User text already in the summary request needs no second copy in its prompt. */
-export function extractCompactionFocus(
+function overflowFocus(focus: CurrentFocus): CurrentFocus {
+	return {
+		...focus,
+		intentEvidence: {
+			priorObjective: focus.objective,
+			certainty: focus.intentEvidence?.certainty ?? "provisional",
+			recentUserTurns: [],
+			overflow: true,
+		},
+	};
+}
+
+/** Select complete chronological evidence; capture the exact public SDK request. */
+export async function prepareBudgetedCompactionFocus<
+	T extends IntentPreparation,
+>(
 	projected: AgentMessage[],
-	preparation: IntentPreparation,
-	contextWindow: number,
-): CurrentFocus {
-	const focus = extractCurrentFocus(projected);
+	preparation: T,
+	options: {
+		model: SummaryModel | null | undefined;
+		thinkingLevel?: SummaryThinking;
+		renderInstructions: (focus: CurrentFocus) => string;
+	},
+): Promise<BudgetedIntent<T>> {
+	const originalFocus = extractCurrentFocus(projected);
 	const source = preparation.isSplitTurn
 		? [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages]
 		: preparation.messagesToSummarize;
+	const unified: UnifiedPreparation<T> = {
+		...preparation,
+		messagesToSummarize: source,
+		turnPrefixMessages: [],
+		isSplitTurn: false,
+	};
+	const reject = (): BudgetedIntent<T> => ({
+		focus: overflowFocus(originalFocus),
+		preparation: unified,
+	});
+	const model = options.model;
+	const reserve = preparation.settings?.reserveTokens;
+	if (
+		!model ||
+		!Number.isSafeInteger(model.contextWindow) ||
+		model.contextWindow <= 0 ||
+		!Number.isSafeInteger(model.maxTokens) ||
+		model.maxTokens < 0 ||
+		!Number.isSafeInteger(reserve) ||
+		reserve <= 0
+	) {
+		return reject();
+	}
 	let boundary = -1;
 	for (let index = projected.length - 1; index >= 0; index--) {
 		if (projected[index].role === "compactionSummary") {
@@ -50,59 +102,88 @@ export function extractCompactionFocus(
 			extractTextContent(message) === extractTextContent(users[index]),
 	);
 	const omitted = prefixMatches ? users.slice(supplied.length) : users;
-	const transcript = serializeConversation(convertToLlm(source));
-	// Keep units consistent with Pi's token estimator. Previous memory appears
-	// in both Pi's prompt and Compact+'s merging guidance. The caller supplies
-	// the normalized memory actually sent, not an oversized historical draft.
-	const configuredReserve = preparation.settings?.reserveTokens ?? 0;
-	const validBudget =
-		Number.isSafeInteger(contextWindow) &&
-		contextWindow > 0 &&
-		Number.isSafeInteger(configuredReserve) &&
-		configuredReserve >= 0;
-	const reserve = Math.max(
-		Math.min(REQUEST_RESERVE_TOKENS, Math.floor(contextWindow / 2)),
-		configuredReserve,
-	);
-	const available = validBudget
-		? contextWindow -
-			textTokens(transcript) -
-			2 * textTokens(preparation.previousSummary ?? "") -
-			reserve
-		: -1;
-	// Checkpoint/trigger byte bounds remain unchanged. Compaction evidence is
-	// bounded by this actual request, not an unrelated fixed byte allowance.
 	const recentUserTurns: string[] = [];
-	let evidenceTokens = 0;
-	let overflow = available < 0;
+	let evidenceLowerBound = 0;
 	for (const message of omitted) {
-		if (overflow) break;
 		const text = extractTextContent(message).trim();
-		if (!text) continue;
-		evidenceTokens += textTokens(text) + 48;
-		if (evidenceTokens > available) {
-			overflow = true;
-			break;
-		}
+		if (!text || text === CONTINUATION_PROMPT) continue;
+		// Discount one rounding unit per turn. SDK text-only estimates then
+		// lower-bound the combined complete evidence, before any wrappers.
+		evidenceLowerBound += Math.max(
+			0,
+			estimateTokens({ role: "user", content: text, timestamp: 0 }) - 1,
+		);
+		// Avoid constructing an already-impossible native request; the full
+		// SDK capture below remains the authoritative fit check.
+		if (evidenceLowerBound > model.contextWindow) return reject();
 		recentUserTurns.push(text);
 	}
-	return {
-		...focus,
-		intentEvidence:
-			focus.intentEvidence || overflow
-				? {
-						priorObjective: focus.objective,
-						certainty: focus.intentEvidence?.certainty ?? "provisional",
-						recentUserTurns: overflow ? [] : recentUserTurns,
-						...(overflow ? { overflow: true } : {}),
-					}
-				: undefined,
+	const focus: CurrentFocus = {
+		...originalFocus,
+		intentEvidence: originalFocus.intentEvidence
+			? {
+					priorObjective: originalFocus.objective,
+					certainty: originalFocus.intentEvidence.certainty,
+					recentUserTurns,
+				}
+			: undefined,
 	};
+	const marker = new Error("Compact+ local request-budget capture");
+	let captures = 0;
+	let totalTokens: number | undefined;
+	let renderedInstructions: string | undefined;
+	try {
+		renderedInstructions = options.renderInstructions(focus);
+		if (
+			typeof renderedInstructions !== "string" ||
+			!renderedInstructions.trim()
+		) {
+			return reject();
+		}
+		await generateSummaryWithUsage(
+			source,
+			model,
+			reserve,
+			undefined,
+			undefined,
+			undefined,
+			renderedInstructions,
+			preparation.previousSummary,
+			options.thinkingLevel,
+			(_model, context, requestOptions) => {
+				captures++;
+				const output = requestOptions?.maxTokens;
+				if (
+					Number.isSafeInteger(output) &&
+					(output ?? 0) > 0 &&
+					context.messages.some((message) => message.role === "system")
+				) {
+					totalTokens = context.messages.reduce(
+						(total, message) => total + estimateTokens(message),
+						output ?? 0,
+					);
+				}
+				// No registry, credentials, transport, provider, or network call.
+				// Undefined retry yields one attempt. Wrapped markers fail closed.
+				throw marker;
+			},
+		);
+		return reject();
+	} catch (error) {
+		if (
+			error !== marker ||
+			captures !== 1 ||
+			!Number.isSafeInteger(totalTokens) ||
+			(totalTokens ?? -1) < 0 ||
+			(totalTokens ?? Number.POSITIVE_INFINITY) > model.contextWindow
+		) {
+			return reject();
+		}
+	}
+	return { focus, preparation: unified, renderedInstructions };
 }
 
 /** Trigger-time hints cannot budget evidence until Pi has selected its cut. */
 export function extractTriggerFocus(projected: AgentMessage[]): CurrentFocus {
-	// Retain bounded trigger evidence for native compatibility fallback. Its
-	// overflow marker is uncertainty, not a reason to reject before the cut.
 	return extractCurrentFocus(projected);
 }

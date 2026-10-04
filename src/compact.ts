@@ -6,14 +6,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
 import { classifyMessages } from "./classify.js";
-import { extractCompactionFocus } from "./compaction-intent.js";
+import { prepareBudgetedCompactionFocus } from "./compaction-intent.js";
 import type { CompactionRuntimeCompatibility } from "./compatibility.js";
 import {
 	getAssistantIdBearingToolCallBlocks,
 	getToolCallId,
 } from "./pi-messages.js";
 import { buildSummaryInstructions } from "./prompts.js";
-import { extractCurrentFocus } from "./session-evidence.js";
 import {
 	CRITICAL_HEADINGS,
 	FENCED_EXAMPLE_OMISSION,
@@ -28,6 +27,8 @@ import type { CompactionMode, CurrentFocus } from "./types.js";
 export interface CompactionAttemptResult {
 	result: CompactionResult | undefined;
 	fallbackReason: string | null;
+	/** Decline stale or oversized custom work; never fall back using this cut. */
+	cancel?: true;
 	classifiedCounts?: {
 		critical: number;
 		contextual: number;
@@ -363,7 +364,10 @@ interface PreparedCompactionContext {
 
 interface CompactionIntent {
 	focus?: CurrentFocus;
+	projected?: AgentMessage[];
 	customInstructions?: string;
+	/** Rechecked after every await before auth, provider work, or acceptance. */
+	isCurrent?: () => boolean;
 }
 
 function getCompactionFocusSource(
@@ -420,52 +424,6 @@ export function prepareCompactionIntent(
 		normalizeCompactionPreparation(preparation),
 		mode,
 	);
-}
-
-function prepareCompactionContext(
-	preparation: CompactionPreparation,
-	mode: CompactionMode,
-	intent?: CompactionIntent,
-): PreparedCompactionContext {
-	const focusSource = getCompactionFocusSource(preparation);
-	// Pi's split-prefix helper ignores customInstructions and appends a native
-	// schema (e.g. ## Original Request). Use one structured request for both
-	// spans while preserving Pi's original retained-entry cut and file ops.
-	const pruned = applyHardModePruning(preparation, mode);
-	const prunedPreparation = preparation.isSplitTurn
-		? {
-				...pruned,
-				messagesToSummarize: [
-					...pruned.messagesToSummarize,
-					...pruned.turnPrefixMessages,
-				],
-				turnPrefixMessages: [],
-				isSplitTurn: false,
-			}
-		: pruned;
-	const normalizedPreviousSummary = normalizePreviousSummary(
-		prunedPreparation.previousSummary,
-	);
-	const normalizedPreparation = {
-		...prunedPreparation,
-		previousSummary: normalizedPreviousSummary,
-	};
-	const customInstructions = buildSummaryInstructions(
-		mode,
-		intent?.focus ?? extractCurrentFocus(focusSource),
-		{
-			previousSummary: normalizedPreviousSummary,
-			customInstructions: intent?.customInstructions,
-			isSplitTurn: preparation.isSplitTurn,
-			turnPrefixCount: preparation.turnPrefixMessages?.length ?? 0,
-		},
-	);
-
-	return {
-		preparation: normalizedPreparation,
-		focusSource,
-		customInstructions,
-	};
 }
 
 function createCompactArguments(args: {
@@ -588,25 +546,98 @@ export async function runCustomCompaction(
 			return { result: undefined, fallbackReason: "model unavailable" };
 		}
 
-		const normalized = normalizeCompactionPreparation(preparation);
-		const focus =
-			intent?.focus ??
-			extractCompactionFocus(
-				getCompactionFocusSource(normalized),
-				prepareCompactionIntent(normalized, mode),
-				model.contextWindow,
-			);
-		if (focus.intentEvidence?.overflow) {
+		const modelSnapshot = [
+			model.id,
+			model.provider,
+			model.api,
+			model.contextWindow,
+			model.maxTokens,
+		];
+		const isCurrent = (): boolean => {
+			try {
+				return (
+					ctx.model === model &&
+					[
+						model.id,
+						model.provider,
+						model.api,
+						model.contextWindow,
+						model.maxTokens,
+					].every((value, index) => value === modelSnapshot[index]) &&
+					(intent?.isCurrent?.() ?? true)
+				);
+			} catch {
+				return false;
+			}
+		};
+		const cancelled = (): CompactionAttemptResult | undefined => {
+			if (requestSignal?.aborted) {
+				return { result: undefined, fallbackReason: "compaction aborted" };
+			}
+			if (!isCurrent()) {
+				return {
+					result: undefined,
+					fallbackReason: "compaction context changed",
+					cancel: true,
+				};
+			}
+			return undefined;
+		};
+		const beforeBudget = cancelled();
+		if (beforeBudget) return beforeBudget;
+		const actualPreparation = prepareCompactionIntent(preparation, mode);
+		const focusSource = getCompactionFocusSource(preparation);
+		const budgeted = await prepareBudgetedCompactionFocus(
+			intent?.projected ?? focusSource,
+			actualPreparation,
+			{
+				model,
+				thinkingLevel: compatibility.helperSupportsThinkingLevel
+					? (compatibility.thinkingLevel ?? undefined)
+					: undefined,
+				renderInstructions: (focus) =>
+					buildSummaryInstructions(
+						mode,
+						intent?.focus
+							? {
+									...intent.focus,
+									intentEvidence: focus.intentEvidence
+										? {
+												...focus.intentEvidence,
+												priorObjective: intent.focus.objective,
+											}
+										: undefined,
+								}
+							: focus,
+						{
+							previousSummary: actualPreparation.previousSummary,
+							customInstructions: intent?.customInstructions,
+							isSplitTurn: actualPreparation.isSplitTurn,
+							turnPrefixCount:
+								actualPreparation.turnPrefixMessages?.length ?? 0,
+						},
+					),
+			},
+		);
+		const afterBudget = cancelled();
+		if (afterBudget) return afterBudget;
+		if (
+			budgeted.focus.intentEvidence?.overflow ||
+			!budgeted.renderedInstructions
+		) {
 			return {
 				result: undefined,
 				fallbackReason:
 					"additional intent evidence exceeds the summary request budget",
+				cancel: true,
 			};
 		}
-
-		if (requestSignal?.aborted) {
-			return { result: undefined, fallbackReason: "compaction aborted" };
-		}
+		// This is the exact captured payload. No second prune/normalize/render.
+		const prepared: PreparedCompactionContext = {
+			preparation: budgeted.preparation,
+			focusSource,
+			customInstructions: budgeted.renderedInstructions,
+		};
 		const registry = ctx.modelRegistry as ModelRegistry;
 		// The registry stream resolves provider auth at request time. Forwarding an
 		// earlier key/header snapshot could override rotated credentials or routing.
@@ -614,15 +645,9 @@ export async function runCustomCompaction(
 			compatibility.streamRoute === "registry"
 				? { ok: true }
 				: await registry.getApiKeyAndHeaders(model);
-		if (requestSignal?.aborted) {
-			return { result: undefined, fallbackReason: "compaction aborted" };
-		}
+		const afterAuth = cancelled();
+		if (afterAuth) return afterAuth;
 		if (!auth.ok) return authUnavailableResult();
-
-		const prepared = prepareCompactionContext(normalized, mode, {
-			...intent,
-			focus,
-		});
 		const compactArgs = createCompactArguments({
 			prepared,
 			model,
@@ -630,13 +655,14 @@ export async function runCustomCompaction(
 			compatibility,
 			signal: requestSignal,
 		});
-		if (requestSignal?.aborted) {
-			return { result: undefined, fallbackReason: "compaction aborted" };
-		}
+		const beforeProvider = cancelled();
+		if (beforeProvider) return beforeProvider;
 		const compactRunner = compact as unknown as (
 			...args: unknown[]
 		) => Promise<CompactionResult | undefined>;
 		const result = await compactRunner(...compactArgs);
+		const afterProvider = cancelled();
+		if (afterProvider) return afterProvider;
 		return finalizeCompactionAttempt(
 			result,
 			getCompactionClassifiedCounts(prepared, mode),
