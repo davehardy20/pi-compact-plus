@@ -1,12 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
-// Version bridge only: Compact+ resolves the locked 0.87 package in this Vitest
-// process, so forward its import to the isolated *real* 0.87 helper. Neither
-// the helper, Pi session manager, nor model registry behavior is substituted.
+// Real SDKs; mock only the import bridge.
 const { invokePi087Compact } = vi.hoisted(() => ({
 	invokePi087Compact: vi.fn(),
 }));
@@ -18,46 +16,55 @@ import { runCustomCompaction } from "../src/compact.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
-// CI provisions an exact, isolated Pi 0.87.1 tree; local opt-in uses the
-// same variable. An unset path skips locally; an invalid configured path fails.
-const configuredPi = process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT;
-const paths = configuredPi
-	? {
-			compact: join(configuredPi, "dist/core/compaction/compaction.js"),
-			session: join(configuredPi, "dist/core/session-manager.js"),
-			runtime: join(configuredPi, "dist/core/model-runtime.js"),
-			registry: join(configuredPi, "dist/core/model-registry.js"),
-			credentials: join(
-				configuredPi,
-				"node_modules/@earendil-works/pi-ai/dist/auth/credential-store.js",
+const runtimes = [
+	{ version: "0.87.1", root: process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT },
+	{
+		version: "1.0.1",
+		root:
+			process.env.PI_COMPACT_PLUS_TEST_PI_101_ROOT ??
+			dirname(
+				dirname(
+					fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
+				),
 			),
-			stream: join(
-				configuredPi,
-				"node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js",
-			),
-		}
-	: null;
-const hasRuntime = paths !== null && Object.values(paths).every(existsSync);
-if (configuredPi && !hasRuntime) {
-	throw new Error("Configured Pi 0.87 test runtime is incomplete");
-}
+	},
+];
 
-it.skipIf(!hasRuntime)(
-	"routes real Pi 0.87 session preparation and compaction through the custom provider without network I/O",
-	async () => {
-		const root = configuredPi as string;
+it.for(runtimes)(
+	"real Pi $version: provider routing and compaction",
+	async ({ version, root }, ctx) => {
+		if (!root) {
+			if (process.env.PI_COMPACT_PLUS_TEST_REQUIRE_RUNTIMES === "1") {
+				throw new Error("Required Pi runtime is missing");
+			}
+			ctx.skip();
+			return;
+		}
+		invokePi087Compact.mockReset();
+		const dependencies =
+			version === "0.87.1"
+				? join(root, "node_modules/@earendil-works")
+				: dirname(root);
+		const paths = {
+			compact: join(root, "dist/core/compaction/compaction.js"),
+			session: join(root, "dist/core/session-manager.js"),
+			runtime: join(root, "dist/core/model-runtime.js"),
+			registry: join(root, "dist/core/model-registry.js"),
+			credentials: join(dependencies, "pi-ai/dist/auth/credential-store.js"),
+			stream: join(dependencies, "pi-ai/dist/utils/event-stream.js"),
+		};
+		if (!Object.values(paths).every(existsSync)) {
+			throw new Error("Pi test runtime incomplete");
+		}
 		const installed = JSON.parse(
 			readFileSync(join(root, "package.json"), "utf8"),
 		) as { version?: string };
-		expect(installed.version).toBe("0.87.1");
+		expect(installed.version).toBe(version);
 		for (const pkg of ["pi-agent-core", "pi-ai"]) {
 			const nested = JSON.parse(
-				readFileSync(
-					join(root, "node_modules/@earendil-works", pkg, "package.json"),
-					"utf8",
-				),
+				readFileSync(join(dependencies, pkg, "package.json"), "utf8"),
 			) as { version?: string };
-			expect(nested.version, pkg).toBe("0.87.1");
+			expect(nested.version, pkg).toBe(version);
 		}
 		const [
 			{ compact: compact087, prepareCompaction },
@@ -67,7 +74,7 @@ it.skipIf(!hasRuntime)(
 			{ InMemoryCredentialStore },
 			{ createAssistantMessageEventStream },
 		] = await Promise.all(
-			Object.values(paths as NonNullable<typeof paths>).map(
+			Object.values(paths).map(
 				(path) => import(/* @vite-ignore */ pathToFileURL(path).href),
 			),
 		);
