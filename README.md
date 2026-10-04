@@ -62,6 +62,11 @@ report a valid post-compaction token count, only cooldown applies.
 
 ### Structured summaries
 
+Custom compaction budgets the complete SDK-rendered summary request after
+normalization and hard-mode pruning, including its output allowance. Oversized
+or stale requests decline safely before provider work; fitting user turns are
+preserved without duplicating transcript-covered intent.
+
 Compact+ produces structured compaction summaries with these sections:
 
 - Current Objective

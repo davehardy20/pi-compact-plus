@@ -5,17 +5,17 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 
 // Real SDKs; mock only the import bridge.
-const { invokePi087Compact, invokeSummary, invokeEstimate } = vi.hoisted(
-	() => ({
-		invokePi087Compact: vi.fn(),
-		invokeSummary: vi.fn(),
-		invokeEstimate: vi.fn(),
-	}),
-);
+const bridge = vi.hoisted(() => ({
+	compact: vi.fn(),
+	estimateTokens: vi.fn(),
+	generateSummaryWithUsage: vi.fn(),
+}));
+const invokePi087Compact = bridge.compact;
+const invokeSummary = bridge.generateSummaryWithUsage;
 vi.mock("@earendil-works/pi-coding-agent", () => ({
-	compact: (...args: unknown[]) => invokePi087Compact(...args),
+	compact: (...args: unknown[]) => bridge.compact(...args),
+	estimateTokens: (...args: unknown[]) => bridge.estimateTokens(...args),
 	generateSummaryWithUsage: (...args: unknown[]) => invokeSummary(...args),
-	estimateTokens: (...args: unknown[]) => invokeEstimate(...args),
 }));
 
 import { runCustomCompaction } from "../src/compact.js";
@@ -47,7 +47,7 @@ it.for(runtimes)(
 			ctx.skip();
 			return;
 		}
-		invokePi087Compact.mockReset();
+		for (const helper of Object.values(bridge)) helper.mockReset();
 		const dependencies =
 			version === "0.87.1"
 				? join(root, "node_modules/@earendil-works")
@@ -90,8 +90,8 @@ it.for(runtimes)(
 				(path) => import(/* @vite-ignore */ pathToFileURL(path).href),
 			),
 		);
+		bridge.estimateTokens.mockImplementation(estimateTokens);
 		invokeSummary.mockImplementation(generateSummaryWithUsage);
-		invokeEstimate.mockImplementation(estimateTokens);
 		const runtime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
 			modelsPath: null,

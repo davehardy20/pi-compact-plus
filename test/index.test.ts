@@ -19,7 +19,8 @@ const piAiMocks = vi.hoisted(() => ({
 }));
 
 // Mock Pi core packages before importing the extension
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
 	estimateTokens: vi.fn(() => 100),
 	compact: vi.fn(),
 	sessionEntryToContextMessages: vi.fn(
@@ -1519,7 +1520,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			"Objective: deploy the retired service.",
 		);
 		expect(helperPrompt).toContain(
-			"A status-only reply does not replace the prior objective",
+			"A status-only reply preserves the preceding substantive request, not an obsolete prior objective",
 		);
 	});
 
@@ -1982,7 +1983,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 			throw new Error("required handlers not registered");
 		}
 
-		const ctx = createMockCtx();
+		const ctx = createMockCtx({ contextWindow: 200_000 });
 		await compactPlusCommand.handler("", ctx);
 		await beforeCompactHandler(
 			{
@@ -4186,7 +4187,7 @@ describe("Compact+ prompt builders", () => {
 		expect(instructions).toContain("## Next Best Step");
 		expect(instructions).toContain("## Decisions Made");
 		expect(instructions).toContain(
-			"Retained turns may be absent from the conversation being summarized",
+			"conversation user turns followed by supplemental omitted/retained user turns",
 		);
 	});
 

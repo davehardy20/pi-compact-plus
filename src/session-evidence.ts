@@ -12,7 +12,6 @@ import type { SessionBranchView } from "./session-branch-view.js";
 import {
 	CONTINUATION_PROMPT,
 	type CurrentFocus,
-	type EffectiveUsage,
 	type IntentEvidence,
 	type SessionSnapshot,
 } from "./types.js";
@@ -38,34 +37,7 @@ const UNVERIFIED_OVERFLOW_OBJECTIVE =
 // silently evict an unknown redirect to meet a per-turn/window quota.
 const DEFAULT_INTENT_EVIDENCE_BYTES = 8 * 1024;
 const MAX_INTENT_EVIDENCE_BYTES = 256 * 1024;
-const COMPACTION_PROMPT_RESERVE_TOKENS = 16_384;
 const INTENT_TURN_OVERHEAD_BYTES = 48;
-
-/** Spend at most a quarter of verified native context headroom on exact user turns. */
-export function intentEvidenceBudgetForUsage(
-	usage: EffectiveUsage | null,
-): number {
-	if (
-		usage?.source !== "native" ||
-		!Number.isSafeInteger(usage.tokens) ||
-		!Number.isSafeInteger(usage.contextWindow) ||
-		usage.tokens === null ||
-		usage.tokens < 0 ||
-		usage.contextWindow <= 0 ||
-		usage.tokens >= usage.contextWindow ||
-		typeof usage.percent !== "number" ||
-		!Number.isFinite(usage.percent) ||
-		Math.abs(usage.percent - (usage.tokens / usage.contextWindow) * 100) > 1
-	) {
-		return DEFAULT_INTENT_EVIDENCE_BYTES;
-	}
-	const available =
-		usage.contextWindow - usage.tokens - COMPACTION_PROMPT_RESERVE_TOKENS;
-	return Math.max(
-		DEFAULT_INTENT_EVIDENCE_BYTES,
-		Math.min(MAX_INTENT_EVIDENCE_BYTES, Math.floor(available / 4)),
-	);
-}
 const MAX_ACTIVE_FILES = 10;
 const MAX_BLOCKERS = 5;
 const MAX_DECISIONS = 5;

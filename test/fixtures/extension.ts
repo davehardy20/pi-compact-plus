@@ -4,6 +4,7 @@ export interface MockCtx {
 	hasUI: boolean;
 	model: {
 		contextWindow: number;
+		maxTokens: number;
 		provider: string;
 		id: string;
 		api?: string;
@@ -17,6 +18,8 @@ export interface MockCtx {
 	isIdle: ReturnType<typeof vi.fn>;
 	hasPendingMessages: ReturnType<typeof vi.fn>;
 	sessionManager: {
+		getSessionId: ReturnType<typeof vi.fn>;
+		getLeafId: ReturnType<typeof vi.fn>;
 		getBranch: ReturnType<typeof vi.fn>;
 		buildSessionProjection: ReturnType<typeof vi.fn>;
 		buildContextEntries: ReturnType<typeof vi.fn>;
@@ -63,7 +66,32 @@ export function createMockPi(): MockPi {
 		registerTool: vi.fn(),
 		registerShortcut: vi.fn(),
 		on: vi.fn((event: string, handler: EventHandler) => {
-			events.set(event, [...(events.get(event) ?? []), handler]);
+			// Native events always contain settings. Supply explicitly configured
+			// test settings for terse synthetic events, never for real SDK tests.
+			// An explicitly invalid/undefined settings field is preserved.
+			const testHandler: EventHandler = (...args) => {
+				if (event !== "session_before_compact") return handler(...args);
+				const beforeCompact = args[0] as {
+					preparation?: Record<string, unknown>;
+				};
+				const preparation = beforeCompact?.preparation;
+				if (!preparation || "settings" in preparation) return handler(...args);
+				return handler(
+					{
+						...beforeCompact,
+						preparation: {
+							...preparation,
+							settings: {
+								enabled: true,
+								keepRecentTokens: 100,
+								reserveTokens: 4096,
+							},
+						},
+					},
+					...args.slice(1),
+				);
+			};
+			events.set(event, [...(events.get(event) ?? []), testHandler]);
 		}),
 		sendMessage: vi.fn(),
 		appendEntry: vi.fn(),
@@ -83,6 +111,7 @@ export function createMockCtx(options?: {
 		model: options?.contextWindow
 			? {
 					contextWindow: options.contextWindow,
+					maxTokens: 4096,
 					provider: "test",
 					id: "test-model",
 					api: "openai-completions",
@@ -108,6 +137,8 @@ export function createMockCtx(options?: {
 		isIdle: vi.fn(() => true),
 		hasPendingMessages: vi.fn(() => false),
 		sessionManager: {
+			getSessionId: vi.fn(() => "fixture-session"),
+			getLeafId: vi.fn(() => "fixture-leaf"),
 			getBranch: vi.fn(
 				() =>
 					options?.messages?.map((m, i) => ({

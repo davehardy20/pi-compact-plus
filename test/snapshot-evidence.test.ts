@@ -8,7 +8,6 @@ import {
 	extractOpenProblems,
 	extractSessionSnapshot,
 	extractTextContent,
-	intentEvidenceBudgetForUsage,
 } from "../src/session-evidence.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
@@ -189,14 +188,8 @@ describe("evidence-weighted session snapshot extraction", () => {
 		);
 	});
 
-	it("scales the exact-evidence budget only with verified native headroom", () => {
-		const native = {
-			percent: 18.4,
-			tokens: 183_988,
-			contextWindow: 1_000_000,
-			source: "native" as const,
-		};
-		const budget = intentEvidenceBudgetForUsage(native);
+	it("accepts a bounded caller-supplied evidence budget without truncation", () => {
+		const budget = 256 * 1024;
 		expect(budget).toBeGreaterThan(12_000);
 		expect(budget).toBeLessThanOrEqual(256 * 1024);
 		const redirect = `Unknown redirect: ${"x".repeat(12_000)}`;
@@ -217,31 +210,6 @@ describe("evidence-weighted session snapshot extraction", () => {
 		).intentEvidence;
 		expect(tooLarge?.overflow).toBe(true);
 		expect(tooLarge?.recentUserTurns).toEqual([]);
-		expect(
-			intentEvidenceBudgetForUsage({ ...native, source: "estimated" }),
-		).toBe(8 * 1024);
-		expect(
-			intentEvidenceBudgetForUsage({ ...native, tokens: Number.NaN }),
-		).toBe(8 * 1024);
-		expect(intentEvidenceBudgetForUsage({ ...native, percent: 90 })).toBe(
-			8 * 1024,
-		);
-		expect(
-			intentEvidenceBudgetForUsage({
-				percent: 80,
-				tokens: 160_000,
-				contextWindow: 200_000,
-				source: "native",
-			}),
-		).toBe(8 * 1024);
-		expect(
-			intentEvidenceBudgetForUsage({
-				percent: 1,
-				tokens: 1_000_000,
-				contextWindow: 100_000_000,
-				source: "native",
-			}),
-		).toBe(256 * 1024);
 		expect(
 			extractCurrentFocus(messages, Number.POSITIVE_INFINITY).intentEvidence
 				?.overflow,
