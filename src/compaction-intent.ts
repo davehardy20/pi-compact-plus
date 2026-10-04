@@ -15,6 +15,8 @@ interface IntentPreparation {
 	settings?: { reserveTokens: number };
 }
 
+// Independent request-size safety bound, not a proxy for model token capacity.
+// Overflow is explicit: integrated callers must cancel, never omit and proceed.
 const MAX_EVIDENCE_BYTES = 256 * 1024;
 const REQUEST_RESERVE_TOKENS = 16_384;
 
@@ -41,8 +43,10 @@ export function extractCompactionFocus(
 	}
 	const users = projected.slice(boundary + 1).filter((m) => m.role === "user");
 	const supplied = source.filter((m) => m.role === "user");
-	// Remove only a verified chronological prefix, never a text-keyed set:
-	// repeated identical requests and unknown later redirects must survive.
+	// Native cuts cover a prefix after the canonical compaction boundary;
+	// retained raw entries are already inside that projected cut domain.
+	// Verify it, never use a text-keyed set or remove a middle subsequence:
+	// unknown provenance keeps complete user order, including later repeats.
 	const prefixMatches = supplied.every(
 		(message, index) =>
 			users[index] &&
