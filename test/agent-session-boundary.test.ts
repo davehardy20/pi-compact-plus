@@ -366,6 +366,9 @@ async function checkHost(version: string, root: string) {
 		expect(bridge.compact).toHaveBeenCalledOnce();
 		expect(bridge.generateSummaryWithUsage).toHaveBeenCalled();
 		expect(bridge.findCutPoint).toHaveBeenCalled();
+		expect(bridge.estimateTokens).toHaveBeenCalled();
+		expect(bridge.prepareBranchEntries).toHaveBeenCalled();
+		expect(bridge.settingsCreate).toHaveBeenCalled();
 		expect(compact).not.toHaveBeenCalled();
 		expect(abort).not.toHaveBeenCalled();
 		expect(order).toEqual([
