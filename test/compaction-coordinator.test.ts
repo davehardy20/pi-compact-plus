@@ -110,6 +110,15 @@ function setProjectedUser(ctx: ExtensionEventContext, text: string): void {
 }
 
 describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
+	it("clears boundary drafts and issued prompt ownership together", () => {
+		const { state } = createCoordinator();
+		state.pendingBoundaryMarker = "uncommitted boundary";
+		state.lastIssuedCompactionInstructions = "issued prompt";
+		state.clearPendingCompaction();
+		expect(state.pendingBoundaryMarker).toBeNull();
+		expect(state.lastIssuedCompactionInstructions).toBeNull();
+	});
+
 	it("skips auto-compaction in an ephemeral json child with no session file", async () => {
 		const { coordinator, state } = createCoordinator();
 		const ctx = createMockCtx({ mode: "json", sessionFile: undefined });

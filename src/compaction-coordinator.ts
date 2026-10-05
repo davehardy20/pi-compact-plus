@@ -1,12 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
+	BoundaryResult,
 	CompactionResult,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	SessionBeforeCompactEvent,
 	SessionCompactEvent,
+	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
+import { prepareBoundaryCompaction } from "./boundary-preparation.js";
 import { runCustomCompaction } from "./compact.js";
 import { extractTriggerFocus } from "./compaction-intent.js";
 import {
@@ -200,6 +204,155 @@ export class CompactionCoordinator {
 			sendContinuation: true,
 			persist: this.persistTelemetrySnapshot,
 		});
+	}
+
+	/** Pi 0.87's post-tool transaction; never abort an active run via ctx.compact. */
+	async maybeAutoCompactAtBoundary(
+		event: TurnEndEvent,
+		ctx: ExtensionEventContext,
+	): Promise<BoundaryResult | undefined> {
+		if (
+			!event.context ||
+			event.outcome !== "completed" ||
+			event.message.role !== "assistant" ||
+			event.message.stopReason !== "toolUse" ||
+			this.disableAutoCompaction ||
+			this.isEphemeralHeadlessChild(ctx) ||
+			this.state.isCompacting ||
+			this.state.pendingBoundaryMarker ||
+			this.state.toolOutputPruning.isFlushing ||
+			this.state.isSameTurn(event.turnIndex) ||
+			this.state.isOnCooldown(this.thresholdSettings.cooldownMs)
+		) {
+			return undefined;
+		}
+		const usage = this.getEffectiveUsage(ctx);
+		if (!usage || !ctx.model) return undefined;
+		const mode = getModeFromEffectiveUsage(usage, this.thresholdSettings);
+		if (!mode || mode === "checkpoint") return undefined;
+		if (
+			usage.tokens !== null &&
+			this.state.isRegrowthBelowThreshold(usage.tokens, REGROWTH_TOKENS)
+		) {
+			return undefined;
+		}
+		const compatibility = resolveCompactionRuntimeCompatibility({
+			event,
+			modelRegistry: ctx.modelRegistry as { streamSimple?: unknown },
+		});
+		if (compatibility.executionPath !== "custom") return undefined;
+		const epoch = this.state.currentCompactionEpoch;
+		const leaf = ctx.sessionManager.getLeafId();
+		const sessionId = ctx.sessionManager.getSessionId();
+		const selectedModel = modelKey(ctx.model);
+		this.state.selectedMode = mode;
+		this.state.isCompacting = true;
+		this.state.lastTriggerAuto = true;
+		try {
+			const preparation = prepareBoundaryCompaction(
+				event,
+				ctx,
+				usage.tokens ?? 0,
+			);
+			if (!preparation) return undefined;
+			const attempt = await this.onSessionBeforeCompact(
+				{
+					type: "session_before_compact",
+					preparation,
+					branchEntries: ctx.sessionManager.getBranch(),
+					reason: "threshold",
+					willRetry: false,
+					signal: ctx.signal ?? new AbortController().signal,
+				} as SessionBeforeCompactEvent,
+				ctx,
+				false,
+				{
+					projected: event.context.contextMessages,
+					isCurrent: () => event.context?.pendingMessages.length === 0,
+				},
+			);
+			if (this.state.currentCompactionEpoch !== epoch) return undefined;
+			if (
+				!attempt?.compaction ||
+				ctx.signal?.aborted ||
+				ctx.sessionManager.getSessionId() !== sessionId ||
+				modelKey(ctx.model) !== selectedModel ||
+				ctx.sessionManager.getLeafId() !== leaf
+			) {
+				this.state.clearPendingCompaction();
+				return undefined;
+			}
+			const marker = randomUUID();
+			this.state.pendingBoundaryMarker = marker;
+			this.state.lastCompactTurnIndex = event.turnIndex;
+			return {
+				entries: [
+					{
+						type: "compaction",
+						summary: attempt.compaction.summary,
+						firstKeptEntryId: attempt.compaction.firstKeptEntryId,
+						usage: attempt.compaction.usage,
+						details: {
+							...(attempt.compaction.details as object),
+							compactPlusBoundary: marker,
+						},
+					},
+				],
+			};
+		} catch {
+			if (this.state.currentCompactionEpoch === epoch) {
+				this.state.clearPendingCompaction();
+				this.state.lastFallbackReason =
+					"safe turn-boundary compaction unavailable";
+			}
+			return undefined;
+		} finally {
+			if (this.state.currentCompactionEpoch === epoch) {
+				this.state.selectedMode = null;
+				this.state.isCompacting = false;
+				this.state.lastTriggerAuto = false;
+			}
+		}
+	}
+
+	/** Draft generation is not success: reconcile only after Pi commits it. */
+	async confirmBoundaryCompaction(
+		ctx: ExtensionEventContext,
+	): Promise<boolean> {
+		const marker = this.state.pendingBoundaryMarker;
+		if (!marker) return false;
+		const epoch = this.state.currentCompactionEpoch;
+		const entry = [...ctx.sessionManager.getBranch()]
+			.reverse()
+			.find((candidate) => candidate.type === "compaction");
+		if (
+			entry?.type !== "compaction" ||
+			(entry.details as { compactPlusBoundary?: unknown } | undefined)
+				?.compactPlusBoundary !== marker
+		) {
+			this.state.clearPendingCompaction();
+			return false;
+		}
+		this.state.lastCompactTokens = 0;
+		this.state.pendingBoundaryMarker = null;
+		await this.onSessionCompact(
+			{
+				type: "session_compact",
+				compactionEntry: entry,
+				fromExtension: true,
+				reason: "threshold",
+				willRetry: false,
+			},
+			ctx,
+		);
+		if (this.state.currentCompactionEpoch !== epoch) return false;
+		if (ctx.hasUI) {
+			ctx.ui.notify(
+				"📦 Compact+ auto-compacted safely between tool turns.",
+				"info",
+			);
+		}
+		return true;
 	}
 
 	async onSessionBeforeCompact(

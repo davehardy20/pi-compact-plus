@@ -55,8 +55,11 @@ practical working-memory range. A 1M-token model at 20% usage still hits the
 200,000 standard token threshold, so Compact+ standard-compacts there instead of
 waiting for 70% (~700k tokens).
 
-Auto-compaction is evaluated after a successful assistant turn at `agent_settled`,
-once tools, queued messages, retries, and pruning flushes have finished.
+On Pi runtimes with transactional turn boundaries and a safe provider stream,
+Compact+ checks thresholds after each completed tool batch, before the next
+assistant request. It returns a compaction draft for Pi to commit; it never
+calls `ctx.compact()` during an active run or replays tool results. The idle
+`agent_settled` check remains the compatibility/final-response path.
 Cooldown and post-compaction token regrowth guards avoid thrashing; if Pi cannot
 report a valid post-compaction token count, only cooldown applies.
 
@@ -99,7 +102,8 @@ a clear new request supersedes it, but a status-only reply does not. The extensi
 task." follow-up is not treated as a new objective. If no user request
 survives after the newest compaction boundary, a validated persisted summary
 supplies it; even an invalid newer summary cannot revive an older `Task:` entry.
-Split turns remain continuity context. Checkpoints use the same authoritative
+Split history and turn prefixes use one structured summary request, preserving
+Pi's retained-entry cut without appending a second, incompatible native schema. Checkpoints use the same authoritative
 active projection, not raw branch history, and do not certify an older objective if newer
 substantive user turns cannot be classified: they mark it unverified and carry
 bounded chronological evidence (or explicitly report evidence overflow). Branch
@@ -490,6 +494,10 @@ native system text, wrappers, memory, guidance, and effective output allowance.
 The checked preparation and instructions are reused verbatim. Oversized requests
 or session/model/leaf/epoch/queued-input changes decline safely; existing
 checkpoint and trigger-hint byte guards are unchanged.
+`test/turn-boundary-compaction.test.ts` covers native cuts and commit-only
+telemetry; `test/agent-session-boundary.test.ts` drives real AgentSession/Agent/
+ExtensionRunner dispatch, tool execution, draft commit, confirmation, and the
+next request with scripted local transport, preserving system state without replay.
 
 - **F1 — unsafe `message_end` compaction:** `test/index.test.ts` checks tool completion,
   settlement, and pending flush guards.

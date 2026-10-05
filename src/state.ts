@@ -21,6 +21,8 @@ export class CompactionState {
 	pendingAutoCompactTurnIndex: number | null = null;
 	lastCompaction: CompactionTelemetry | null = null;
 	pendingCompaction: CompactionTelemetry | null = null;
+	/** Awaiting Pi's transactional commit, not yet a successful compaction. */
+	pendingBoundaryMarker: string | null = null;
 	lastFallbackReason: string | null = null;
 	/** Exact lifecycle-issued prompt; transient ownership, never telemetry. */
 	lastIssuedCompactionInstructions: string | null = null;
@@ -53,6 +55,7 @@ export class CompactionState {
 		this.pendingAutoCompactTurnIndex = null;
 		this.lastCompaction = null;
 		this.pendingCompaction = null;
+		this.pendingBoundaryMarker = null;
 		this.lastFallbackReason = null;
 		this.lastInjectedEcho = null;
 		this.telemetryPersistenceIssues = [];
@@ -69,6 +72,8 @@ export class CompactionState {
 			return false;
 		}
 		if (this.lastModelKey !== null) {
+			this.invalidateCompactionCallbacks();
+			this.isCompacting = false;
 			// True model change: reset model-scoped state
 			this.lastCompactTime = 0;
 			this.selectedMode = null;
@@ -78,6 +83,7 @@ export class CompactionState {
 			this.pendingAutoCompactTurnIndex = null;
 			this.lastCompaction = null;
 			this.pendingCompaction = null;
+			this.pendingBoundaryMarker = null;
 			this.lastFallbackReason = null;
 			this.lastIssuedCompactionInstructions = null;
 			this.lastInjectedEcho = null;
@@ -100,6 +106,7 @@ export class CompactionState {
 
 	clearPendingCompaction(): void {
 		this.pendingCompaction = null;
+		this.pendingBoundaryMarker = null;
 		this.lastIssuedCompactionInstructions = null;
 	}
 

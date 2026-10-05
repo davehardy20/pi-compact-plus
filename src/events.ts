@@ -55,7 +55,19 @@ export function registerCompactPlusEventHandlers(
 		toolOutputPruning.onAgentStart();
 	});
 
-	pi.on("turn_end", async (event, _ctx) => {
+	const confirmBoundary = async (
+		ctx: Parameters<CompactionCoordinator["confirmBoundaryCompaction"]>[0],
+	) => {
+		if (await compactionCoordinator.confirmBoundaryCompaction(ctx)) {
+			toolOutputPruning.onBoundaryCompaction(ctx);
+		}
+	};
+
+	pi.on("turn_start", async (_event, ctx) => {
+		await confirmBoundary(ctx);
+	});
+
+	pi.on("turn_end", async (event, ctx) => {
 		toolOutputPruning.onTurnEnd({
 			message: event.message,
 			toolResults: event.toolResults as AgentMessage[],
@@ -68,6 +80,7 @@ export function registerCompactPlusEventHandlers(
 			event.message.role === "assistant" && event.message.stopReason === "stop"
 				? event.turnIndex
 				: null;
+		return compactionCoordinator.maybeAutoCompactAtBoundary(event, ctx);
 	});
 
 	pi.on("message_end", async (event, ctx) => {
@@ -80,6 +93,7 @@ export function registerCompactPlusEventHandlers(
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		await confirmBoundary(ctx);
 		// Pi emits this only after the run's tools, retries, and queued messages
 		// have settled. Never call ctx.compact() inside message_end/turn_end: it
 		// aborts the active run and can discard or replay tool results.
@@ -91,6 +105,7 @@ export function registerCompactPlusEventHandlers(
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		await confirmBoundary(ctx);
 		// A manual or native compaction supersedes any queued auto candidate.
 		state.pendingAutoCompactTurnIndex = null;
 		return compactionCoordinator.onSessionBeforeCompact(event, ctx);

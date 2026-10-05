@@ -129,6 +129,17 @@ describe("PR Node workflow checks", () => {
 		expect(auditStep).not.toContain("continue-on-error");
 	});
 
+	it("runs native host transactions in the strict post-install boundary step", () => {
+		const step = workflow
+			.split("\n      - name: Pi host compatibility boundary\n")[1]
+			?.split("\n      - name: ")[0];
+		expect(step).toContain("PI_COMPACT_PLUS_TEST_PI_087_ROOT:");
+		expect(step).toContain("PI_COMPACT_PLUS_TEST_PI_101_ROOT:");
+		expect(step).toContain('PI_COMPACT_PLUS_TEST_REQUIRE_RUNTIMES: "1"');
+		expect(step).toContain("test/provider-boundary-087.test.ts");
+		expect(step).toContain("test/agent-session-boundary.test.ts");
+	});
+
 	it("requires real provider boundaries for installed and candidate Pi hosts", () => {
 		expect(workflow).toContain("name: Pi host compatibility boundary");
 		expect(workflow).toContain("@earendil-works/pi-coding-agent@0.87.1");
