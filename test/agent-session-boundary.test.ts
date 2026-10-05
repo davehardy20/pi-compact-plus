@@ -1,25 +1,38 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-	type AssistantMessage,
-	type Context,
-	contentText,
-	createAssistantMessageEventStream,
-	getCurrentSystemMessage,
-} from "@earendil-works/pi-ai";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai/compat";
-import {
-	type AgentSession,
-	createAgentSession,
-	createReadTool,
-	DefaultResourceLoader,
-	type ExtensionFactory,
-	type ModelRuntime,
-	SessionManager,
-	SettingsManager,
+import type {
+	AgentSession,
+	ExtensionFactory,
+	ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
+
+// Only the package import bridge is mocked; each implementation is native.
+const bridge = vi.hoisted(() => ({
+	compact: vi.fn(),
+	estimateTokens: vi.fn(),
+	generateSummaryWithUsage: vi.fn(),
+	findCutPoint: vi.fn(),
+	prepareBranchEntries: vi.fn(),
+	settingsCreate: vi.fn(),
+}));
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	compact: bridge.compact,
+	estimateTokens: (...args: unknown[]) => bridge.estimateTokens(...args),
+	generateSummaryWithUsage: (...args: unknown[]) =>
+		bridge.generateSummaryWithUsage(...args),
+	findCutPoint: (...args: unknown[]) => bridge.findCutPoint(...args),
+	prepareBranchEntries: (...args: unknown[]) =>
+		bridge.prepareBranchEntries(...args),
+	SettingsManager: {
+		create: (...args: unknown[]) => bridge.settingsCreate(...args),
+	},
+}));
+
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
 import {
@@ -29,7 +42,27 @@ import {
 import { CompactionState } from "../src/state.js";
 import { ToolOutputPruningCoordinator } from "../src/tool-output-pruning/coordinator.js";
 import { getEffectiveUsage } from "../src/usage.js";
+import { findInstalledPiRuntime } from "./fixtures/pi-runtime-discovery.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
+
+const runtimes = [
+	{
+		version: "0.87.1",
+		root:
+			process.env.PI_COMPACT_PLUS_TEST_PI_087_ROOT ??
+			findInstalledPiRuntime("0.87.1"),
+	},
+	{
+		version: "1.0.1",
+		root:
+			process.env.PI_COMPACT_PLUS_TEST_PI_101_ROOT ??
+			dirname(
+				dirname(
+					fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
+				),
+			),
+	},
+];
 
 vi.mock("../src/persist.js", () => ({
 	loadTelemetryWithDiagnostics: async () => ({ telemetry: null, issue: null }),
@@ -59,7 +92,68 @@ function response(
 	};
 }
 
-it("host preserves system content and commit order", async () => {
+async function checkHost(version: string, root: string) {
+	const dependencies =
+		version === "0.87.1"
+			? join(root, "node_modules/@earendil-works")
+			: dirname(root);
+	for (const [packageRoot, name] of [
+		[root, "pi-coding-agent"],
+		[join(dependencies, "pi-agent-core"), "pi-agent-core"],
+		[join(dependencies, "pi-ai"), "pi-ai"],
+	]) {
+		const pkg = JSON.parse(
+			readFileSync(join(packageRoot, "package.json"), "utf8"),
+		);
+		expect(pkg.name).toBe(`@earendil-works/${name}`);
+		expect(pkg.version).toBe(version);
+	}
+	const load = (path: string) =>
+		import(/* @vite-ignore */ pathToFileURL(path).href);
+	type SDK = typeof import("@earendil-works/pi-coding-agent");
+	// Direct implementation modules avoid a recursive public-index mock bridge.
+	const sdk = <K extends keyof SDK>(file: string) =>
+		load(join(root, `dist/core/${file}.js`)) as Promise<Pick<SDK, K>>;
+	const nativeHost = await sdk<"AgentSession">("agent-session");
+	const { createAgentSession } = await sdk<"createAgentSession">("sdk");
+	const { createReadTool } = await sdk<"createReadTool">("tools/read");
+	const { DefaultResourceLoader } =
+		await sdk<"DefaultResourceLoader">("resource-loader");
+	const { SessionManager } = await sdk<"SessionManager">("session-manager");
+	const { SettingsManager } = await sdk<"SettingsManager">("settings-manager");
+	const {
+		contentText,
+		createAssistantMessageEventStream,
+		getCurrentSystemMessage,
+	} = (await load(
+		join(dependencies, "pi-ai/dist/index.js"),
+	)) as typeof import("@earendil-works/pi-ai");
+	const nativeCompact = await sdk<
+		"compact" | "estimateTokens" | "generateSummaryWithUsage" | "findCutPoint"
+	>("compaction/compaction");
+	const nativeBranch = await sdk<"prepareBranchEntries">(
+		"compaction/branch-summarization",
+	);
+	for (const name of [
+		"compact",
+		"estimateTokens",
+		"generateSummaryWithUsage",
+		"findCutPoint",
+	] as const) {
+		bridge[name].mockReset().mockImplementation(nativeCompact[name]);
+	}
+	Object.defineProperty(bridge.compact, "length", {
+		configurable: true,
+		value: nativeCompact.compact.length,
+	});
+	bridge.prepareBranchEntries
+		.mockReset()
+		.mockImplementation(nativeBranch.prepareBranchEntries);
+	bridge.settingsCreate
+		.mockReset()
+		.mockImplementation((...args: Parameters<typeof SettingsManager.create>) =>
+			SettingsManager.create(...args),
+		);
 	const cwd = mkdtempSync(join(tmpdir(), "compact-plus-host-"));
 	const sentinel = "SYSTEM-SENTINEL: preserve this authoritative instruction.";
 	const settings = SettingsManager.inMemory({
@@ -238,6 +332,9 @@ it("host preserves system content and commit order", async () => {
 			customTools: [{ ...createReadTool(cwd), name: "probe", execute }],
 			thinkingLevel: "off",
 		}));
+		expect(host, `native ${version} AgentSession`).toBeInstanceOf(
+			nativeHost.AgentSession,
+		);
 		await host.bindExtensions({
 			mode: "tui",
 			onError: (error) => errors.push(error),
@@ -266,6 +363,9 @@ it("host preserves system content and commit order", async () => {
 		expect(projectedSystem?.sections?.compact_plus_withdrawn).toBeUndefined();
 		expect(errors).toEqual([]);
 		expect(execute).toHaveBeenCalledOnce();
+		expect(bridge.compact).toHaveBeenCalledOnce();
+		expect(bridge.generateSummaryWithUsage).toHaveBeenCalled();
+		expect(bridge.findCutPoint).toHaveBeenCalled();
 		expect(compact).not.toHaveBeenCalled();
 		expect(abort).not.toHaveBeenCalled();
 		expect(order).toEqual([
@@ -281,4 +381,18 @@ it("host preserves system content and commit order", async () => {
 		settingsSpy.mockRestore();
 		rmSync(cwd, { recursive: true, force: true });
 	}
-});
+}
+
+it.for(runtimes)(
+	"real Pi $version host preserves system content and commit order",
+	async ({ version, root }, test) => {
+		if (!root) {
+			if (process.env.PI_COMPACT_PLUS_TEST_REQUIRE_RUNTIMES === "1") {
+				throw new Error("Required Pi host runtime missing");
+			}
+			test.skip();
+			return;
+		}
+		await checkHost(version, root);
+	},
+);
