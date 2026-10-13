@@ -362,6 +362,54 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		).toBeUndefined();
 	});
 
+	it("cancels a provider-confirmed overflow on a split turn with no prefix", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		// Compact+'s boundary preparation reports isSplitTurn with an empty prefix.
+		// Pi still sends one request, so the overflow is authoritative: no silent
+		// deferral that performs no compaction and emits no warning.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("Task: repair login.")], {
+				splitTurn: true,
+				prefix: [],
+			}),
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("cannot fit"),
+			"warning",
+		);
+	});
+
+	it("explains every manual decline of an unchanged oversized cut", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		await coordinator.handleManualCommand("standard", ctx);
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			),
+		).toHaveLength(2);
+	});
+
 	it("warns once per unchanged cut", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });

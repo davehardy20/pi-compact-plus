@@ -83,6 +83,8 @@ export class CompactionCoordinator {
 	private overflowVerdict: { key: string; reason: string | null } | null = null;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
+	/** Epoch of an attempt started by a manual command, which always explains itself. */
+	private manualAttemptEpoch: number | null = null;
 
 	constructor({
 		state,
@@ -130,8 +132,6 @@ export class CompactionCoordinator {
 		) {
 			return null;
 		}
-		const key = this.summarizationCutKey(event, ctx);
-		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
 		// Fail-open fast path before serializing: the cut is a subset of the live
 		// session, so while Pi reports the whole session fitting inside
 		// `contextWindow - reserveTokens` the guard is skipped. Sound only while
@@ -145,6 +145,9 @@ export class CompactionCoordinator {
 		) {
 			return null;
 		}
+		// Build the key only once a measurement is about to run: it walks the cut.
+		const key = this.summarizationCutKey(event, ctx);
+		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
 		// Pi issues one request per preparation slice. On a split turn the prefix
 		// request carries no custom instructions or previous summary and reserves
 		// floor(0.5 * reserveTokens), matching Pi's budget for that request. Pi's
@@ -208,11 +211,22 @@ export class CompactionCoordinator {
 		]) {
 			for (const message of list) {
 				const content = (message as { content?: unknown }).content;
-				if (typeof content === "string") chars += content.length;
-				else if (Array.isArray(content)) {
-					for (const part of content) {
-						const text = (part as { text?: unknown })?.text;
-						if (typeof text === "string") chars += text.length;
+				if (typeof content === "string") {
+					chars += content.length;
+					continue;
+				}
+				if (!Array.isArray(content)) continue;
+				for (const part of content) {
+					const text = (part as { text?: unknown })?.text;
+					if (typeof text === "string") {
+						chars += text.length;
+						continue;
+					}
+					// Non-text parts (tool calls, images) still change the payload.
+					try {
+						chars += JSON.stringify(part)?.length ?? 0;
+					} catch {
+						chars += 1;
 					}
 				}
 			}
@@ -256,7 +270,14 @@ export class CompactionCoordinator {
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
 		const key = this.summarizationCutKey(event, ctx);
-		if (this.overflowNoticeKey === key) return;
+		// A manual command always deserves the explanation. Only automatic repeats
+		// of an unchanged cut are deduped.
+		if (
+			this.manualAttemptEpoch !== this.state.currentCompactionEpoch &&
+			this.overflowNoticeKey === key
+		) {
+			return;
+		}
 		this.overflowNoticeKey = key;
 		ctx.ui.notify(warning, "warning");
 	}
@@ -306,6 +327,7 @@ export class CompactionCoordinator {
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
+		this.manualAttemptEpoch = this.state.currentCompactionEpoch;
 		executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
 			persist: this.persistTelemetrySnapshot,
 		});
@@ -702,7 +724,13 @@ export class CompactionCoordinator {
 			// authoritative after re-measuring Pi's own requests. For a single slice
 			// the superset is treated as authoritative and the attempt is cancelled.
 			let nativeOverflow: string | null;
-			if (event.preparation?.isSplitTurn) {
+			// Pi only sends separate requests when the split turn has a prefix. Compact+'
+			// own boundary preparation reports isSplitTurn with an empty prefix, so the
+			// gate must match the real split, not the flag alone.
+			const splitsPayload =
+				event.preparation?.isSplitTurn === true &&
+				(event.preparation?.turnPrefixMessages?.length ?? 0) > 0;
+			if (splitsPayload) {
 				nativeOverflow = await this.detectSummarizationRequestOverflow(
 					event,
 					ctx,
