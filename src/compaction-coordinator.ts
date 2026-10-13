@@ -25,7 +25,10 @@ import { extractTextContent } from "./session-evidence.js";
 import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
-import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "./summarization-overflow.js";
+import {
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
+} from "./summarization-overflow.js";
 import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
 import {
 	type CompactionMode,
@@ -40,6 +43,9 @@ const INTENT_OVERFLOW_WARNING =
 
 const SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";
+
+const SUMMARIZATION_OUTPUT_CAP_WARNING =
+	"Compact+ cancelled compaction: the summarization request left no room for the summary output. Native Pi compaction was skipped because it would repeat the same failed request.";
 
 const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
@@ -100,21 +106,26 @@ export class CompactionCoordinator {
 	}
 
 	/**
-	 * Pi's own threshold path (contextWindow - reserveTokens) compacts without
-	 * asking Compact+, and Compact+'s intent-evidence cancel clears selectedMode,
-	 * so every later attempt goes native and unguarded. Measure the exact request
-	 * Pi is about to send and report whether the transcript alone cannot fit.
+	 * Measure the exact request Pi would send and return the stable overflow
+	 * reason when it cannot fit. Pure: no state or UI effects, so each call site
+	 * owns its own consequences.
 	 */
-	private async nativeSummarizationRequestOverflows(
+	private async detectSummarizationRequestOverflow(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
-	): Promise<boolean> {
+	): Promise<string | null> {
 		const model = ctx.model;
 		const preparation = event.preparation;
-		const messages = preparation?.messagesToSummarize;
-		if (!model || !Array.isArray(messages) || messages.length === 0) {
-			return false;
+		if (!model || this.thresholdSettings.guardNativeCompaction === false) {
+			return null;
 		}
+		// Pi summarizes the retained region as one request. The split-turn prefix
+		// belongs to that same cut and is the shape most likely to overflow.
+		const messages = [
+			...(preparation?.messagesToSummarize ?? []),
+			...(preparation?.turnPrefixMessages ?? []),
+		];
+		if (messages.length === 0) return null;
 		const measurement = await measureSummaryRequestTokens({
 			messages,
 			model,
@@ -128,22 +139,22 @@ export class CompactionCoordinator {
 		// Fail open when the request cannot be measured: a missing measurement
 		// must not silently disable compaction altogether.
 		if (!measurement || measurement.totalTokens <= model.contextWindow) {
-			return false;
+			return null;
 		}
-		this.state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
-		if (ctx.hasUI) {
-			ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
-		}
-		return true;
+		return SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 	}
 
 	private async guardNativeSummarizationRequest(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
 	): Promise<SessionBeforeCompactResultLike | undefined> {
-		return (await this.nativeSummarizationRequestOverflows(event, ctx))
-			? { cancel: true }
-			: undefined;
+		const reason = await this.detectSummarizationRequestOverflow(event, ctx);
+		if (!reason) return undefined;
+		this.state.lastFallbackReason = reason;
+		if (ctx.hasUI) {
+			ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
+		}
+		return { cancel: true };
 	}
 
 	async handleManualCommand(
@@ -496,7 +507,15 @@ export class CompactionCoordinator {
 			}
 
 			// Deferring is still sending the same payload. Guard it too.
-			if (await this.nativeSummarizationRequestOverflows(event, ctx)) {
+			const deferredOverflow = await this.detectSummarizationRequestOverflow(
+				event,
+				ctx,
+			);
+			if (deferredOverflow) {
+				this.state.lastFallbackReason = deferredOverflow;
+				if (ctx.hasUI) {
+					ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
+				}
 				return { cancel: true };
 			}
 
@@ -558,8 +577,15 @@ export class CompactionCoordinator {
 		if (attempt.requestOverflow) {
 			// The cut itself is oversized. Native Pi compaction would serialize the
 			// same transcript and fail identically, so decline instead of deferring.
+			const outputCap =
+				attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON;
 			if (ctx.hasUI) {
-				ctx.ui.notify(SUMMARIZATION_OVERFLOW_WARNING, "warning");
+				ctx.ui.notify(
+					outputCap
+						? SUMMARIZATION_OUTPUT_CAP_WARNING
+						: SUMMARIZATION_OVERFLOW_WARNING,
+					"warning",
+				);
 			}
 			return cancelCustom(
 				attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON,

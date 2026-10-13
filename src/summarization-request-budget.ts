@@ -22,9 +22,12 @@ export interface SummaryRequestMeasurement {
  * captures the assembled context and throws before any registry, credential,
  * transport, or network work happens.
  *
- * Estimates are character-based, so they are a lower bound for dense content;
- * callers must treat a measurement above `contextWindow` as "cannot fit", not
- * as a precise token count.
+ * Estimates come from `estimateTokens` (characters / 4), so they can err in
+ * either direction: dense content such as base64 or minified JSON tokenizes
+ * denser than 4 chars/token, prose with punctuation and markup tokenizes
+ * sparser. The guard only trips above the full `contextWindow`, not Pi's
+ * `contextWindow - reserveTokens` compaction trigger, which is what keeps a
+ * false-positive cancel unlikely.
  */
 export async function measureSummaryRequestTokens(options: {
 	messages: AgentMessage[];

@@ -23,6 +23,7 @@ export interface CompactPlusSettingsFile {
 	};
 	experimentalToolOutputPruning?: unknown;
 	disableAutoCompaction?: unknown;
+	guardNativeCompaction?: unknown;
 	toolOutputPruningMode?: unknown;
 	toolOutputSummaryStrategy?: unknown;
 	toolOutputPruneStrategy?: unknown;
@@ -49,6 +50,8 @@ export interface ResolvedCompactPlusSettings {
 	settingsPath: string;
 	experimentalToolOutputPruning: boolean;
 	disableAutoCompaction: boolean;
+	/** Guard Pi's native summarization payload before it is sent. */
+	guardNativeCompaction: boolean;
 	toolOutputPruningMode: "off" | "agent-message";
 	toolOutputSummaryStrategy: "llm";
 	toolOutputPruneStrategy: "stub" | "delete";
@@ -79,6 +82,7 @@ export const DEFAULT_COMPACT_PLUS_SETTINGS = {
 	cooldownMs: 120_000,
 	experimentalToolOutputPruning: false,
 	disableAutoCompaction: false,
+	guardNativeCompaction: true,
 	toolOutputPruningMode: "off" as const,
 	toolOutputSummaryStrategy: "llm" as const,
 	toolOutputPruneStrategy: "stub" as const,
@@ -106,6 +110,7 @@ export type CompactPlusThresholdSettings = Pick<
 	| "standardThresholdTokens"
 	| "hardThresholdTokens"
 	| "cooldownMs"
+	| "guardNativeCompaction"
 >;
 
 export const DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS = {
@@ -121,6 +126,7 @@ export const DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS = {
 		DEFAULT_COMPACT_PLUS_SETTINGS.standardThresholdTokens,
 	hardThresholdTokens: DEFAULT_COMPACT_PLUS_SETTINGS.hardThresholdTokens,
 	cooldownMs: DEFAULT_COMPACT_PLUS_SETTINGS.cooldownMs,
+	guardNativeCompaction: DEFAULT_COMPACT_PLUS_SETTINGS.guardNativeCompaction,
 } satisfies CompactPlusThresholdSettings;
 
 /**
@@ -305,6 +311,19 @@ export function resolveCompactPlusSettings(
 					DEFAULT_COMPACT_PLUS_SETTINGS.disableAutoCompaction,
 				);
 
+	// On by default: an unmeasured native payload is the shape that re-triggers
+	// the failing provider request. Set false to hand compaction back to Pi.
+	const guardNativeCompaction =
+		env.COMPACT_PLUS_GUARD_NATIVE_COMPACTION === undefined
+			? resolveBoolSetting(
+					fileSettings.guardNativeCompaction,
+					DEFAULT_COMPACT_PLUS_SETTINGS.guardNativeCompaction,
+				)
+			: parseEnvBool(
+					env.COMPACT_PLUS_GUARD_NATIVE_COMPACTION,
+					DEFAULT_COMPACT_PLUS_SETTINGS.guardNativeCompaction,
+				);
+
 	const toolOutputPruningMode = resolveEnumSetting(
 		env.COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE,
 		fileSettings.toolOutputPruningMode,
@@ -420,6 +439,7 @@ export function resolveCompactPlusSettings(
 		settingsPath,
 		experimentalToolOutputPruning,
 		disableAutoCompaction,
+		guardNativeCompaction,
 		toolOutputPruningMode,
 		toolOutputSummaryStrategy,
 		toolOutputPruneStrategy,

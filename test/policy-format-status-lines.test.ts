@@ -71,6 +71,7 @@ describe("formatStatusLines characterization", () => {
 						standardThresholdTokens: 220_000,
 						hardThresholdTokens: 280_000,
 						cooldownMs: 30_000,
+						guardNativeCompaction: true,
 					},
 				}),
 			),

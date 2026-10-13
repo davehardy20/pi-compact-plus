@@ -1,7 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { STRATA_CONTEXT_OVERFLOW } from "./fixtures/summarization-errors.js";
+import {
+	PI_OUTPUT_CAP_FAILURE,
+	STRATA_CONTEXT_OVERFLOW,
+} from "./fixtures/summarization-errors.js";
 
 const { compactMock } = vi.hoisted(() => ({ compactMock: vi.fn() }));
 
@@ -19,7 +22,10 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
-import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
+import {
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
+} from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
 
 type ExtensionEventContext = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
@@ -65,13 +71,17 @@ function createCtx(options?: {
 	} as unknown as ExtensionEventContext;
 }
 
-function createCoordinator(state: CompactionState) {
+function createCoordinator(
+	state: CompactionState,
+	options?: { guardNativeCompaction?: boolean },
+) {
 	return new CompactionCoordinator({
 		state,
 		pi: { sendUserMessage: vi.fn() } as never,
 		thresholdSettings: {
 			...DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
 			thresholdMode: "effective_cap",
+			guardNativeCompaction: options?.guardNativeCompaction ?? true,
 		},
 		getEffectiveUsage: (): EffectiveUsage => ({
 			percent: 95,
@@ -83,11 +93,14 @@ function createCoordinator(state: CompactionState) {
 	});
 }
 
-function preparation(messages: AgentMessage[]) {
+function preparation(
+	messages: AgentMessage[],
+	options?: { prefix?: AgentMessage[]; splitTurn?: boolean },
+) {
 	return {
-		isSplitTurn: false,
+		isSplitTurn: options?.splitTurn ?? false,
 		messagesToSummarize: messages,
-		turnPrefixMessages: [],
+		turnPrefixMessages: options?.prefix ?? [],
 		settings: {
 			enabled: true,
 			keepRecentTokens: 20_000,
@@ -96,9 +109,13 @@ function preparation(messages: AgentMessage[]) {
 	};
 }
 
-function event(ctx: ExtensionEventContext, messages: AgentMessage[]) {
+function event(
+	ctx: ExtensionEventContext,
+	messages: AgentMessage[],
+	options?: { prefix?: AgentMessage[]; splitTurn?: boolean },
+) {
 	return {
-		preparation: preparation(messages),
+		preparation: preparation(messages, options),
 		branchEntries: [],
 		reason: "threshold",
 		willRetry: false,
@@ -185,6 +202,70 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			expect.stringContaining("cannot fit"),
 			"warning",
 		);
+	});
+
+	it("names an output-cap failure as an output-cap failure", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx();
+		const coordinator = createCoordinator(state);
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("Task: repair login.")]),
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("no room for the summary"),
+			"warning",
+		);
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("cannot fit"),
+			"warning",
+		);
+	});
+
+	it("measures the split-turn prefix the native path would summarize", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state);
+		state.selectedMode = null;
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [], {
+				splitTurn: true,
+				prefix: [user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			}),
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("leaves the native path alone when the guard is disabled", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, {
+			guardNativeCompaction: false,
+		});
+		state.selectedMode = null;
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.lastFallbackReason).toBeNull();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
 	it("leaves a fitting native Pi compaction untouched", async () => {
