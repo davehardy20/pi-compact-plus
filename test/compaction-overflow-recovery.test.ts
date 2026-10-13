@@ -228,6 +228,28 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 	});
 
+	it("guards the final fall-back to native compaction too", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state);
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+
+		// Compact+ budgets its own rendered prompt, so the custom attempt passed.
+		// Pi would send the caller's guidance verbatim on the deferred request.
+		const deferred = event(ctx, [user("Task: repair login.")]);
+		(deferred as { customInstructions?: string }).customInstructions =
+			"retained guidance ".repeat(90_000);
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.pendingCompaction).toBeNull();
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
 	it("measures the split-turn prefix the native path would summarize", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
@@ -246,6 +268,27 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
+	});
+
+	it("keeps split-turn requests separate the way Pi sends them", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state);
+		state.selectedMode = null;
+
+		// Each request fits on its own. Only the combined cut would overflow, and
+		// Pi never sends the combined cut on a split turn.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("a".repeat(700_000))], {
+				splitTurn: true,
+				prefix: [user("b".repeat(700_000))],
+			}),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.lastFallbackReason).toBeNull();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
 	it("leaves the native path alone when the guard is disabled", async () => {

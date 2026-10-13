@@ -106,9 +106,9 @@ export class CompactionCoordinator {
 	}
 
 	/**
-	 * Measure the exact request Pi would send and return the stable overflow
-	 * reason when it cannot fit. Pure: no state or UI effects, so each call site
-	 * owns its own consequences.
+	 * Measure each request Pi would send and return the stable overflow reason
+	 * when one of them cannot fit. Pure: no state or UI effects, so each call
+	 * site owns its own consequences.
 	 */
 	private async detectSummarizationRequestOverflow(
 		event: SessionBeforeCompactEvent,
@@ -116,32 +116,53 @@ export class CompactionCoordinator {
 	): Promise<string | null> {
 		const model = ctx.model;
 		const preparation = event.preparation;
-		if (!model || this.thresholdSettings.guardNativeCompaction === false) {
+		const reserve = preparation?.settings?.reserveTokens;
+		if (
+			!model ||
+			this.thresholdSettings.guardNativeCompaction === false ||
+			!Number.isSafeInteger(reserve) ||
+			(reserve as number) <= 0
+		) {
 			return null;
 		}
-		// Pi summarizes the retained region as one request. The split-turn prefix
-		// belongs to that same cut and is the shape most likely to overflow.
-		const messages = [
-			...(preparation?.messagesToSummarize ?? []),
-			...(preparation?.turnPrefixMessages ?? []),
-		];
-		if (messages.length === 0) return null;
-		const measurement = await measureSummaryRequestTokens({
-			messages,
-			model,
-			reserveTokens: preparation.settings?.reserveTokens,
-			customInstructions:
-				typeof event.customInstructions === "string"
-					? event.customInstructions
-					: undefined,
-			previousSummary: preparation.previousSummary,
-		});
-		// Fail open when the request cannot be measured: a missing measurement
-		// must not silently disable compaction altogether.
-		if (!measurement || measurement.totalTokens <= model.contextWindow) {
-			return null;
+		// Pi issues one request per preparation slice. On a split turn the history
+		// cut and the turn prefix are summarized separately, each with its own
+		// output budget, so only an individual request that cannot fit is a cancel.
+		const requests: { messages: AgentMessage[]; output?: number }[] = [];
+		const history = preparation.messagesToSummarize ?? [];
+		if (history.length > 0) requests.push({ messages: history });
+		const prefix = preparation.turnPrefixMessages ?? [];
+		if (preparation.isSplitTurn && prefix.length > 0) {
+			requests.push({
+				messages: prefix,
+				output: Math.min(
+					Math.floor(0.5 * (reserve as number)),
+					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+				),
+			});
 		}
-		return SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		const customInstructions =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: undefined;
+		const signal = event.signal ?? ctx.signal;
+		for (const request of requests) {
+			const measurement = await measureSummaryRequestTokens({
+				messages: request.messages,
+				model,
+				reserveTokens: reserve,
+				reservedOutputTokens: request.output,
+				customInstructions,
+				previousSummary: preparation.previousSummary,
+				signal,
+			});
+			// Fail open when a request cannot be measured: a missing measurement
+			// must not silently disable compaction altogether.
+			if (measurement && measurement.totalTokens > model.contextWindow) {
+				return SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+			}
+		}
+		return null;
 	}
 
 	private async guardNativeSummarizationRequest(
@@ -645,6 +666,19 @@ export class CompactionCoordinator {
 					: "Compact+ turn-boundary summary unavailable; session unchanged. Native Pi compaction remains available.",
 				"warning",
 			);
+		}
+
+		// Provider wording is not a reliable overflow signal: measure the payload
+		// Pi is about to send before letting this deferral through.
+		const fallbackOverflow = await this.detectSummarizationRequestOverflow(
+			event,
+			ctx,
+		);
+		if (fallbackOverflow) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
+			}
+			return cancelCustom(fallbackOverflow);
 		}
 
 		return undefined;

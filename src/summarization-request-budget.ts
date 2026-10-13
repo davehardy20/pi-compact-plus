@@ -33,6 +33,13 @@ export async function measureSummaryRequestTokens(options: {
 	messages: AgentMessage[];
 	model: SummaryModel | null | undefined;
 	reserveTokens: unknown;
+	/**
+	 * Replace the captured output budget. Pi builds the split-turn prefix request
+	 * through a private helper that reserves `floor(0.5 * reserveTokens)` instead
+	 * of `floor(0.8 * reserveTokens)`, so callers model that budget explicitly.
+	 */
+	reservedOutputTokens?: number;
+	signal?: AbortSignal;
 	customInstructions?: string;
 	previousSummary?: string;
 	thinkingLevel?: SummaryThinking;
@@ -63,7 +70,7 @@ export async function measureSummaryRequestTokens(options: {
 			reserve as number,
 			undefined,
 			undefined,
-			undefined,
+			options.signal,
 			options.customInstructions,
 			options.previousSummary,
 			options.thinkingLevel,
@@ -97,7 +104,11 @@ export async function measureSummaryRequestTokens(options: {
 			return undefined;
 		}
 		const transcript = transcriptTokens as number;
-		const output = reservedOutputTokens as number;
+		const override = options.reservedOutputTokens;
+		const output =
+			Number.isSafeInteger(override) && (override ?? 0) > 0
+				? (override as number)
+				: (reservedOutputTokens as number);
 		return {
 			transcriptTokens: transcript,
 			reservedOutputTokens: output,
