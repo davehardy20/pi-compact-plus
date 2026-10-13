@@ -394,15 +394,63 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
 		await coordinator.handleManualCommand("standard", ctx);
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		await coordinator.handleManualCommand("standard", ctx);
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(2);
+	});
+
+	it("dedupes automatic repeats after a manual decline", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
 		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
 
+		await coordinator.handleManualCommand("standard", ctx);
 		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
 			cancel: true,
 		});
+		// The manual bypass is attempt-scoped: later automatic attempts dedupe.
 		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
 			cancel: true,
 		});
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			),
+		).toHaveLength(1);
+	});
+
+	it("resetOverflowState clears the notice dedupe for a new session", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValue(new Error(STRATA_CONTEXT_OVERFLOW));
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+
+		await coordinator.onSessionBeforeCompact(oversized, ctx);
+		await coordinator.onSessionBeforeCompact(oversized, ctx);
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			),
+		).toHaveLength(1);
+
+		coordinator.resetOverflowState();
+		state.selectedMode = "standard";
+		await coordinator.onSessionBeforeCompact(oversized, ctx);
 		expect(
 			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
 				(call) => call[1] === "warning",

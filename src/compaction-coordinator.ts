@@ -59,6 +59,7 @@ type SessionBeforeCompactResultLike = {
 	cancel?: boolean;
 	compaction?: CompactionResult;
 };
+type MeasuredCut = { event: SessionBeforeCompactEvent; key: string };
 
 export interface CompactionCoordinatorOptions {
 	state: CompactionState;
@@ -83,8 +84,10 @@ export class CompactionCoordinator {
 	private overflowVerdict: { key: string; reason: string | null } | null = null;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
-	/** Epoch of an attempt started by a manual command, which always explains itself. */
-	private manualAttemptEpoch: number | null = null;
+	/** Key measured for the event being guarded, so the notice path reuses it. */
+	private measuredEvent: MeasuredCut | null = null;
+	/** True only for the attempt a manual command started, which explains itself. */
+	private manualAttemptInFlight = false;
 
 	constructor({
 		state,
@@ -100,6 +103,14 @@ export class CompactionCoordinator {
 		this.getEffectiveUsage = getEffectiveUsage;
 		this.persistTelemetrySnapshot = persistTelemetrySnapshot;
 		this.disableAutoCompaction = disableAutoCompaction;
+	}
+
+	/** Guard state is session-scoped, so it resets with the session. */
+	resetOverflowState(): void {
+		this.overflowVerdict = null;
+		this.overflowNoticeKey = null;
+		this.measuredEvent = null;
+		this.manualAttemptInFlight = false;
 	}
 
 	private cancelAbortedCompaction(): { cancel: true } {
@@ -145,8 +156,8 @@ export class CompactionCoordinator {
 		) {
 			return null;
 		}
-		// Build the key only once a measurement is about to run: it walks the cut.
 		const key = this.summarizationCutKey(event, ctx);
+		this.measuredEvent = { event, key };
 		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
 		// Pi issues one request per preparation slice. On a split turn the prefix
 		// request carries no custom instructions or previous summary and reserves
@@ -217,17 +228,12 @@ export class CompactionCoordinator {
 				}
 				if (!Array.isArray(content)) continue;
 				for (const part of content) {
-					const text = (part as { text?: unknown })?.text;
-					if (typeof text === "string") {
-						chars += text.length;
-						continue;
-					}
-					// Non-text parts (tool calls, images) still change the payload.
-					try {
-						chars += JSON.stringify(part)?.length ?? 0;
-					} catch {
-						chars += 1;
-					}
+					// Counted structurally, not serialized, so a large tool call or image
+					// cannot make the key expensive.
+					const partLike = part as { text?: unknown; type?: unknown };
+					chars += 1;
+					if (typeof partLike.type === "string") chars += partLike.type.length;
+					if (typeof partLike.text === "string") chars += partLike.text.length;
 				}
 			}
 		}
@@ -249,6 +255,7 @@ export class CompactionCoordinator {
 			ctx.sessionManager.getSessionId(),
 			ctx.sessionManager.getLeafId(),
 			modelKey(ctx.model),
+			preparation?.settings?.reserveTokens ?? 0,
 			preparation?.messagesToSummarize?.length ?? 0,
 			preparation?.turnPrefixMessages?.length ?? 0,
 			this.cutContentChars(preparation),
@@ -265,19 +272,18 @@ export class CompactionCoordinator {
 		ctx: ExtensionEventContext,
 		reason: string,
 		warning: string,
+		manualAttempt: boolean,
 	): void {
 		this.state.lastFallbackReason = reason;
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
-		const key = this.summarizationCutKey(event, ctx);
-		// A manual command always deserves the explanation. Only automatic repeats
-		// of an unchanged cut are deduped.
-		if (
-			this.manualAttemptEpoch !== this.state.currentCompactionEpoch &&
-			this.overflowNoticeKey === key
-		) {
-			return;
-		}
+		const key =
+			this.measuredEvent?.event === event
+				? this.measuredEvent.key
+				: this.summarizationCutKey(event, ctx);
+		// A manual command always explains itself. Only automatic repeats of an
+		// unchanged cut are deduped.
+		if (!manualAttempt && this.overflowNoticeKey === key) return;
 		this.overflowNoticeKey = key;
 		ctx.ui.notify(warning, "warning");
 	}
@@ -285,6 +291,7 @@ export class CompactionCoordinator {
 	private async guardNativeSummarizationRequest(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
+		manualAttempt: boolean,
 	): Promise<SessionBeforeCompactResultLike | undefined> {
 		const reason = await this.detectSummarizationRequestOverflow(event, ctx);
 		if (!reason) return undefined;
@@ -293,6 +300,7 @@ export class CompactionCoordinator {
 			ctx,
 			reason,
 			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+			manualAttempt,
 		);
 		return { cancel: true };
 	}
@@ -327,7 +335,7 @@ export class CompactionCoordinator {
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
-		this.manualAttemptEpoch = this.state.currentCompactionEpoch;
+		this.manualAttemptInFlight = true;
 		executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
 			persist: this.persistTelemetrySnapshot,
 		});
@@ -568,10 +576,17 @@ export class CompactionCoordinator {
 		nativeFallbackAvailable = true,
 		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
+		// Only the attempt a manual command started bypasses the notice dedupe.
+		const manualAttempt = this.manualAttemptInFlight;
+		this.manualAttemptInFlight = false;
 		const mode = this.state.selectedMode;
 
 		if (!mode) {
-			return await this.guardNativeSummarizationRequest(event, ctx);
+			return await this.guardNativeSummarizationRequest(
+				event,
+				ctx,
+				manualAttempt,
+			);
 		}
 
 		const epoch = this.state.currentCompactionEpoch;
@@ -658,6 +673,7 @@ export class CompactionCoordinator {
 					ctx,
 					deferredOverflow,
 					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+					manualAttempt,
 				);
 				return { cancel: true };
 			}
@@ -741,7 +757,9 @@ export class CompactionCoordinator {
 				nativeOverflow =
 					this.thresholdSettings.guardNativeCompaction === false
 						? null
-						: (attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON);
+						: attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON
+							? SUMMARIZATION_OUTPUT_CAP_REASON
+							: SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
@@ -751,6 +769,7 @@ export class CompactionCoordinator {
 					nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
 						? SUMMARIZATION_OUTPUT_CAP_WARNING
 						: SUMMARIZATION_OVERFLOW_WARNING,
+					manualAttempt,
 				);
 				return cancelCustom(nativeOverflow);
 			}
@@ -827,6 +846,7 @@ export class CompactionCoordinator {
 				ctx,
 				fallbackOverflow,
 				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+				manualAttempt,
 			);
 			return cancelCustom(fallbackOverflow);
 		}
