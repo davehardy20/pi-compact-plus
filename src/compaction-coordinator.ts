@@ -45,7 +45,7 @@ const SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";
 
 const SUMMARIZATION_OUTPUT_CAP_WARNING =
-	"Compact+ cancelled compaction: the summarization request left no room for the summary output. Native Pi compaction was skipped because it would repeat the same failed request.";
+	"Compact+ cancelled compaction: the summary reached its output token limit before it was complete. Native Pi compaction was skipped to avoid repeating the failed attempt.";
 
 const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
@@ -145,11 +145,16 @@ export class CompactionCoordinator {
 		}
 		// Fail-open fast path before serializing: the cut is a subset of the live
 		// session, so while Pi reports the whole session fitting inside
-		// `contextWindow - reserveTokens` the guard is skipped. Sound only while
-		// prompt + custom instructions stay under the remaining
-		// `0.2 * reserveTokens`; it can skip the guard, never add a cancel.
+		// `contextWindow - reserveTokens` the guard is skipped. That bound covers the
+		// transcript only, so it is not trusted when caller guidance adds tokens Pi
+		// will actually send. It can skip the guard, never add a cancel.
+		const guidance =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: "";
 		const usage = this.getEffectiveUsage(ctx);
 		if (
+			guidance.length === 0 &&
 			Number.isSafeInteger(usage?.tokens) &&
 			(usage?.tokens ?? 0) > 0 &&
 			(usage?.tokens ?? 0) + (reserve as number) <= model.contextWindow

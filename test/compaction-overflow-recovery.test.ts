@@ -112,13 +112,18 @@ function preparation(
 function event(
 	ctx: ExtensionEventContext,
 	messages: AgentMessage[],
-	options?: { prefix?: AgentMessage[]; splitTurn?: boolean },
+	options?: {
+		prefix?: AgentMessage[];
+		splitTurn?: boolean;
+		instructions?: string;
+	},
 ) {
 	return {
 		preparation: preparation(messages, options),
 		branchEntries: [],
 		reason: "threshold",
 		willRetry: false,
+		customInstructions: options?.instructions,
 		signal: ctx.signal ?? new AbortController().signal,
 		streamFn: async () => ({ result: async () => ({}) }),
 	} as never;
@@ -222,7 +227,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(result).toEqual({ cancel: true });
 		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("no room for the summary"),
+			expect.stringContaining("output token limit"),
 			"warning",
 		);
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
@@ -360,6 +365,40 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 				ctx,
 			),
 		).toBeUndefined();
+	});
+
+	it("measures caller guidance instead of trusting the session-fit fast path", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Pi reports the session as fitting, so the transcript-only fast path would
+		// skip the guard and hand Pi an oversized guided request.
+		const coordinator = createCoordinator(state, { usageTokens: 20_000 });
+		state.selectedMode = null;
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("small task")], { instructions: "y".repeat(1_600_000) }),
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("still skips the guard for a fitting session with no caller guidance", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 20_000 });
+		state.selectedMode = null;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [user("small task")]),
+				ctx,
+			),
+		).toBeUndefined();
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("cancels a provider-confirmed overflow on a split turn with no prefix", async () => {
