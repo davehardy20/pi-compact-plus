@@ -1,0 +1,111 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { measureSummaryRequestTokens } from "../src/summarization-request-budget.js";
+
+type SummaryModel = Parameters<typeof generateSummaryWithUsage>[1];
+
+function model(contextWindow = 200_000, maxTokens = 4096): SummaryModel {
+	return {
+		id: "budget-model",
+		provider: "budget-test",
+		api: "openai-completions",
+		contextWindow,
+		maxTokens,
+	} as SummaryModel;
+}
+
+function user(text: string): AgentMessage {
+	return { role: "user", content: text, timestamp: 1 } as AgentMessage;
+}
+
+const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+afterEach(() => {
+	fetchSpy.mockClear();
+});
+
+describe("measureSummaryRequestTokens", () => {
+	it("measures the whole summarisation request without any network call", async () => {
+		const measurement = await measureSummaryRequestTokens({
+			messages: [user(`Task: repair login.\n${"detail ".repeat(500)}`)],
+			model: model(),
+			reserveTokens: 16_384,
+		});
+
+		expect(measurement).toBeDefined();
+		const total = measurement?.totalTokens ?? 0;
+		const transcript = measurement?.transcriptTokens ?? 0;
+		const output = measurement?.reservedOutputTokens ?? 0;
+		expect(Number.isSafeInteger(total)).toBe(true);
+		expect(total).toBe(transcript + output);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("reserves the same output budget Pi reserves for the summary", async () => {
+		const measurement = await measureSummaryRequestTokens({
+			messages: [user("short")],
+			model: model(200_000, 8192),
+			reserveTokens: 16_384,
+		});
+
+		expect(measurement?.reservedOutputTokens).toBe(
+			Math.min(Math.floor(0.8 * 16_384), 8192),
+		);
+	});
+
+	it("grows with the transcript it has to summarise", async () => {
+		const small = await measureSummaryRequestTokens({
+			messages: [user("short task")],
+			model: model(),
+			reserveTokens: 16_384,
+		});
+		const large = await measureSummaryRequestTokens({
+			messages: [user(`Task: repair login.\n${"old context ".repeat(60_000)}`)],
+			model: model(),
+			reserveTokens: 16_384,
+		});
+
+		expect(small?.totalTokens).toBeLessThan(large?.totalTokens ?? 0);
+	});
+
+	it("counts the carried-forward previous summary", async () => {
+		const without = await measureSummaryRequestTokens({
+			messages: [user("short task")],
+			model: model(),
+			reserveTokens: 16_384,
+		});
+		const withSummary = await measureSummaryRequestTokens({
+			messages: [user("short task")],
+			model: model(),
+			reserveTokens: 16_384,
+			previousSummary: "## Prior summary\n".repeat(400),
+		});
+
+		expect(withSummary?.totalTokens).toBeGreaterThan(without?.totalTokens ?? 0);
+	});
+
+	it("returns undefined when the request cannot be measured", async () => {
+		const messages = [user("short task")];
+		const unusable: Array<{
+			model: SummaryModel | null;
+			reserveTokens: unknown;
+		}> = [
+			{ model: null, reserveTokens: 16_384 },
+			{ model: model(), reserveTokens: 0 },
+			{ model: model(), reserveTokens: undefined },
+			{ model: model(), reserveTokens: 1.5 },
+			{ model: { ...model(), contextWindow: 0 }, reserveTokens: 16_384 },
+			{ model: { ...model(), maxTokens: -1 }, reserveTokens: 16_384 },
+		];
+		for (const entry of unusable) {
+			await expect(
+				measureSummaryRequestTokens({
+					messages,
+					model: entry.model,
+					reserveTokens: entry.reserveTokens,
+				}),
+			).resolves.toBeUndefined();
+		}
+	});
+});

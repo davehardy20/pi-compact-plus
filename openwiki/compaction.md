@@ -93,15 +93,28 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 
 `CompactionCoordinator.onSessionBeforeCompact(event, ctx)` (`src/compaction-coordinator.ts`):
 
-1. Read `state.selectedMode` — if null, return `undefined` (let Pi handle natively).
+1. Read `state.selectedMode` — if null, run `guardNativeSummarizationRequest()` first: measure the exact request Pi is about to send and `{ cancel: true }` when it cannot fit the model context window, otherwise return `undefined` (Pi handles natively).
 2. Extract focus from the active session projection (`currentProjectedMessages(ctx)` in `src/session-projection.ts`) — Pi omits retained messages from `preparation.messagesToSummarize`, and an empty projection is authoritative.
 3. Abort check (`event.signal`/`ctx.signal`) → `cancelAbortedCompaction()`. Intent-evidence overflow → cancel with warning.
 4. Resolve compatibility: `resolveCompactionRuntimeCompatibility({ event, modelRegistry: ctx.modelRegistry })` (`src/compaction-coordinator.ts`).
 5. Build telemetry base.
-6. **If execution path is `native-fallback`**: Set `pendingCompaction` with fallback reason, persist, notify warning, return `undefined` (Pi does native compaction).
+6. **If execution path is `native-fallback`**: Set `pendingCompaction` with fallback reason, persist, notify warning, then guard the deferred payload the same way — `{ cancel: true }` when it cannot fit, otherwise return `undefined` (Pi does native compaction).
 7. **Otherwise**: Call `runCustomCompaction(preparation, mode, ctx, compatibility, event.signal, { focus, customInstructions })`; a post-run abort check cancels before applying any result.
    - **Success**: Return `{ compaction: { ...result, details: { mode, triggerReason, ... } } }`.
+   - **Request overflow** (`attempt.requestOverflow`): `cancelCustom()` with a warning. Do **not** fall back to native Pi compaction — it would serialize the same oversized cut and fail identically.
    - **Failure**: Fall back to native, set `lastFallbackReason`, notify warning.
+
+## Summarization request measurement (`src/summarization-request-budget.ts`)
+
+`measureSummaryRequestTokens({ messages, model, reserveTokens, customInstructions, previousSummary, thinkingLevel })` returns `{ transcriptTokens, reservedOutputTokens, totalTokens }` for the exact request Pi would send, or `undefined` when the request cannot be measured. It calls the public `generateSummaryWithUsage()` and throws from the injected stream function, so the assembled context and the clamped `maxTokens` are captured before any registry, credential, transport, or network work happens (tests assert `fetch` is never called).
+
+`totalTokens` is what the provider must fit in one request: transcript plus reserved output. Estimates are character-based (`estimateTokens`), so they are a lower bound for dense content; a measurement above `contextWindow` means "cannot fit", not a precise token count. This is the same primitive used by the intent-evidence budget in `src/compaction-intent.ts` and by the native-path guard in `src/compaction-coordinator.ts`.
+
+## Summarization overflow classification (`src/summarization-overflow.ts`)
+
+`classifySummarizationFailure(error)` returns `"context-overflow"`, `"output-cap"`, or `"provider-error"`, and `summarizationFailureReason()` maps the first two to stable reason constants. Pi's own `OVERFLOW_PATTERNS` does not match the local llama.cpp-style wording (`prompt (300932 tokens) + max tokens (1) exceeds the context (262144)`), and the error is not retryable either, so without local classification it is flattened to a generic provider error and the identical oversized payload is handed straight back to native Pi compaction.
+
+Classification only: reason strings are stable constants and never embed provider text, digits, or credentials, so they stay safe for telemetry and UI. `runCustomCompaction()` marks the attempt with `requestOverflow: true`; the coordinator then cancels instead of deferring.
 
 ## Compatibility resolution (`src/compatibility.ts`)
 
@@ -215,7 +228,10 @@ npx vitest run test/lifecycle.test.ts           # executeCompaction lifecycle
 npx vitest run test/compatibility.test.ts       # stream route selection (session/registry/native fallback)
 npx vitest run test/compaction-runtime-contract.test.ts  # real compact() helper through the registry route
 npx vitest run test/provider-boundary-087.test.ts  # skipUnless a host Pi 0.87 install exists: routes the real Pi 0.87 compact() helper through runCustomCompaction to a custom provider with request-time auth, no network
-npx vitest run test/compact-run-custom-compaction.test.ts  # runCustomCompaction: auth forwarding, aborts, schema validation, normalization, native fallback
+npx vitest run test/compact-run-custom-compaction.test.ts  # runCustomCompaction: auth forwarding, aborts, schema validation, normalization, native fallback, summarization overflow classification
+npx vitest run test/summarization-overflow.test.ts  # provider failure classification (context overflow, output cap, provider error)
+npx vitest run test/summarization-request-budget.test.ts  # network-free measurement of the exact summarization request
+npx vitest run test/compaction-overflow-recovery.test.ts  # coordinator: overflow cancels instead of deferring to native, native payload guard
 npx vitest run test/summary-provenance.test.ts  # persisted-summary detection + schema provenance
 npx vitest run test/snapshot-evidence.test.ts   # Session evidence extraction
 npx vitest run test/session-branch-view.test.ts # Branch view projection

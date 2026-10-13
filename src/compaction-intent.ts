@@ -1,9 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-	estimateTokens,
-	generateSummaryWithUsage,
-} from "@earendil-works/pi-coding-agent";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
+import {
+	measureSummaryRequestTokens,
+	type SummaryModel,
+	type SummaryThinking,
+} from "./summarization-request-budget.js";
 import { CONTINUATION_PROMPT, type CurrentFocus } from "./types.js";
 
 interface IntentPreparation {
@@ -14,8 +16,6 @@ interface IntentPreparation {
 	settings: { reserveTokens: number };
 }
 
-type SummaryModel = Parameters<typeof generateSummaryWithUsage>[1];
-type SummaryThinking = Parameters<typeof generateSummaryWithUsage>[8];
 type UnifiedPreparation<T extends IntentPreparation> = Omit<
 	T,
 	"messagesToSummarize" | "turnPrefixMessages" | "isSplitTurn"
@@ -128,57 +128,31 @@ export async function prepareBudgetedCompactionFocus<
 				}
 			: undefined,
 	};
-	const marker = new Error("Compact+ local request-budget capture");
-	let captures = 0;
-	let totalTokens: number | undefined;
 	let renderedInstructions: string | undefined;
 	try {
 		renderedInstructions = options.renderInstructions(focus);
-		if (
-			typeof renderedInstructions !== "string" ||
-			!renderedInstructions.trim()
-		) {
-			return reject();
-		}
-		await generateSummaryWithUsage(
-			source,
-			model,
-			reserve,
-			undefined,
-			undefined,
-			undefined,
-			renderedInstructions,
-			preparation.previousSummary,
-			options.thinkingLevel,
-			(_model, context, requestOptions) => {
-				captures++;
-				const output = requestOptions?.maxTokens;
-				if (
-					Number.isSafeInteger(output) &&
-					(output ?? 0) > 0 &&
-					context.messages.some((message) => message.role === "system")
-				) {
-					totalTokens = context.messages.reduce(
-						(total, message) => total + estimateTokens(message),
-						output ?? 0,
-					);
-				}
-				// No registry, credentials, transport, provider, or network call.
-				// Undefined retry yields one attempt. Wrapped markers fail closed.
-				throw marker;
-			},
-		);
+	} catch {
 		return reject();
-	} catch (error) {
-		if (
-			error !== marker ||
-			captures !== 1 ||
-			!Number.isSafeInteger(totalTokens) ||
-			(totalTokens ?? -1) < 0 ||
-			(totalTokens ?? Number.POSITIVE_INFINITY) > model.contextWindow
-		) {
-			return reject();
-		}
+	}
+	if (
+		typeof renderedInstructions !== "string" ||
+		!renderedInstructions.trim()
+	) {
+		return reject();
+	}
+	const measurement = await measureSummaryRequestTokens({
+		messages: source,
+		model,
+		reserveTokens: reserve,
+		customInstructions: renderedInstructions,
+		previousSummary: preparation.previousSummary,
+		thinkingLevel: options.thinkingLevel,
+	});
+	// No registry, credentials, transport, provider, or network call happens
+	// during the capture. An unmeasurable request fails closed: never hand an
+	// unchecked cut to a provider.
+	if (!measurement || measurement.totalTokens > model.contextWindow) {
+		return reject();
 	}
 	return { focus, preparation: unified, renderedInstructions };
 }

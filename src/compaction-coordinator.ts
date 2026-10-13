@@ -25,6 +25,8 @@ import { extractTextContent } from "./session-evidence.js";
 import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
+import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "./summarization-overflow.js";
+import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
 import {
 	type CompactionMode,
 	type CompactionTelemetry,
@@ -35,6 +37,12 @@ import {
 
 const INTENT_OVERFLOW_WARNING =
 	"Compact+ intent evidence exceeds the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
+
+const SUMMARIZATION_OVERFLOW_WARNING =
+	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";
+
+const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
+	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
@@ -89,6 +97,53 @@ export class CompactionCoordinator {
 		this.state.clearPendingCompaction();
 		this.state.lastFallbackReason = "compaction aborted";
 		return { cancel: true };
+	}
+
+	/**
+	 * Pi's own threshold path (contextWindow - reserveTokens) compacts without
+	 * asking Compact+, and Compact+'s intent-evidence cancel clears selectedMode,
+	 * so every later attempt goes native and unguarded. Measure the exact request
+	 * Pi is about to send and report whether the transcript alone cannot fit.
+	 */
+	private async nativeSummarizationRequestOverflows(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+	): Promise<boolean> {
+		const model = ctx.model;
+		const preparation = event.preparation;
+		const messages = preparation?.messagesToSummarize;
+		if (!model || !Array.isArray(messages) || messages.length === 0) {
+			return false;
+		}
+		const measurement = await measureSummaryRequestTokens({
+			messages,
+			model,
+			reserveTokens: preparation.settings?.reserveTokens,
+			customInstructions:
+				typeof event.customInstructions === "string"
+					? event.customInstructions
+					: undefined,
+			previousSummary: preparation.previousSummary,
+		});
+		// Fail open when the request cannot be measured: a missing measurement
+		// must not silently disable compaction altogether.
+		if (!measurement || measurement.totalTokens <= model.contextWindow) {
+			return false;
+		}
+		this.state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		if (ctx.hasUI) {
+			ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
+		}
+		return true;
+	}
+
+	private async guardNativeSummarizationRequest(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+	): Promise<SessionBeforeCompactResultLike | undefined> {
+		return (await this.nativeSummarizationRequestOverflows(event, ctx))
+			? { cancel: true }
+			: undefined;
 	}
 
 	async handleManualCommand(
@@ -364,7 +419,7 @@ export class CompactionCoordinator {
 		const mode = this.state.selectedMode;
 
 		if (!mode) {
-			return undefined;
+			return await this.guardNativeSummarizationRequest(event, ctx);
 		}
 
 		const epoch = this.state.currentCompactionEpoch;
@@ -440,6 +495,11 @@ export class CompactionCoordinator {
 				);
 			}
 
+			// Deferring is still sending the same payload. Guard it too.
+			if (await this.nativeSummarizationRequestOverflows(event, ctx)) {
+				return { cancel: true };
+			}
+
 			return undefined;
 		}
 
@@ -492,6 +552,17 @@ export class CompactionCoordinator {
 				overflow
 					? "intent evidence exceeds safety budget"
 					: (attempt.fallbackReason ?? "custom compaction cancelled"),
+			);
+		}
+
+		if (attempt.requestOverflow) {
+			// The cut itself is oversized. Native Pi compaction would serialize the
+			// same transcript and fail identically, so decline instead of deferring.
+			if (ctx.hasUI) {
+				ctx.ui.notify(SUMMARIZATION_OVERFLOW_WARNING, "warning");
+			}
+			return cancelCustom(
+				attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 			);
 		}
 

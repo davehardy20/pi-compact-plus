@@ -14,6 +14,10 @@ import {
 } from "./pi-messages.js";
 import { buildSummaryInstructions } from "./prompts.js";
 import {
+	classifySummarizationFailure,
+	summarizationFailureReason,
+} from "./summarization-overflow.js";
+import {
 	CRITICAL_HEADINGS,
 	FENCED_EXAMPLE_OMISSION,
 	isSubstantiveCriticalLine,
@@ -29,6 +33,11 @@ export interface CompactionAttemptResult {
 	fallbackReason: string | null;
 	/** Decline stale or oversized custom work; never fall back using this cut. */
 	cancel?: true;
+	/**
+	 * The summarization request itself could not fit the model context window.
+	 * Retrying the same cut through any other path would fail identically.
+	 */
+	requestOverflow?: true;
 	classifiedCounts?: {
 		critical: number;
 		contextual: number;
@@ -667,9 +676,20 @@ export async function runCustomCompaction(
 			result,
 			getCompactionClassifiedCounts(prepared, mode),
 		);
-	} catch {
-		return requestSignal?.aborted
-			? { result: undefined, fallbackReason: "compaction aborted" }
-			: compactErrorResult();
+	} catch (error) {
+		if (requestSignal?.aborted) {
+			return { result: undefined, fallbackReason: "compaction aborted" };
+		}
+		// Classify before flattening: losing the overflow shape is what lets an
+		// identical oversized payload be re-sent by the native fallback path.
+		const reason = summarizationFailureReason(
+			classifySummarizationFailure(error),
+		);
+		if (!reason) return compactErrorResult();
+		return {
+			result: undefined,
+			fallbackReason: reason,
+			requestOverflow: true,
+		};
 	}
 }
