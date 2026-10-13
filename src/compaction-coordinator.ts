@@ -110,10 +110,10 @@ export class CompactionCoordinator {
 	}
 
 	/**
-	 * Measure each request Pi would send and return the stable overflow reason
-	 * when one of them cannot fit. Pure: no state or UI effects, so each call site
-	 * owns its own consequences. The verdict is cached for an unchanged cut so a
-	 * permanently oversized session is not re-serialized on every attempt.
+	 * Measure each request Pi would send and return the stable overflow reason when
+	 * one cannot fit. Pure: no state or UI effects, so each call site owns its
+	 * consequences. The verdict is cached per unchanged cut so a permanently
+	 * oversized session is not re-serialized every attempt.
 	 */
 	private async detectSummarizationRequestOverflow(
 		event: SessionBeforeCompactEvent,
@@ -132,9 +132,11 @@ export class CompactionCoordinator {
 		}
 		const key = this.summarizationCutKey(event, ctx);
 		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
-		// Cheap pre-filter before serializing anything: the summarized cut is a
-		// subset of the live session, so when Pi reports the whole session fitting
-		// inside the window minus the reserve, no cut of it can overflow.
+		// Fail-open fast path before serializing: the cut is a subset of the live
+		// session, so while Pi reports the whole session fitting inside
+		// `contextWindow - reserveTokens` the guard is skipped. Sound only while
+		// prompt + custom instructions stay under the remaining
+		// `0.2 * reserveTokens`; it can skip the guard, never add a cancel.
 		const usage = this.getEffectiveUsage(ctx);
 		if (
 			Number.isSafeInteger(usage?.tokens) &&
@@ -194,6 +196,30 @@ export class CompactionCoordinator {
 		return reason;
 	}
 
+	/** Content discriminator: message counts alone let an in-place shrink reuse a
+	 * stale verdict. Cheap character totals only; never logged or persisted. */
+	private cutContentChars(
+		preparation: SessionBeforeCompactEvent["preparation"],
+	): number {
+		let chars = 0;
+		for (const list of [
+			preparation?.messagesToSummarize ?? [],
+			preparation?.turnPrefixMessages ?? [],
+		]) {
+			for (const message of list) {
+				const content = (message as { content?: unknown }).content;
+				if (typeof content === "string") chars += content.length;
+				else if (Array.isArray(content)) {
+					for (const part of content) {
+						const text = (part as { text?: unknown })?.text;
+						if (typeof text === "string") chars += text.length;
+					}
+				}
+			}
+		}
+		return chars;
+	}
+
 	private summarizationCutKey(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
@@ -203,14 +229,15 @@ export class CompactionCoordinator {
 			typeof event.customInstructions === "string"
 				? event.customInstructions
 				: "";
-		// Length alone would treat two different guidance strings of the same size
-		// as the same cut. This key is internal: it is never logged or persisted.
+		// Length alone would treat two guidance strings of the same size as the same
+		// cut. Internal key: never logged or persisted.
 		return [
 			ctx.sessionManager.getSessionId(),
 			ctx.sessionManager.getLeafId(),
 			modelKey(ctx.model),
 			preparation?.messagesToSummarize?.length ?? 0,
 			preparation?.turnPrefixMessages?.length ?? 0,
+			this.cutContentChars(preparation),
 			preparation?.isSplitTurn ? "split" : "single",
 			instructions.length,
 			instructions.slice(0, 32),
@@ -669,9 +696,11 @@ export class CompactionCoordinator {
 		}
 
 		if (attempt.requestOverflow) {
-			// Compact+ merges the split-turn slices into one request, while Pi sends
-			// them separately with smaller budgets, so Compact+'s failure is only
-			// authoritative for the payload Pi would actually send.
+			// Compact+ sends a superset of what Pi would send: its rendered
+			// instructions carry intent evidence Pi never sends. On a split turn it
+			// also merges slices Pi sends separately, so there the failure is only
+			// authoritative after re-measuring Pi's own requests. For a single slice
+			// the superset is treated as authoritative and the attempt is cancelled.
 			let nativeOverflow: string | null;
 			if (event.preparation?.isSplitTurn) {
 				nativeOverflow = await this.detectSummarizationRequestOverflow(
@@ -680,7 +709,7 @@ export class CompactionCoordinator {
 				);
 			} else {
 				// The kill switch must restore native compaction even when Compact+
-				// confirmed an overflow of the payload Pi would send unchanged.
+				// confirmed an overflow of a payload that contains Pi's unchanged cut.
 				nativeOverflow =
 					this.thresholdSettings.guardNativeCompaction === false
 						? null

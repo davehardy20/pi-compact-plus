@@ -157,9 +157,8 @@ export async function prepareBudgetedCompactionFocus<
 	if (!measurement) return reject();
 	if (measurement.totalTokens > model.contextWindow) {
 		// Separate transcript-driven from evidence-driven rejection: re-measure the
-		// same cut carrying no custom instructions. When it still cannot fit, the
-		// transcript is the cause, not the intent evidence Compact+ chose to add.
-		// Only an evidence-driven rejection is an intent-evidence decline.
+		// same cut carrying no custom instructions. If it still cannot fit, the
+		// transcript is the cause, not the evidence Compact+ chose to add.
 		const baseline = await measureSummaryRequestTokens({
 			messages: source,
 			model,

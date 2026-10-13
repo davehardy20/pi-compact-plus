@@ -79,8 +79,8 @@ describe("measureSummaryRequestTokens", () => {
 			reservedOutputTokens: 120_000,
 		});
 
-		// Pi sends min(fraction * reserveTokens, model.maxTokens). The measurement
-		// must model that request, not the unclamped fraction the caller named.
+		// Pi sends min(fraction * reserveTokens, model.maxTokens); the measurement
+		// must model that, not the unclamped fraction the caller named.
 		expect(measurement?.reservedOutputTokens).toBe(4096);
 		expect(measurement?.totalTokens).toBe(
 			(measurement?.transcriptTokens ?? 0) + 4096,

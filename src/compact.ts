@@ -634,7 +634,7 @@ export async function runCustomCompaction(
 		if (budgeted.transcriptOverflow) {
 			// The cut itself cannot fit Compact+'s merged request. Report it as a
 			// request overflow so the coordinator judges it against the payload Pi
-			// actually sends, instead of blaming intent evidence that was never added.
+			// sends, not against intent evidence that was never added.
 			return {
 				result: undefined,
 				fallbackReason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,

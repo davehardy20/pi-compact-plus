@@ -27,11 +27,10 @@ export interface SummaryRequestMeasurement {
  * transport, or network work happens.
  *
  * Estimates come from `estimateTokens` (characters / 4), so they can err in
- * either direction: dense content such as base64 or minified JSON tokenizes
- * denser than 4 chars/token, prose with punctuation and markup tokenizes
- * sparser. The guard only trips above the full `contextWindow`, not Pi's
- * `contextWindow - reserveTokens` compaction trigger, which is what keeps a
- * false-positive cancel unlikely.
+ * either direction: base64 or minified JSON tokenizes denser than 4 chars/token,
+ * prose with punctuation and markup sparser. The guard trips only above the full
+ * `contextWindow`, not Pi's `contextWindow - reserveTokens` trigger, which is
+ * what keeps a false-positive cancel unlikely.
  */
 export async function measureSummaryRequestTokens(options: {
 	messages: AgentMessage[];

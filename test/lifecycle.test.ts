@@ -393,9 +393,8 @@ describe("executeCompaction stale extension context handling", () => {
 
 		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
 			({ onError }: { onError?: (error: Error) => void }) => {
-				// Steady state: the guard declines the same oversized cut during
-				// every attempt, so the reason string never changes and the stamp is
-				// re-recorded inside this attempt.
+				// Steady state: the guard declines the same cut every attempt, so the
+				// stamp is re-recorded inside this attempt.
 				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 				state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 				if (onError) onError(new Error("Compaction cancelled"));
@@ -422,8 +421,8 @@ describe("executeCompaction stale extension context handling", () => {
 
 	it("delivers the notice when only an earlier attempt in the same session reported an overflow", () => {
 		const state = new CompactionState();
-		// Same epoch, because the epoch only moves on a session transition. The
-		// stamp belongs to the earlier attempt, not to this one.
+		// Same epoch: it only moves on a session transition, and the stamp belongs
+		// to the earlier attempt, not this one.
 		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 		const ctx = createMockCtx();

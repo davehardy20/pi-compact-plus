@@ -197,8 +197,8 @@ describe("runCustomCompaction characterization", () => {
 			ctx,
 			compatibility(),
 		);
-		// The cut itself cannot fit and no intent evidence was added, so this is
-		// not an intent-evidence decline: the coordinator can still defer to native.
+		// The cut itself cannot fit and no evidence was added, so the coordinator
+		// can still defer to native.
 		expect(attempt.requestOverflow).toBe(true);
 		expect(attempt.cancel).toBeUndefined();
 		expect(attempt.fallbackReason).toBe(SUMMARIZATION_CONTEXT_OVERFLOW_REASON);

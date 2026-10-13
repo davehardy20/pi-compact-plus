@@ -137,6 +137,9 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
+		// Asymmetry is intentional: Compact+ sends a superset of what Pi sends (its
+		// rendered instructions carry intent evidence Pi never sends), so a
+		// provider-confirmed overflow cancels even though Pi's own cut would fit.
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [user("Task: repair login.")]),
 			ctx,
@@ -276,8 +279,8 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		const coordinator = createCoordinator(state);
 		state.selectedMode = null;
 
-		// Each request fits on its own. Only the combined cut would overflow, and
-		// Pi never sends the combined cut on a split turn.
+		// Each request fits alone; only the combined cut would overflow, and Pi never
+		// sends a combined cut on a split turn.
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [user("a".repeat(700_000))], {
 				splitTurn: true,
@@ -317,9 +320,9 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
 		state.selectedMode = "standard";
 
-		// Compact+'s merged request cannot fit, and no intent evidence was added:
-		// the transcript is the cause. Pi sends each slice separately, and each
-		// slice fits, so this is not an intent-evidence decline.
+		// The merged request cannot fit and no evidence was added: the transcript is
+		// the cause. Pi sends each slice separately and each fits, so this is not an
+		// intent-evidence decline.
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [user("a".repeat(1_200_000))], {
 				splitTurn: true,
@@ -335,6 +338,28 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			expect.stringContaining("intent evidence"),
 			"warning",
 		);
+	});
+
+	it("re-measures a cut that shrinks in place instead of reusing a stale verdict", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [user("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+
+		// Same session, leaf, model, and message count; only the content shrank.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [user("x".repeat(200_000))]),
+				ctx,
+			),
+		).toBeUndefined();
 	});
 
 	it("warns once per unchanged cut", async () => {
