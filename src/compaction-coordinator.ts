@@ -79,6 +79,13 @@ export class CompactionCoordinator {
 	) => EffectiveUsage | null;
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
 	private readonly disableAutoCompaction: boolean;
+	/** Cached verdict for the last measured cut, so an oversized session is not
+	 * re-measured and re-notified on every attempt. */
+	private overflowVerdict: {
+		key: string;
+		reason: string | null;
+		notified: boolean;
+	} | null = null;
 
 	constructor({
 		state,
@@ -108,7 +115,9 @@ export class CompactionCoordinator {
 	/**
 	 * Measure each request Pi would send and return the stable overflow reason
 	 * when one of them cannot fit. Pure: no state or UI effects, so each call
-	 * site owns its own consequences.
+	 * site owns its own consequences. The verdict is cached for an unchanged cut
+	 * so a permanently oversized session does not re-serialize the whole region
+	 * on every attempt.
 	 */
 	private async detectSummarizationRequestOverflow(
 		event: SessionBeforeCompactEvent,
@@ -125,12 +134,19 @@ export class CompactionCoordinator {
 		) {
 			return null;
 		}
+		const key = this.summarizationCutKey(event, ctx);
+		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
 		// Pi issues one request per preparation slice. On a split turn the history
-		// cut and the turn prefix are summarized separately, each with its own
-		// output budget, so only an individual request that cannot fit is a cancel.
-		const requests: { messages: AgentMessage[]; output?: number }[] = [];
+		// cut and the turn prefix are summarized separately: the prefix request
+		// carries no custom instructions or previous summary and reserves
+		// floor(0.5 * reserveTokens), matching Pi's private generateTurnPrefixSummary.
+		const requests: {
+			messages: AgentMessage[];
+			output?: number;
+			wrapper: boolean;
+		}[] = [];
 		const history = preparation.messagesToSummarize ?? [];
-		if (history.length > 0) requests.push({ messages: history });
+		if (history.length > 0) requests.push({ messages: history, wrapper: true });
 		const prefix = preparation.turnPrefixMessages ?? [];
 		if (preparation.isSplitTurn && prefix.length > 0) {
 			requests.push({
@@ -139,6 +155,7 @@ export class CompactionCoordinator {
 					Math.floor(0.5 * (reserve as number)),
 					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 				),
+				wrapper: false,
 			});
 		}
 		const customInstructions =
@@ -146,23 +163,66 @@ export class CompactionCoordinator {
 				? event.customInstructions
 				: undefined;
 		const signal = event.signal ?? ctx.signal;
+		let reason: string | null = null;
 		for (const request of requests) {
 			const measurement = await measureSummaryRequestTokens({
 				messages: request.messages,
 				model,
 				reserveTokens: reserve,
 				reservedOutputTokens: request.output,
-				customInstructions,
-				previousSummary: preparation.previousSummary,
+				customInstructions: request.wrapper ? customInstructions : undefined,
+				previousSummary: request.wrapper
+					? preparation.previousSummary
+					: undefined,
 				signal,
 			});
 			// Fail open when a request cannot be measured: a missing measurement
 			// must not silently disable compaction altogether.
 			if (measurement && measurement.totalTokens > model.contextWindow) {
-				return SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				reason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				break;
 			}
 		}
-		return null;
+		this.overflowVerdict = { key, reason, notified: false };
+		return reason;
+	}
+
+	private summarizationCutKey(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+	): string {
+		const preparation = event.preparation;
+		return [
+			ctx.sessionManager.getSessionId(),
+			ctx.sessionManager.getLeafId(),
+			modelKey(ctx.model),
+			preparation?.messagesToSummarize?.length ?? 0,
+			preparation?.turnPrefixMessages?.length ?? 0,
+			preparation?.isSplitTurn ? "split" : "single",
+			typeof event.customInstructions === "string"
+				? event.customInstructions.length
+				: 0,
+		].join(":");
+	}
+
+	/** Record the decline, and warn at most once for an unchanged cut. */
+	private reportSummarizationOverflow(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+		reason: string,
+		warning: string,
+	): void {
+		this.state.lastFallbackReason = reason;
+		const key = this.summarizationCutKey(event, ctx);
+		if (this.overflowVerdict?.key === key) {
+			if (this.overflowVerdict.notified) return;
+			this.overflowVerdict.notified = true;
+		} else {
+			this.overflowVerdict = { key, reason, notified: true };
+		}
+		if (ctx.hasUI) {
+			ctx.ui.notify(warning, "warning");
+		}
 	}
 
 	private async guardNativeSummarizationRequest(
@@ -171,10 +231,12 @@ export class CompactionCoordinator {
 	): Promise<SessionBeforeCompactResultLike | undefined> {
 		const reason = await this.detectSummarizationRequestOverflow(event, ctx);
 		if (!reason) return undefined;
-		this.state.lastFallbackReason = reason;
-		if (ctx.hasUI) {
-			ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
-		}
+		this.reportSummarizationOverflow(
+			event,
+			ctx,
+			reason,
+			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+		);
 		return { cancel: true };
 	}
 
@@ -533,10 +595,12 @@ export class CompactionCoordinator {
 				ctx,
 			);
 			if (deferredOverflow) {
-				this.state.lastFallbackReason = deferredOverflow;
-				if (ctx.hasUI) {
-					ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
-				}
+				this.reportSummarizationOverflow(
+					event,
+					ctx,
+					deferredOverflow,
+					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+				);
 				return { cancel: true };
 			}
 
@@ -596,21 +660,26 @@ export class CompactionCoordinator {
 		}
 
 		if (attempt.requestOverflow) {
-			// The cut itself is oversized. Native Pi compaction would serialize the
-			// same transcript and fail identically, so decline instead of deferring.
-			const outputCap =
-				attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON;
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					outputCap
+			// Compact+ merges the split-turn slices into one request, while Pi sends
+			// them separately with smaller budgets. Compact+'s failure is only
+			// authoritative for the payload Pi would actually send, so gate the
+			// decline on that measurement instead of on the merged attempt.
+			const nativeOverflow = event.preparation?.isSplitTurn
+				? await this.detectSummarizationRequestOverflow(event, ctx)
+				: (attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON);
+			if (nativeOverflow) {
+				this.reportSummarizationOverflow(
+					event,
+					ctx,
+					nativeOverflow,
+					nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
 						? SUMMARIZATION_OUTPUT_CAP_WARNING
 						: SUMMARIZATION_OVERFLOW_WARNING,
-					"warning",
 				);
+				return cancelCustom(nativeOverflow);
 			}
-			return cancelCustom(
-				attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-			);
+			// Otherwise Pi's separate requests are estimated to fit: fall through to
+			// the native deferral below instead of discarding the compaction.
 		}
 
 		if (attempt.result) {
@@ -675,9 +744,12 @@ export class CompactionCoordinator {
 			ctx,
 		);
 		if (fallbackOverflow) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(NATIVE_SUMMARIZATION_OVERFLOW_WARNING, "warning");
-			}
+			this.reportSummarizationOverflow(
+				event,
+				ctx,
+				fallbackOverflow,
+				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+			);
 			return cancelCustom(fallbackOverflow);
 		}
 

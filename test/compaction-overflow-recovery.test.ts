@@ -291,6 +291,42 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
+	it("defers to native when only Compact+'s merged split-turn request overflowed", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 400_000 });
+		const coordinator = createCoordinator(state);
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		// Compact+ merges both slices into one request. Pi sends them separately.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("a".repeat(700_000))], {
+				splitTurn: true,
+				prefix: [user("b".repeat(700_000))],
+			}),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+	});
+
+	it("warns once per unchanged cut", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state);
+		state.selectedMode = null;
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+	});
+
 	it("leaves the native path alone when the guard is disabled", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });

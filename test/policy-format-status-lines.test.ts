@@ -40,6 +40,7 @@ describe("formatStatusLines characterization", () => {
 			"    percent checkpoint=65% standard=70% hard=90%",
 			"    tokens checkpoint=185,000 standard=200,000 hard=260,000",
 			"    cooldown=120s",
+			"    guard-native-compaction=on",
 			"  Config reload: threshold/cooldown changes require /reload or restart",
 			"  Selected mode: none",
 			"  Cooldown: ready",
@@ -71,7 +72,7 @@ describe("formatStatusLines characterization", () => {
 						standardThresholdTokens: 220_000,
 						hardThresholdTokens: 280_000,
 						cooldownMs: 30_000,
-						guardNativeCompaction: true,
+						guardNativeCompaction: false,
 					},
 				}),
 			),
@@ -87,6 +88,7 @@ describe("formatStatusLines characterization", () => {
 			"    percent checkpoint=50% standard=60% hard=80%",
 			"    tokens checkpoint=150,000 standard=220,000 hard=280,000",
 			"    cooldown=30s",
+			"    guard-native-compaction=off",
 			"  Config reload: threshold/cooldown changes require /reload or restart",
 			"  Selected mode: hard",
 			"  Cooldown: 2s remaining",
@@ -132,6 +134,7 @@ describe("formatStatusLines characterization", () => {
 			"    percent checkpoint=65% standard=70% hard=90%",
 			"    tokens checkpoint=185,000 standard=200,000 hard=260,000",
 			"    cooldown=120s",
+			"    guard-native-compaction=on",
 			"  Config reload: threshold/cooldown changes require /reload or restart",
 			"  Selected mode: none",
 			"  Cooldown: ready",
@@ -171,7 +174,7 @@ describe("formatStatusLines characterization", () => {
 			}),
 		);
 
-		expect(known).toHaveLength(16);
+		expect(known).toHaveLength(17);
 		expect(known).not.toContain(detail);
 		expect(tokensUnknown).toContain(detail);
 		expect(percentUnknown).toContain(detail);
@@ -248,7 +251,7 @@ describe("formatStatusLines characterization", () => {
 			}),
 		);
 
-		expect(lines.slice(15)).toEqual([
+		expect(lines.slice(16)).toEqual([
 			"  Last compaction: standard mode, command trigger, 0s ago",
 			"    Path: native-fallback (native Pi)",
 			`    Fallback: ${fallbackReason}`,
@@ -280,7 +283,7 @@ describe("formatStatusLines characterization", () => {
 			baseStatus({ lastFallbackReason: "custom compaction failed" }),
 		);
 
-		expect(completedWithoutEcho.slice(15)).toEqual([
+		expect(completedWithoutEcho.slice(16)).toEqual([
 			"  Last compaction: standard mode, message_end trigger, 0s ago",
 			"    Reason: automatic threshold",
 			"    Path: custom (Compact+)",

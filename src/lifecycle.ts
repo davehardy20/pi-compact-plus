@@ -1,8 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildSummaryInstructions } from "./prompts.js";
 import type { CompactionState } from "./state.js";
+import {
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
+} from "./summarization-overflow.js";
 import type { CompactionMode, CurrentFocus } from "./types.js";
 import { CONTINUATION_PROMPT } from "./types.js";
+
+/** Reasons the coordinator already surfaced with a precise warning. */
+const ALREADY_REPORTED_REASONS = new Set([
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
+]);
 
 /** Event-context type passed to Pi extension event handlers. Shared with
  * compaction-coordinator.ts — import from here rather than re-aliasing. */
@@ -145,6 +155,14 @@ export function executeCompaction(
 			state.echoInjected = false;
 			state.clearPendingCompaction();
 			options?.persist?.();
+			// The coordinator already reported a summarization overflow with a
+			// precise warning. A second "compaction failed" error would be duplicate
+			// and would name the wrong cause.
+			if (
+				state.lastFallbackReason &&
+				ALREADY_REPORTED_REASONS.has(state.lastFallbackReason)
+			)
+				return;
 			safeNotifyCompactionFailure(ctx, hadUI, error.message);
 		},
 	});

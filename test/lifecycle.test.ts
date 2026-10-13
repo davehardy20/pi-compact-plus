@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeCompaction } from "../src/lifecycle.js";
 import { CompactionState } from "../src/state.js";
+import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
 
 interface MockCtx {
 	hasUI: boolean;
@@ -351,6 +352,36 @@ function staleExtensionCtxError(): Error {
 }
 
 describe("executeCompaction stale extension context handling", () => {
+	it("suppresses the failure notice when the guard already reported an overflow", () => {
+		const state = new CompactionState();
+		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				if (onError) onError(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
 	it.each(["onComplete", "onError"] as const)(
 		"ignores %s from a previous session after state reset",
 		(callbackName) => {

@@ -239,6 +239,7 @@ function formatStatusCoreLines(
 		`    percent checkpoint=${settings.checkpointThresholdPercent}% standard=${settings.standardThresholdPercent}% hard=${settings.hardThresholdPercent}%`,
 		`    tokens checkpoint=${settings.checkpointThresholdTokens.toLocaleString()} standard=${settings.standardThresholdTokens.toLocaleString()} hard=${settings.hardThresholdTokens.toLocaleString()}`,
 		`    cooldown=${settings.cooldownMs / 1000}s`,
+		`    guard-native-compaction=${settings.guardNativeCompaction === false ? "off" : "on"}`,
 		"  Config reload: threshold/cooldown changes require /reload or restart",
 		`  Selected mode: ${formatOptionalMode(status.selectedMode)}`,
 		`  Cooldown: ${formatCooldown(status)}`,
