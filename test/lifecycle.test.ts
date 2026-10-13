@@ -352,7 +352,38 @@ function staleExtensionCtxError(): Error {
 }
 
 describe("executeCompaction stale extension context handling", () => {
-	it("suppresses the failure notice when the guard already reported an overflow", () => {
+	it("suppresses the failure notice when this attempt reported an overflow", () => {
+		const state = new CompactionState();
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				// The coordinator recorded the decline during this attempt.
+				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				if (onError) onError(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("still reports a failure when only an older attempt reported an overflow", () => {
 		const state = new CompactionState();
 		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		const ctx = createMockCtx();
@@ -379,7 +410,10 @@ describe("executeCompaction stale extension context handling", () => {
 			{ sendContinuation: false },
 		);
 
-		expect(ctx.ui.notify).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("provider request failed"),
+			"error",
+		);
 	});
 
 	it.each(["onComplete", "onError"] as const)(

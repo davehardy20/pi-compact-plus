@@ -136,10 +136,23 @@ export class CompactionCoordinator {
 		}
 		const key = this.summarizationCutKey(event, ctx);
 		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
+		// Cheap pre-filter before serializing anything: the summarized cut is a
+		// subset of the live session, so when Pi reports the whole session fitting
+		// inside the window minus the reserve, no cut of it can overflow.
+		const usage = this.getEffectiveUsage(ctx);
+		if (
+			Number.isSafeInteger(usage?.tokens) &&
+			(usage?.tokens ?? 0) > 0 &&
+			(usage?.tokens ?? 0) + (reserve as number) <= model.contextWindow
+		) {
+			return null;
+		}
 		// Pi issues one request per preparation slice. On a split turn the history
 		// cut and the turn prefix are summarized separately: the prefix request
 		// carries no custom instructions or previous summary and reserves
-		// floor(0.5 * reserveTokens), matching Pi's private generateTurnPrefixSummary.
+		// floor(0.5 * reserveTokens), matching Pi's output budget for that request.
+		// Pi's prefix prompt template itself is not reproduced here, so the prefix
+		// measurement is an approximation of that request.
 		const requests: {
 			messages: AgentMessage[];
 			output?: number;
@@ -213,14 +226,14 @@ export class CompactionCoordinator {
 		warning: string,
 	): void {
 		this.state.lastFallbackReason = reason;
-		const key = this.summarizationCutKey(event, ctx);
-		if (this.overflowVerdict?.key === key) {
-			if (this.overflowVerdict.notified) return;
-			this.overflowVerdict.notified = true;
-		} else {
-			this.overflowVerdict = { key, reason, notified: true };
-		}
 		if (ctx.hasUI) {
+			const key = this.summarizationCutKey(event, ctx);
+			if (this.overflowVerdict?.key === key) {
+				if (this.overflowVerdict.notified) return;
+				this.overflowVerdict.notified = true;
+			} else {
+				this.overflowVerdict = { key, reason, notified: true };
+			}
 			ctx.ui.notify(warning, "warning");
 		}
 	}
@@ -664,9 +677,20 @@ export class CompactionCoordinator {
 			// them separately with smaller budgets. Compact+'s failure is only
 			// authoritative for the payload Pi would actually send, so gate the
 			// decline on that measurement instead of on the merged attempt.
-			const nativeOverflow = event.preparation?.isSplitTurn
-				? await this.detectSummarizationRequestOverflow(event, ctx)
-				: (attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON);
+			let nativeOverflow: string | null;
+			if (event.preparation?.isSplitTurn) {
+				nativeOverflow = await this.detectSummarizationRequestOverflow(
+					event,
+					ctx,
+				);
+			} else {
+				// The kill switch must restore native compaction even when Compact+
+				// confirmed an overflow of the payload Pi would send unchanged.
+				nativeOverflow =
+					this.thresholdSettings.guardNativeCompaction === false
+						? null
+						: (attempt.fallbackReason ?? SUMMARIZATION_CONTEXT_OVERFLOW_REASON);
+			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
 					event,

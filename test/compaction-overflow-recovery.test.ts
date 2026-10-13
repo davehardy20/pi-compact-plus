@@ -73,7 +73,7 @@ function createCtx(options?: {
 
 function createCoordinator(
 	state: CompactionState,
-	options?: { guardNativeCompaction?: boolean },
+	options?: { guardNativeCompaction?: boolean; usageTokens?: number },
 ) {
 	return new CompactionCoordinator({
 		state,
@@ -85,7 +85,7 @@ function createCoordinator(
 		},
 		getEffectiveUsage: (): EffectiveUsage => ({
 			percent: 95,
-			tokens: 250_000,
+			tokens: options?.usageTokens ?? 250_000,
 			contextWindow: 262_144,
 			source: "native",
 		}),
@@ -127,7 +127,6 @@ function event(
 afterEach(() => {
 	compactMock.mockReset();
 	fetchSpy.mockClear();
-	vi.restoreAllMocks();
 });
 
 describe("CompactionCoordinator summarisation overflow handling", () => {
@@ -325,6 +324,45 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			cancel: true,
 		});
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+	});
+
+	it("hands compaction back to Pi when the guard is disabled", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, {
+			guardNativeCompaction: false,
+		});
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("Task: repair login.")]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+	});
+
+	it("skips the measurement when the whole session already fits", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 20_000 });
+		state.selectedMode = null;
+
+		// Pi reports the session well inside the window, so any cut of it fits.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("x".repeat(1_000_000))]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("records network calls, so the no-network assertions are not vacuous", async () => {
+		await globalThis.fetch("data:text/plain,ok");
+		expect(fetchSpy).toHaveBeenCalled();
 	});
 
 	it("leaves the native path alone when the guard is disabled", async () => {

@@ -113,6 +113,9 @@ export function executeCompaction(
 	state.selectedMode = mode;
 	state.isCompacting = true;
 	const compactionEpoch = state.currentCompactionEpoch;
+	// Only a decline recorded by this attempt counts as already reported. A stale
+	// overflow reason from an earlier attempt must not swallow a new failure.
+	const fallbackReasonAtStart = state.lastFallbackReason;
 	const hadUI = safeReadHasUI(ctx);
 
 	const instructions = buildSummaryInstructions(mode, focus);
@@ -160,6 +163,7 @@ export function executeCompaction(
 			// and would name the wrong cause.
 			if (
 				state.lastFallbackReason &&
+				state.lastFallbackReason !== fallbackReasonAtStart &&
 				ALREADY_REPORTED_REASONS.has(state.lastFallbackReason)
 			)
 				return;
