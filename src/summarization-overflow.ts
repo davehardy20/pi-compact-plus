@@ -1,14 +1,12 @@
 /**
  * Classification of summarization request failures.
  *
- * Pi's own overflow classifier does not recognise every provider shape. The
- * local llama.cpp-style server used for Compact+ sessions reports context
- * overflow as:
- *   prompt (300932 tokens) + max tokens (1) exceeds the context (262144)
- * which matches none of Pi's `OVERFLOW_PATTERNS` (`exceeds the context window`
- * requires the word "window"), and is not retryable either. Without a local
- * classification the failure is flattened to a generic provider error and the
- * identical oversized payload is handed straight back to native Pi compaction.
+ * Pi's overflow classifier misses some provider shapes. The local llama.cpp-style
+ * server reports `prompt (300932 tokens) + max tokens (1) exceeds the context
+ * (262144)`, which matches none of Pi's `OVERFLOW_PATTERNS` (they need the word
+ * "window") and is not retryable either. Unclassified, it flattens to a generic
+ * provider error and the identical oversized payload is handed straight back to
+ * native Pi compaction.
  *
  * Classification only: reasons are stable constants and never embed provider
  * text, so credentials or payload fragments cannot leak into telemetry.

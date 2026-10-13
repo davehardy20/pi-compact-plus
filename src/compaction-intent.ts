@@ -30,6 +30,8 @@ interface BudgetedIntent<T extends IntentPreparation> {
 	preparation: UnifiedPreparation<T>;
 	/** Reuse verbatim; absent on every failed or oversized capture. */
 	renderedInstructions?: string;
+	/** The cut itself cannot fit the window, with or without added intent evidence. */
+	transcriptOverflow?: true;
 }
 
 function overflowFocus(focus: CurrentFocus): CurrentFocus {
@@ -66,9 +68,10 @@ export async function prepareBudgetedCompactionFocus<
 		turnPrefixMessages: [],
 		isSplitTurn: false,
 	};
-	const reject = (): BudgetedIntent<T> => ({
+	const reject = (transcriptOverflow?: true): BudgetedIntent<T> => ({
 		focus: overflowFocus(originalFocus),
 		preparation: unified,
+		...(transcriptOverflow ? { transcriptOverflow } : {}),
 	});
 	const model = options.model;
 	const reserve = preparation.settings?.reserveTokens;
@@ -151,7 +154,22 @@ export async function prepareBudgetedCompactionFocus<
 	// No registry, credentials, transport, provider, or network call happens
 	// during the capture. An unmeasurable request fails closed: never hand an
 	// unchecked cut to a provider.
-	if (!measurement || measurement.totalTokens > model.contextWindow) {
+	if (!measurement) return reject();
+	if (measurement.totalTokens > model.contextWindow) {
+		// Separate transcript-driven from evidence-driven rejection: re-measure the
+		// same cut carrying no custom instructions. When it still cannot fit, the
+		// transcript is the cause, not the intent evidence Compact+ chose to add.
+		// Only an evidence-driven rejection is an intent-evidence decline.
+		const baseline = await measureSummaryRequestTokens({
+			messages: source,
+			model,
+			reserveTokens: reserve,
+			previousSummary: preparation.previousSummary,
+			thinkingLevel: options.thinkingLevel,
+		});
+		if (baseline && baseline.totalTokens > model.contextWindow) {
+			return reject(true);
+		}
 		return reject();
 	}
 	return { focus, preparation: unified, renderedInstructions };

@@ -24,6 +24,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 
 import { runCustomCompaction } from "../src/compact.js";
 import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
+import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 import {
 	PI_OUTPUT_CAP_FAILURE,
@@ -183,6 +184,24 @@ describe("runCustomCompaction characterization", () => {
 			"additional intent evidence exceeds the summary request budget",
 		);
 		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
+	it("reports a transcript-driven budget rejection as a request overflow", async () => {
+		const ctx = context();
+		if (!ctx.model) throw new Error("Missing test model");
+		ctx.model = { ...ctx.model, contextWindow: 50_000, maxTokens: 4096 };
+		const attempt = await runCustomCompaction(
+			preparation({ messages: [message("user", "x".repeat(400_000))] }),
+			"standard",
+			ctx,
+			compatibility(),
+		);
+		// The cut itself cannot fit and no intent evidence was added, so this is
+		// not an intent-evidence decline: the coordinator can still defer to native.
+		expect(attempt.requestOverflow).toBe(true);
+		expect(attempt.cancel).toBeUndefined();
+		expect(attempt.fallbackReason).toBe(SUMMARIZATION_CONTEXT_OVERFLOW_REASON);
 		expect(compactMock).not.toHaveBeenCalled();
 	});
 

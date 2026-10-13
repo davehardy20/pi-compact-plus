@@ -79,8 +79,6 @@ export class CompactionCoordinator {
 	) => EffectiveUsage | null;
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
 	private readonly disableAutoCompaction: boolean;
-	/** Cached verdict for the last measured cut, so an oversized session is not
-	 * re-measured and re-notified on every attempt. */
 	/** Measured verdict for the last cut. Written only by the measurement. */
 	private overflowVerdict: { key: string; reason: string | null } | null = null;
 	/** Cut already warned about, so an oversized session is warned once. */
@@ -113,10 +111,9 @@ export class CompactionCoordinator {
 
 	/**
 	 * Measure each request Pi would send and return the stable overflow reason
-	 * when one of them cannot fit. Pure: no state or UI effects, so each call
-	 * site owns its own consequences. The verdict is cached for an unchanged cut
-	 * so a permanently oversized session does not re-serialize the whole region
-	 * on every attempt.
+	 * when one of them cannot fit. Pure: no state or UI effects, so each call site
+	 * owns its own consequences. The verdict is cached for an unchanged cut so a
+	 * permanently oversized session is not re-serialized on every attempt.
 	 */
 	private async detectSummarizationRequestOverflow(
 		event: SessionBeforeCompactEvent,
@@ -146,12 +143,10 @@ export class CompactionCoordinator {
 		) {
 			return null;
 		}
-		// Pi issues one request per preparation slice. On a split turn the history
-		// cut and the turn prefix are summarized separately: the prefix request
-		// carries no custom instructions or previous summary and reserves
-		// floor(0.5 * reserveTokens), matching Pi's output budget for that request.
-		// Pi's prefix prompt template itself is not reproduced here, so the prefix
-		// measurement is an approximation of that request.
+		// Pi issues one request per preparation slice. On a split turn the prefix
+		// request carries no custom instructions or previous summary and reserves
+		// floor(0.5 * reserveTokens), matching Pi's budget for that request. Pi's
+		// prefix prompt template is not reproduced, so that measurement is approximate.
 		const requests: {
 			messages: AgentMessage[];
 			output?: number;
@@ -675,9 +670,8 @@ export class CompactionCoordinator {
 
 		if (attempt.requestOverflow) {
 			// Compact+ merges the split-turn slices into one request, while Pi sends
-			// them separately with smaller budgets. Compact+'s failure is only
-			// authoritative for the payload Pi would actually send, so gate the
-			// decline on that measurement instead of on the merged attempt.
+			// them separately with smaller budgets, so Compact+'s failure is only
+			// authoritative for the payload Pi would actually send.
 			let nativeOverflow: string | null;
 			if (event.preparation?.isSplitTurn) {
 				nativeOverflow = await this.detectSummarizationRequestOverflow(

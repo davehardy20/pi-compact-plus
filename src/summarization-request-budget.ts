@@ -10,9 +10,13 @@ export type SummaryThinking = Parameters<typeof generateSummaryWithUsage>[8];
 export interface SummaryRequestMeasurement {
 	/** Estimated tokens of the rendered summarization request itself. */
 	transcriptTokens: number;
-	/** Output tokens the summarization call reserves for the summary. */
+	/**
+	 * Output tokens the request actually reserves, clamped the way Pi clamps the
+	 * request it sends: `min(fraction * reserveTokens, model.maxTokens)` when the
+	 * model declares a positive cap.
+	 */
 	reservedOutputTokens: number;
-	/** transcript + reserved output: what the provider must fit in one request. */
+	/** transcript + clamped reserved output: what the provider must fit in one request. */
 	totalTokens: number;
 }
 
@@ -37,6 +41,7 @@ export async function measureSummaryRequestTokens(options: {
 	 * Replace the captured output budget. Pi builds the split-turn prefix request
 	 * through a private helper that reserves `floor(0.5 * reserveTokens)` instead
 	 * of `floor(0.8 * reserveTokens)`, so callers model that budget explicitly.
+	 * Clamped to the model's own cap before use, exactly as Pi clamps it.
 	 */
 	reservedOutputTokens?: number;
 	signal?: AbortSignal;
@@ -107,10 +112,15 @@ export async function measureSummaryRequestTokens(options: {
 		}
 		const transcript = transcriptTokens as number;
 		const override = options.reservedOutputTokens;
-		const output =
+		const requested =
 			Number.isSafeInteger(override) && (override ?? 0) >= 0
 				? (override as number)
 				: (reservedOutputTokens as number);
+		// Pi clamps every summarization request to the model's own output cap, so
+		// the measured total models the request Pi sends rather than the unclamped
+		// fraction a caller named.
+		const output =
+			model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
 		return {
 			transcriptTokens: transcript,
 			reservedOutputTokens: output,

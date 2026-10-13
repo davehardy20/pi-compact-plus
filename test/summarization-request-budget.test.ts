@@ -71,6 +71,22 @@ describe("measureSummaryRequestTokens", () => {
 		);
 	});
 
+	it("clamps a caller-supplied output budget to the model cap Pi clamps to", async () => {
+		const measurement = await measureSummaryRequestTokens({
+			messages: [user("short")],
+			model: model(200_000, 4096),
+			reserveTokens: 16_384,
+			reservedOutputTokens: 120_000,
+		});
+
+		// Pi sends min(fraction * reserveTokens, model.maxTokens). The measurement
+		// must model that request, not the unclamped fraction the caller named.
+		expect(measurement?.reservedOutputTokens).toBe(4096);
+		expect(measurement?.totalTokens).toBe(
+			(measurement?.transcriptTokens ?? 0) + 4096,
+		);
+	});
+
 	it("grows with the transcript it has to summarise", async () => {
 		const small = await measureSummaryRequestTokens({
 			messages: [user("short task")],

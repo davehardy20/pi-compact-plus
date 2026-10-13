@@ -32,12 +32,12 @@ function preparation(messages: AgentMessage[], prefix: AgentMessage[] = []) {
 	};
 }
 
-async function extractCompactionFocus(
+async function budgetOf(
 	projected: AgentMessage[],
 	prepared: ReturnType<typeof preparation> & { previousSummary?: string },
 	contextWindow: number,
 ) {
-	const budgeted = await prepareBudgetedCompactionFocus(projected, prepared, {
+	return prepareBudgetedCompactionFocus(projected, prepared, {
 		model: {
 			id: "budget-test",
 			provider: "budget-test",
@@ -52,6 +52,14 @@ async function extractCompactionFocus(
 				previousSummary: prepared.previousSummary,
 			}),
 	});
+}
+
+async function extractCompactionFocus(
+	projected: AgentMessage[],
+	prepared: ReturnType<typeof preparation> & { previousSummary?: string },
+	contextWindow: number,
+) {
+	const budgeted = await budgetOf(projected, prepared, contextWindow);
 	return budgeted.focus;
 }
 
@@ -211,6 +219,24 @@ it("rejects an oversized transcript even when no additional intent is omitted", 
 	);
 	expect(focus.intentEvidence?.overflow).toBe(true);
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("names a transcript-driven rejection as transcript overflow, not as added intent", async () => {
+	const source = user("x".repeat(40_000));
+	const budgeted = await budgetOf([source], preparation([source]), 8192);
+	expect(budgeted.transcriptOverflow).toBe(true);
+});
+
+it("keeps an evidence-driven rejection out of the transcript overflow class", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = user("Keep this instruction.".repeat(4000));
+	const budgeted = await budgetOf(
+		[source, retained],
+		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
+		200_000,
+	);
+	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
 });
 
 it("rejects a small-model request when native prompt plus output exceeds context", async () => {

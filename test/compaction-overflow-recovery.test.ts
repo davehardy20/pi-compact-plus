@@ -172,6 +172,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
+		expect(state.lastOverflowReportedEpoch).toBe(state.currentCompactionEpoch);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("cannot fit"),
 			"warning",
@@ -308,6 +309,32 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toBeUndefined();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+	});
+
+	it("defers to native when the transcript itself is what cannot fit a split turn", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 400_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+
+		// Compact+'s merged request cannot fit, and no intent evidence was added:
+		// the transcript is the cause. Pi sends each slice separately, and each
+		// slice fits, so this is not an intent-evidence decline.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("a".repeat(1_200_000))], {
+				splitTurn: true,
+				prefix: [user("b".repeat(1_200_000))],
+			}),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(compactMock).not.toHaveBeenCalled();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("intent evidence"),
+			"warning",
+		);
 	});
 
 	it("warns once per unchanged cut", async () => {
