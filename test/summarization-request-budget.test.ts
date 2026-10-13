@@ -42,6 +42,23 @@ describe("measureSummaryRequestTokens", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	it("measures a model whose output cap is zero", async () => {
+		const measurement = await measureSummaryRequestTokens({
+			messages: [user("Task: repair login.")],
+			model: model(200_000, 0),
+			reserveTokens: 16_384,
+		});
+
+		// Pi clamps the request rather than leaving it unmeasurable, so the guard
+		// stays active for a model configured with maxTokens 0.
+		expect(Number.isSafeInteger(measurement?.totalTokens)).toBe(true);
+		expect(measurement?.totalTokens).toBe(
+			(measurement?.transcriptTokens ?? 0) +
+				(measurement?.reservedOutputTokens ?? 0),
+		);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
 	it("reserves the same output budget Pi reserves for the summary", async () => {
 		const measurement = await measureSummaryRequestTokens({
 			messages: [user("short")],

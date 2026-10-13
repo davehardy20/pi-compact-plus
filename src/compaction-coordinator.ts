@@ -81,11 +81,10 @@ export class CompactionCoordinator {
 	private readonly disableAutoCompaction: boolean;
 	/** Cached verdict for the last measured cut, so an oversized session is not
 	 * re-measured and re-notified on every attempt. */
-	private overflowVerdict: {
-		key: string;
-		reason: string | null;
-		notified: boolean;
-	} | null = null;
+	/** Measured verdict for the last cut. Written only by the measurement. */
+	private overflowVerdict: { key: string; reason: string | null } | null = null;
+	/** Cut already warned about, so an oversized session is warned once. */
+	private overflowNoticeKey: string | null = null;
 
 	constructor({
 		state,
@@ -196,7 +195,7 @@ export class CompactionCoordinator {
 				break;
 			}
 		}
-		this.overflowVerdict = { key, reason, notified: false };
+		this.overflowVerdict = { key, reason };
 		return reason;
 	}
 
@@ -205,6 +204,12 @@ export class CompactionCoordinator {
 		ctx: ExtensionEventContext,
 	): string {
 		const preparation = event.preparation;
+		const instructions =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: "";
+		// Length alone would treat two different guidance strings of the same size
+		// as the same cut. This key is internal: it is never logged or persisted.
 		return [
 			ctx.sessionManager.getSessionId(),
 			ctx.sessionManager.getLeafId(),
@@ -212,9 +217,9 @@ export class CompactionCoordinator {
 			preparation?.messagesToSummarize?.length ?? 0,
 			preparation?.turnPrefixMessages?.length ?? 0,
 			preparation?.isSplitTurn ? "split" : "single",
-			typeof event.customInstructions === "string"
-				? event.customInstructions.length
-				: 0,
+			instructions.length,
+			instructions.slice(0, 32),
+			instructions.slice(-32),
 		].join(":");
 	}
 
@@ -226,16 +231,12 @@ export class CompactionCoordinator {
 		warning: string,
 	): void {
 		this.state.lastFallbackReason = reason;
-		if (ctx.hasUI) {
-			const key = this.summarizationCutKey(event, ctx);
-			if (this.overflowVerdict?.key === key) {
-				if (this.overflowVerdict.notified) return;
-				this.overflowVerdict.notified = true;
-			} else {
-				this.overflowVerdict = { key, reason, notified: true };
-			}
-			ctx.ui.notify(warning, "warning");
-		}
+		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
+		if (!ctx.hasUI) return;
+		const key = this.summarizationCutKey(event, ctx);
+		if (this.overflowNoticeKey === key) return;
+		this.overflowNoticeKey = key;
+		ctx.ui.notify(warning, "warning");
 	}
 
 	private async guardNativeSummarizationRequest(
@@ -762,7 +763,9 @@ export class CompactionCoordinator {
 		}
 
 		// Provider wording is not a reliable overflow signal: measure the payload
-		// Pi is about to send before letting this deferral through.
+		// Pi is about to send before letting this deferral through. When the cut has
+		// not changed since the measurement above, this is a cache hit, not a second
+		// serialization.
 		const fallbackOverflow = await this.detectSummarizationRequestOverflow(
 			event,
 			ctx,

@@ -77,9 +77,11 @@ export async function measureSummaryRequestTokens(options: {
 			(_model, context, requestOptions) => {
 				captures++;
 				const output = requestOptions?.maxTokens;
+				// A zero output budget is a measurement, not a failure: it means the
+				// request left no room for the summary at all.
 				if (
 					Number.isSafeInteger(output) &&
-					(output ?? 0) > 0 &&
+					(output ?? 0) >= 0 &&
 					context.messages.some((message) => message.role === "system")
 				) {
 					transcriptTokens = context.messages.reduce(
@@ -99,14 +101,14 @@ export async function measureSummaryRequestTokens(options: {
 			!Number.isSafeInteger(transcriptTokens) ||
 			(transcriptTokens ?? -1) < 0 ||
 			!Number.isSafeInteger(reservedOutputTokens) ||
-			(reservedOutputTokens ?? 0) <= 0
+			(reservedOutputTokens ?? -1) < 0
 		) {
 			return undefined;
 		}
 		const transcript = transcriptTokens as number;
 		const override = options.reservedOutputTokens;
 		const output =
-			Number.isSafeInteger(override) && (override ?? 0) > 0
+			Number.isSafeInteger(override) && (override ?? 0) >= 0
 				? (override as number)
 				: (reservedOutputTokens as number);
 		return {

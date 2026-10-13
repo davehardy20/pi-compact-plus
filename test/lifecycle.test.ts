@@ -361,7 +361,42 @@ describe("executeCompaction stale extension context handling", () => {
 			({ onError }: { onError?: (error: Error) => void }) => {
 				// The coordinator recorded the decline during this attempt.
 				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 				if (onError) onError(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("suppresses the failure notice when the same overflow is reported again", () => {
+		const state = new CompactionState();
+		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				// Steady state: the guard declines the same oversized cut every
+				// attempt, so the reason string never changes.
+				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				if (onError) onError(new Error("Compaction cancelled"));
 			},
 		);
 
@@ -386,6 +421,7 @@ describe("executeCompaction stale extension context handling", () => {
 	it("still reports a failure when only an older attempt reported an overflow", () => {
 		const state = new CompactionState();
 		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		state.lastOverflowReportedEpoch = state.currentCompactionEpoch - 1;
 		const ctx = createMockCtx();
 		const pi = createMockPi();
 

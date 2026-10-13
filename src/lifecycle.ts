@@ -1,18 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildSummaryInstructions } from "./prompts.js";
 import type { CompactionState } from "./state.js";
-import {
-	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-	SUMMARIZATION_OUTPUT_CAP_REASON,
-} from "./summarization-overflow.js";
 import type { CompactionMode, CurrentFocus } from "./types.js";
 import { CONTINUATION_PROMPT } from "./types.js";
-
-/** Reasons the coordinator already surfaced with a precise warning. */
-const ALREADY_REPORTED_REASONS = new Set([
-	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-	SUMMARIZATION_OUTPUT_CAP_REASON,
-]);
 
 /** Event-context type passed to Pi extension event handlers. Shared with
  * compaction-coordinator.ts — import from here rather than re-aliasing. */
@@ -113,9 +103,6 @@ export function executeCompaction(
 	state.selectedMode = mode;
 	state.isCompacting = true;
 	const compactionEpoch = state.currentCompactionEpoch;
-	// Only a decline recorded by this attempt counts as already reported. A stale
-	// overflow reason from an earlier attempt must not swallow a new failure.
-	const fallbackReasonAtStart = state.lastFallbackReason;
 	const hadUI = safeReadHasUI(ctx);
 
 	const instructions = buildSummaryInstructions(mode, focus);
@@ -158,15 +145,11 @@ export function executeCompaction(
 			state.echoInjected = false;
 			state.clearPendingCompaction();
 			options?.persist?.();
-			// The coordinator already reported a summarization overflow with a
-			// precise warning. A second "compaction failed" error would be duplicate
-			// and would name the wrong cause.
-			if (
-				state.lastFallbackReason &&
-				state.lastFallbackReason !== fallbackReasonAtStart &&
-				ALREADY_REPORTED_REASONS.has(state.lastFallbackReason)
-			)
-				return;
+			// The coordinator already warned about a decline in this same attempt.
+			// A second "compaction failed" error would be duplicate and would name
+			// the wrong cause. Epoch-scoped, so a stale reason cannot swallow a new
+			// failure, and a steady-state repeat of the same decline still suppresses.
+			if (state.lastOverflowReportedEpoch === compactionEpoch) return;
 			safeNotifyCompactionFailure(ctx, hadUI, error.message);
 		},
 	});
