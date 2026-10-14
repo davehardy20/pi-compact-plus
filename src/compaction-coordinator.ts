@@ -876,6 +876,9 @@ export class CompactionCoordinator {
 				event,
 				ctx,
 			);
+			// The measurement awaits, so re-check the epoch before writing: a superseded
+			// attempt must not clobber the telemetry of the attempt that replaced it.
+			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 			// Bounded provider usage headroom outranks the estimate here too: a runtime that
 			// resolves to native fallback must not reproduce the failure this change exists to
 			// fix.

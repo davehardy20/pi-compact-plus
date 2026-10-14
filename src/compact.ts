@@ -47,8 +47,8 @@ export interface CompactionAttemptResult {
 	 */
 	providerConfirmed?: true;
 	/** Retained turns dropped from the front so the request could fit. A trimmed attempt is
-	 * a compaction that succeeded with a smaller payload, so the count is surfaced rather
-	 * than reported only as a reason string. */
+	 * a compaction that succeeded with a smaller payload, so the count is named in the UI
+	 * notice rather than reported only as a reason string. */
 	evidenceTrimmedTurns?: number;
 	classifiedCounts?: {
 		critical: number;

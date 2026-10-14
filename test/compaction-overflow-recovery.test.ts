@@ -330,6 +330,44 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 	});
 
+	it("names every trimmed turn when more than one had to go", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+
+		const source = user(
+			`Task: repair login.\n${"old context ".repeat(60_000)}`,
+		);
+		// Two large retained turns must both go before the request fits, so the notice has
+		// to pluralise rather than reuse the single-turn wording.
+		const retained = [
+			user("oldest retained instruction ".repeat(4000)),
+			user("middle retained instruction ".repeat(4000)),
+			user("latest retained instruction ".repeat(40)),
+		];
+		ctx.sessionManager.buildSessionProjection = vi.fn(() => ({
+			messages: [source, ...retained],
+		})) as never;
+		compactMock.mockResolvedValueOnce({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: null,
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [source]),
+			ctx,
+		);
+
+		expect(result?.compaction).toBeDefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 2 retained turns."),
+			"warning",
+		);
+	});
+
 	it("trims intent evidence instead of cancelling when the trimmed request fits", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
