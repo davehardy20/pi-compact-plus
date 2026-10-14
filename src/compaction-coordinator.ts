@@ -55,7 +55,7 @@ const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
 
 const EVIDENCE_TRIMMED_WARNING =
-	"Compact+ trimmed additional intent evidence so the summary request could fit. The compaction proceeded.";
+	"Compact+ trimmed additional intent evidence so the summary request could fit.";
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
