@@ -25,10 +25,11 @@ export interface SummaryRequestMeasurement {
  * Mirrors `generateSummaryWithUsage` in `@earendil-works/pi-coding-agent`
  * (`dist/core/compaction/compaction.js`), which sends
  * `min(floor(0.8 * reserveTokens), model.maxTokens)` when the model declares a positive cap.
- * Compact+ clamps every reserved output it computes: `src/compaction-intent.ts` clamps this 0.8
- * fraction for the intent-evidence cap, `src/compaction-coordinator.ts` clamps the prefix
- * fraction below, and `measureSummaryRequestTokens` clamps the budget Pi itself reported for
- * the summary request. The split-turn prefix request uses a different fraction; see
+ * For a compaction summarization request, Compact+ clamps every reserved output it computes:
+ * `src/compaction-intent.ts` clamps this 0.8 fraction for the intent-evidence cap,
+ * `src/compaction-coordinator.ts` clamps the prefix fraction below, and
+ * `measureSummaryRequestTokens` clamps both a caller-supplied `reservedOutputTokens` override and
+ * the budget Pi itself reported. The split-turn prefix request uses a different fraction; see
  * `piReservedTurnPrefixOutputTokens`.
  */
 export function piReservedOutputTokens(reserveTokens: number): number {
