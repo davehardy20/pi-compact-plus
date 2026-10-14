@@ -301,7 +301,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(state.selectedMode).toBe("standard");
 	});
 
-	it("cancels a compaction if omitted evidence exceeds the actual request budget", async () => {
+	it("caps omitted evidence instead of cancelling when it exceeds the request budget", async () => {
 		const { coordinator, state } = createCoordinator();
 		state.selectedMode = "standard";
 		const ctx = createMockCtx({
@@ -330,10 +330,17 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			ctx,
 		);
 
-		expect(result).toEqual({ cancel: true });
+		// Oversized omitted evidence is capped, not a cancel: the cut itself still fits, so
+		// the attempt runs and only the mocked provider route stops it.
+		expect(result).toBeUndefined();
 		expect(state.selectedMode).toBeNull();
 		expect(state.isCompacting).toBe(false);
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
+		expect(state.lastFallbackReason).toBe(
+			"compact error: provider request failed",
+		);
+		// The cancel warning is gone: nothing was cancelled, and the fallback notice is the
+		// provider-route one rather than the intent-evidence one.
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
 			expect.stringContaining("intent evidence exceeds"),
 			"warning",
 		);

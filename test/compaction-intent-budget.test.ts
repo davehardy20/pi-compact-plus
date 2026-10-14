@@ -493,6 +493,35 @@ it("omits only the exact generated continuation after verifying the native prefi
 	}
 });
 
+it("caps evidence rather than cancelling when a retained paste alone exceeds the window", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	const source = user("Task: repair login.");
+	const fits = user(sized(60_000));
+	const tooBig = user(sized(260_000));
+
+	// The lower bound says this much evidence cannot fit. That is a reason to stop adding
+	// evidence, not to discard the compaction: the cut itself is small and still fits.
+	const budgeted = await budgetOf(
+		[source, fits, tooBig],
+		preparation([source]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.renderedInstructions).toBeDefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		fits.content.trim(),
+	]);
+});
+
 it("fails closed when instruction rendering throws", async () => {
 	const prepared = preparation([user("Task: repair login.")]);
 	const budgeted = await prepareBudgetedCompactionFocus([], prepared, {

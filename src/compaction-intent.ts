@@ -116,13 +116,18 @@ export async function prepareBudgetedCompactionFocus<
 		if (!text || text === CONTINUATION_PROMPT) continue;
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.
-		evidenceLowerBound += Math.max(
-			0,
-			estimateTokens({ role: "user", content: text, timestamp: 0 }) - 1,
-		);
-		// Avoid constructing an already-impossible native request; the full
-		// SDK capture below remains the authoritative fit check.
-		if (evidenceLowerBound > model.contextWindow) return reject();
+		const nextLowerBound =
+			evidenceLowerBound +
+			Math.max(
+				0,
+				estimateTokens({ role: "user", content: text, timestamp: 0 }) - 1,
+			);
+		// A lower bound above the window says only that this much evidence cannot fit, not
+		// that the compaction must be discarded. Stop adding evidence and let the
+		// authoritative measurement and the trim search decide, so a large retained paste
+		// shrinks the evidence instead of cancelling the compaction.
+		if (nextLowerBound > model.contextWindow) break;
+		evidenceLowerBound = nextLowerBound;
 		recentUserTurns.push(text);
 	}
 	const withEvidence = (turns: string[]): CurrentFocus => ({
