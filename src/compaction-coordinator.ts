@@ -380,13 +380,15 @@ export class CompactionCoordinator {
 	}
 
 	/**
-	 * Provider-reported usage is ground truth for the live session, and an ungated cut
-	 * is a subset of it. When usage sits comfortably under the window, an estimate above
-	 * the window is not sufficient authority to decline compaction. Compact+'s own issued
-	 * prompt is the payload under examination, so it is not guidance here; only a prompt
-	 * someone else supplied makes usage incomparable, because those tokens are additive to
-	 * reported usage. Fails closed when usage is unknown, non-native, non-positive, or
-	 * near the window.
+	 * Provider-anchored usage (exact for the last reported request, chars/4-estimated for
+	 * anything newer) is the best available reading of the live session, and an ungated cut
+	 * is a subset of it. The estimation error inflates usage rather than shrinking it, so a
+	 * reading that still sits comfortably under the window is not consistent with an
+	 * estimate placing the request above it: an estimate above the window is not sufficient
+	 * authority to decline compaction. Compact+'s own issued prompt is the payload under
+	 * examination, so it is not guidance here; only a prompt someone else supplied makes the
+	 * comparison incomparable, because those tokens are additive to reported usage. Fails
+	 * closed when usage is unknown, non-native, non-positive, or near the window.
 	 */
 	private estimateDiscrepancy(
 		event: SessionBeforeCompactEvent,
@@ -1008,9 +1010,9 @@ export class CompactionCoordinator {
 				);
 				nativeOverflow = measured.reason;
 				nativeOverflowKey = measured.key;
-				// Provider usage is ground truth for the live session and the cut is a subset
-				// of it. Comfortable bounded headroom outranks an over-window estimate of Pi's
-				// own payload: defer to Pi instead of declining.
+				// Provider-anchored usage is the best reading of the live session and the cut is
+				// a subset of it. Comfortable bounded headroom outranks an over-window estimate of
+				// Pi's own payload: defer to Pi instead of declining.
 				if (nativeOverflow && headroomOverride) nativeOverflow = null;
 			}
 			if (nativeOverflow) {

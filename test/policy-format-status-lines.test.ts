@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatStatusLines } from "../src/commands.js";
+import { SUMMARIZATION_EVIDENCE_TRIMMED_REASON } from "../src/summarization-overflow.js";
 import type { CompactPlusStatus } from "../src/types.js";
 
 const baseStatus = (
@@ -222,6 +223,40 @@ describe("formatStatusLines characterization", () => {
 			"  Last focus echo:",
 			"    Objective: preserve output",
 			"    Next: refactor safely",
+		]);
+	});
+
+	it("reports a trimmed compaction without presenting the trim as a fallback", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-08-22T12:00:00.000Z"));
+		const lines = formatStatusLines(
+			baseStatus({
+				lastCompaction: {
+					mode: "standard",
+					triggerSource: "turn_end",
+					triggerReason: "",
+					timestamp: Date.now(),
+					focusTags: [],
+					previousSummaryPresent: false,
+					splitTurn: false,
+					usageSource: "unknown",
+					fallbackReason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+					messagesSummarizedCount: 0,
+					executionPath: "custom",
+					fromExtension: true,
+					thinkingLevel: null,
+					compatibilityReason: null,
+				},
+				lastFallbackReason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+			}),
+		);
+
+		// A trim is a compaction that succeeded with a smaller payload. No consumer may
+		// present it as a decline, so neither fallback line appears.
+		expect(lines.slice(16)).toEqual([
+			"  Last compaction: standard mode, turn_end trigger, 0s ago",
+			"    Path: custom (Compact+)",
+			"  Last focus echo: (none — no persisted focus echo is available for the last compaction)",
 		]);
 	});
 

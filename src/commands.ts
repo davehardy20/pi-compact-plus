@@ -333,8 +333,8 @@ function formatLastCompactionLines(
 	);
 	pushWhen(
 		lines,
-		Boolean(compaction.fallbackReason),
-		`    Fallback: ${compaction.fallbackReason}`,
+		Boolean(informationalReason(compaction.fallbackReason ?? null)),
+		`    Fallback: ${informationalReason(compaction.fallbackReason ?? null)}`,
 	);
 	return lines;
 }
@@ -354,7 +354,8 @@ function getTopLevelFallback(
 }
 
 /** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
- * reason is not a fallback and must not be reported as one. */
+ * reason is not a fallback. Every status consumer filters it the same way, so no display
+ * reports a trim as a decline. */
 function informationalReason(reason: string | null): string | null {
 	return reason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON ? null : reason;
 }
@@ -384,7 +385,12 @@ function formatLastFocusEchoLines(
 			...status.lastInjectedEcho.split("\n").map(formatEchoLine),
 		];
 	}
-	if (hasFallback(compactionFallback, status.lastFallbackReason)) {
+	if (
+		hasFallback(
+			compactionFallback,
+			informationalReason(status.lastFallbackReason),
+		)
+	) {
 		return [
 			"  Last focus echo: (none — last compaction fell back before a custom summary was injected)",
 		];

@@ -30,7 +30,8 @@ interface BudgetedIntent<T extends IntentPreparation> {
 	preparation: UnifiedPreparation<T>;
 	/** Reuse verbatim; absent on every failed or oversized capture. */
 	renderedInstructions?: string;
-	/** The cut itself cannot fit the window, with or without added intent evidence. */
+	/** The cut plus Compact+'s base prompt cannot fit the window. Not a claim that the
+	 * transcript alone is oversized: it is what remains once every added turn is dropped. */
 	transcriptOverflow?: true;
 	/** Omitted turns dropped from the front so the request could fit. */
 	evidenceTrimmed?: number;
@@ -189,6 +190,7 @@ export async function prepareBudgetedCompactionFocus<
 		| { dropped: number; kept: string[]; instructions: string }
 		| undefined;
 	let probeFailed = false;
+	let maxProbed = false;
 	while (low <= high) {
 		// An aborted request must not keep probing: every probe re-serializes the cut.
 		if (options.signal?.aborted) {
@@ -196,6 +198,7 @@ export async function prepareBudgetedCompactionFocus<
 			break;
 		}
 		const dropped = (low + high) >> 1;
+		if (dropped === recentUserTurns.length) maxProbed = true;
 		const kept = recentUserTurns.slice(dropped);
 		const instructions = render(kept);
 		if (!instructions) {
@@ -226,8 +229,26 @@ export async function prepareBudgetedCompactionFocus<
 	// A probe that could not render or measure says nothing about the trim schedule, so it
 	// stays an evidence-driven rejection rather than a claim about the transcript.
 	if (probeFailed) return reject();
-	// No trim fits, not even dropping every retained turn. What is left is the transcript
-	// plus Compact+'s base prompt, so this is not evidence-driven: report it as a request
+	if (probeFailed) return reject();
+	// Rendering is monotone in drop count only up to formatting differences between focus
+	// blocks, so the search can skip a trim that would have fit. Measure the maximal trim
+	// before claiming nothing fits: it is the only shape that claim can rest on.
+	if (!maxProbed) {
+		const instructions = render([]);
+		const trimmed = instructions ? await measure(instructions) : undefined;
+		// Fail closed: an unmeasurable rendering says nothing about the trim schedule.
+		if (!instructions || !trimmed) return reject();
+		if (trimmed.totalTokens <= model.contextWindow) {
+			return {
+				focus: withEvidence([]),
+				preparation: unified,
+				renderedInstructions: instructions,
+				evidenceTrimmed: recentUserTurns.length,
+			};
+		}
+	}
+	// Nothing fits, not even dropping every retained turn. What is left is the cut plus
+	// Compact+'s base prompt, so this is not evidence-driven: report it as a request
 	// overflow and let the coordinator judge it against the payload Pi actually sends.
 	return reject(true);
 }
