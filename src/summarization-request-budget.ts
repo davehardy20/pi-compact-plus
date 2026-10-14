@@ -41,6 +41,13 @@ export function piReservedOutputTokens(reserveTokens: number): number {
 	return Math.floor(0.8 * reserveTokens);
 }
 
+/** Pi builds the split-turn prefix request through a private helper that reserves half. */
+export function piReservedTurnPrefixOutputTokens(
+	reserveTokens: number,
+): number {
+	return Math.floor(0.5 * reserveTokens);
+}
+
 /**
  * Pi clamps every summarization request to the model's own output cap. A model with no
  * output cap leaves the request unclamped. Shared so the measurement and the

@@ -33,7 +33,11 @@ import {
 	SUMMARIZATION_OUTPUT_CAP_REASON,
 	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "./summarization-overflow.js";
-import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
+import {
+	clampReservedOutput,
+	measureSummaryRequestTokens,
+	piReservedTurnPrefixOutputTokens,
+} from "./summarization-request-budget.js";
 import {
 	type CompactionMode,
 	type CompactionTelemetry,
@@ -43,7 +47,7 @@ import {
 } from "./types.js";
 
 const INTENT_OVERFLOW_WARNING =
-	"Compact+ could not capture its additional intent evidence within the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
+	"Compact+ could not capture its additional intent evidence; compaction cancelled rather than sending an unmeasured summary request. Save the current objective before attempting a different compaction path.";
 
 const SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";
@@ -264,9 +268,9 @@ export class CompactionCoordinator {
 		if (preparation.isSplitTurn && prefix.length > 0) {
 			requests.push({
 				messages: prefix,
-				output: Math.min(
-					Math.floor(0.5 * (reserve as number)),
-					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+				output: clampReservedOutput(
+					model,
+					piReservedTurnPrefixOutputTokens(reserve as number),
 				),
 				wrapper: false,
 			});

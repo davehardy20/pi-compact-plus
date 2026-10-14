@@ -112,12 +112,18 @@ export async function prepareBudgetedCompactionFocus<
 	);
 	const omitted = prefixMatches ? users.slice(supplied.length) : users;
 	const eligibleTurns: string[] = [];
-	for (const message of omitted) {
-		const text = extractTextContent(message).trim();
+	// When the native prefix cannot be verified, the oldest candidates are already inside the
+	// summarized cut and are being summarized regardless of whether they are also carried as
+	// evidence. Only turns outside the cut count as dropped for the session.
+	const eligibleOutsideCut: boolean[] = [];
+	for (let index = 0; index < omitted.length; index++) {
+		const text = extractTextContent(omitted[index]).trim();
 		if (!text || text === CONTINUATION_PROMPT) continue;
 		eligibleTurns.push(text);
+		eligibleOutsideCut.push(prefixMatches || index >= supplied.length);
 	}
 	const recentUserTurns: string[] = [];
+	const keptOutsideCut: boolean[] = [];
 	let evidenceLowerBound = 0;
 	// Evidence alone can never cost more than the window minus the reserved output, so the
 	// cap uses that necessary bound rather than the whole window. The reserved output is
@@ -146,13 +152,17 @@ export async function prepareBudgetedCompactionFocus<
 		if (nextLowerBound > evidenceCapTokens) continue;
 		evidenceLowerBound = nextLowerBound;
 		recentUserTurns.push(eligibleTurns[index]);
+		keptOutsideCut.push(eligibleOutsideCut[index]);
 	}
 	recentUserTurns.reverse();
+	keptOutsideCut.reverse();
 	// Turns the cap never admitted are still turns dropped from Compact+'s own evidence, so
 	// they are reported to the session alongside the trim search's drops rather than silently
 	// shrinking the evidence. The reporting is user-facing: the summary model only sees the
 	// evidence that survived.
-	const evidenceCapped = eligibleTurns.length - recentUserTurns.length;
+	const cappedOutsideCut =
+		eligibleOutsideCut.filter(Boolean).length -
+		keptOutsideCut.filter(Boolean).length;
 	const withEvidence = (turns: string[]): CurrentFocus => ({
 		...originalFocus,
 		intentEvidence: originalFocus.intentEvidence
@@ -198,7 +208,7 @@ export async function prepareBudgetedCompactionFocus<
 			focus,
 			preparation: unified,
 			renderedInstructions,
-			...(evidenceCapped ? { evidenceTrimmed: evidenceCapped } : {}),
+			...(cappedOutsideCut ? { evidenceTrimmed: cappedOutsideCut } : {}),
 		};
 	}
 	// Separate transcript-driven from evidence-driven rejection: re-measure the
@@ -254,7 +264,9 @@ export async function prepareBudgetedCompactionFocus<
 			focus: withEvidence(fitted.kept),
 			preparation: unified,
 			renderedInstructions: fitted.instructions,
-			evidenceTrimmed: fitted.dropped + evidenceCapped,
+			evidenceTrimmed:
+				cappedOutsideCut +
+				keptOutsideCut.slice(0, fitted.dropped).filter(Boolean).length,
 		};
 	}
 	// A probe that could not render or measure says nothing about the trim schedule, so it

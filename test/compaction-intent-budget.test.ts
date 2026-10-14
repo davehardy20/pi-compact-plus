@@ -567,14 +567,55 @@ it("keeps evidence that fits the clamped output budget the measurement actually 
 		return text;
 	};
 	const source = user("Task: repair login.");
-	// reserveTokens is 16_384 here, and Pi clamps the reserved output to
-	// min(floor(0.8 * reserveTokens), maxTokens) = 13_107. Evidence between 186_893 and
-	// 183_616 tokens fits the clamped budget but not the unclamped one.
+	// reserveTokens is 16_384 and maxTokens is the whole window here, so the binding term is
+	// Pi's floor(0.8 * reserveTokens) = 13_107 rather than the model cap. Evidence between
+	// 186_893 and 183_616 tokens fits that budget but not the unclamped reserve.
 	const evidence = user(sized(185_000));
 	const budgeted = await budgetOf(
 		[source, evidence],
 		preparation([source]),
 		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		evidence.content.trim(),
+	]);
+	expect(budgeted.evidenceTrimmed).toBeUndefined();
+});
+
+it("caps evidence against the model output cap when the cap is the binding term", async () => {
+	const unit = "old context ";
+	let evidenceText = "";
+	while (
+		estimateTokens({ role: "user", content: evidenceText, timestamp: 1 }) <
+		190_000
+	) {
+		evidenceText += unit.repeat(2_000);
+	}
+	const source = user("Task: repair login.");
+	const evidence = user(evidenceText);
+
+	// maxTokens 4096 is below floor(0.8 * 16_384), so the clamp is what binds: the budget is
+	// 200_000 - 4096 = 195_904, and 190_000 tokens of evidence fits it. Against the
+	// unclamped 13_107 the budget would be 186_893 and this turn would be dropped.
+	const prepared = preparation([source]);
+	const budgeted = await prepareBudgetedCompactionFocus(
+		[source, evidence],
+		prepared,
+		{
+			model: {
+				id: "budget-test",
+				provider: "budget-test",
+				api: "openai-completions",
+				contextWindow: 200_000,
+				maxTokens: 4096,
+			} as Parameters<typeof generateSummaryWithUsage>[1],
+			renderInstructions: (focus) =>
+				buildSummaryInstructions("standard", focus, {
+					isSplitTurn: prepared.isSplitTurn,
+					turnPrefixCount: prepared.turnPrefixMessages.length,
+				}),
+		},
 	);
 	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
 	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
