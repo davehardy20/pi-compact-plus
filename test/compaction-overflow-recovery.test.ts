@@ -443,6 +443,24 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 	});
 
+	it("never lets usage headroom excuse an exhausted output budget", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Usage leaves bounded headroom, but an exhausted output budget is about the
+		// response: Pi would hit the same cap on the same cut, so this stays a cancel.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("Task: repair login.")]),
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+	});
+
 	it("guards the final fall-back to native compaction too", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });

@@ -27,6 +27,7 @@ import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+	SUMMARIZATION_INTENT_EVIDENCE_REASON,
 } from "../src/summarization-overflow.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 import {
@@ -230,9 +231,7 @@ describe("runCustomCompaction characterization", () => {
 			ctx,
 			compatibility(),
 		);
-		expect(attempt.fallbackReason).toBe(
-			"additional intent evidence exceeds the summary request budget",
-		);
+		expect(attempt.fallbackReason).toBe(SUMMARIZATION_INTENT_EVIDENCE_REASON);
 		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 		expect(compactMock).not.toHaveBeenCalled();
 	});

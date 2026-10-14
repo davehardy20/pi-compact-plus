@@ -9,6 +9,7 @@ import type {
 	SessionCompactEvent,
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 import { prepareBoundaryCompaction } from "./boundary-preparation.js";
 import { runCustomCompaction } from "./compact.js";
@@ -409,8 +410,19 @@ export class CompactionCoordinator {
 		if (typeof tokens !== "number" || !Number.isSafeInteger(tokens))
 			return false;
 		if (tokens <= 0) return false;
+		// On the deferral path Pi appends Compact+'s own prompt verbatim, so the prompt is
+		// part of what must fit. Omitting it would let a large prompt defer a genuinely
+		// oversized request.
+		const promptTokens = issuedInstructions
+			? estimateTokens({
+					role: "user",
+					content: issuedInstructions,
+					timestamp: 0,
+				})
+			: 0;
 		return (
-			tokens + reserve + SUSPECT_ESTIMATE_HEADROOM_TOKENS < model.contextWindow
+			tokens + reserve + promptTokens + SUSPECT_ESTIMATE_HEADROOM_TOKENS <
+			model.contextWindow
 		);
 	}
 
@@ -453,11 +465,11 @@ export class CompactionCoordinator {
 			ctx,
 		);
 		if (!reason) return undefined;
-		// An exhausted output budget is about the response, so usage headroom cannot excuse
-		// it. For a request estimate on an ungated cut, comfortable provider usage outranks
-		// it: Pi compacts and the discrepancy is recorded instead of a decline.
+		// The measured reason is always a request estimate here: an exhausted output budget
+		// is a provider response failure and never reaches this guard. Comfortable provider
+		// usage on a cut Pi sends without foreign guidance outranks the estimate, so Pi
+		// compacts and the discrepancy is recorded instead of a decline.
 		if (
-			reason !== SUMMARIZATION_OUTPUT_CAP_REASON &&
 			this.estimateDiscrepancy(
 				event,
 				ctx,
@@ -940,7 +952,7 @@ export class CompactionCoordinator {
 				ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
 			return cancelCustom(
 				overflow
-					? "intent evidence exceeds safety budget"
+					? SUMMARIZATION_INTENT_EVIDENCE_REASON
 					: (attempt.fallbackReason ?? "custom compaction cancelled"),
 			);
 		}
