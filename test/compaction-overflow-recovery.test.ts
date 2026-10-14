@@ -95,6 +95,7 @@ function createCoordinator(
 		guardNativeCompaction?: boolean;
 		usageTokens?: number;
 		usageSource?: EffectiveUsage["source"];
+		persistTelemetrySnapshot?: () => Promise<void>;
 	},
 ) {
 	return new CompactionCoordinator({
@@ -111,7 +112,7 @@ function createCoordinator(
 			contextWindow: 262_144,
 			source: options?.usageSource ?? "native",
 		}),
-		persistTelemetrySnapshot: vi.fn(),
+		persistTelemetrySnapshot: options?.persistTelemetrySnapshot ?? vi.fn(),
 	});
 }
 
@@ -442,6 +443,37 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	it("records the discrepancy reason on a native-fallback deferral", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const persist = vi.fn(async () => {});
+		const coordinator = createCoordinator(state, {
+			usageTokens: 150_000,
+			persistTelemetrySnapshot: persist,
+		});
+		state.selectedMode = "standard";
+
+		const deferred = event(ctx, [
+			user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+		]);
+		delete (deferred as { streamFn?: unknown }).streamFn;
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		// The runtime resolves to native fallback on an over-window cut. Provider usage
+		// reports bounded headroom, so the session-bound fast path skips the measurement and
+		// the deferral stands, with the compatibility reason as the single persisted write.
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.pendingCompaction?.fallbackReason).toBe(
+			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(state.lastFallbackReason).toBe(
+			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
+
 	it("cancels the deferred native path too when the payload cannot fit", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
@@ -554,6 +586,32 @@ ${"old context ".repeat(90_000)}`),
 
 		expect(result).toBeUndefined();
 		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("defers the final fall-back when usage headroom contradicts the estimate", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+
+		// The attempt failed for a reason that is not an overflow, and the guidance Pi would
+		// append is Compact+'s own prompt. Headroom contradicts the estimate of Pi's payload,
+		// so the session must still compact rather than be left unable to.
+		const deferred = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).not.toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});

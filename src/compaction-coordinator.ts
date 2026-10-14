@@ -870,8 +870,8 @@ export class CompactionCoordinator {
 
 		if (compatibility.executionPath === "native-fallback") {
 			// Deferring is still sending the same payload. Measure before recording why, so the
-			// persisted telemetry carries the reason the deferral actually settled on rather
-			// than needing a second write.
+			// headroom case needs no second write: the persisted telemetry already carries the
+			// reason the deferral settled on.
 			const deferred = await this.detectSummarizationRequestOverflow(
 				event,
 				ctx,
@@ -1046,6 +1046,7 @@ export class CompactionCoordinator {
 				...telemetryBase,
 				classifiedCounts: attempt.classifiedCounts,
 				fallbackReason: attempt.fallbackReason ?? undefined,
+				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
 			this.state.lastFallbackReason = attempt.fallbackReason;
 			await this.persistTelemetrySnapshot();

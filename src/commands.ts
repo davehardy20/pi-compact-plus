@@ -328,6 +328,12 @@ function formatLastCompactionLines(
 	pushWhen(lines, compaction.splitTurn, "    Split-turn: yes");
 	pushWhen(
 		lines,
+		typeof compaction.intentEvidenceTrimmedTurns === "number" &&
+			compaction.intentEvidenceTrimmedTurns > 0,
+		`    Intent evidence: trimmed ${compaction.intentEvidenceTrimmedTurns} retained ${compaction.intentEvidenceTrimmedTurns === 1 ? "turn" : "turns"}`,
+	);
+	pushWhen(
+		lines,
 		isDistinctCompatibilityReason(compaction),
 		`    Compatibility: ${compaction.compatibilityReason}`,
 	);

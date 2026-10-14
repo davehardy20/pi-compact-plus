@@ -226,6 +226,42 @@ describe("formatStatusLines characterization", () => {
 		]);
 	});
 
+	it("shows a trimmed intent-evidence compaction as its own line", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-08-22T12:00:00.000Z"));
+		const lines = formatStatusLines(
+			baseStatus({
+				lastCompaction: {
+					mode: "standard",
+					triggerSource: "turn_end",
+					triggerReason: "",
+					timestamp: Date.now(),
+					focusTags: [],
+					previousSummaryPresent: false,
+					splitTurn: false,
+					usageSource: "unknown",
+					fallbackReason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+					intentEvidenceTrimmedTurns: 2,
+					messagesSummarizedCount: 0,
+					executionPath: "custom",
+					fromExtension: true,
+					thinkingLevel: null,
+					compatibilityReason: null,
+				},
+				lastFallbackReason: null,
+			}),
+		);
+
+		// A trim is a success with a smaller payload, so it gets its own line rather than
+		// being reported as a fallback.
+		expect(lines.slice(16)).toEqual([
+			"  Last compaction: standard mode, turn_end trigger, 0s ago",
+			"    Path: custom (Compact+)",
+			"    Intent evidence: trimmed 2 retained turns",
+			"  Last focus echo: (none — no persisted focus echo is available for the last compaction)",
+		]);
+	});
+
 	it("reports a trimmed compaction without presenting the trim as a fallback", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-08-22T12:00:00.000Z"));

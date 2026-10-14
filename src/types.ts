@@ -133,6 +133,10 @@ export interface CompactionTelemetry {
 	fromExtension: boolean;
 	thinkingLevel?: string | null;
 	compatibilityReason?: string | null;
+	/** Retained turns Compact+ dropped from its own intent evidence so the request could
+	 * fit. A trim is a compaction that succeeded with a smaller payload, so it is recorded
+	 * separately from `fallbackReason`. */
+	intentEvidenceTrimmedTurns?: number;
 }
 
 // Threshold/cooldown values are now DEFAULTS re-exported from the settings
