@@ -188,6 +188,10 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
 		state.selectedMode = "standard";
+		// Pre-set the attempt state the deferral must release, so the assertions prove the
+		// release happened rather than that the fields were never set.
+		state.isCompacting = true;
+		state.lastTriggerAuto = true;
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
 		// The live failure shape: the provider reports the session well under the
@@ -217,6 +221,45 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end");
 		expect(state.lastTriggerAuto).toBe(true);
+	});
+
+	it("defers a guided attempt instead of declining when usage reports headroom", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Seeds acceptance shape: provider usage sits well under the window while the
+		// characters/4 estimate of the guided attempt claims it cannot fit. Compact+'s own
+		// issued prompt is the payload under examination, not third-party guidance, so
+		// bounded usage headroom outranks the estimate and the session still compacts.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+		const guided = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+
+		const result = await coordinator.onSessionBeforeCompact(guided, ctx);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+
+		await coordinator.onSessionCompact(
+			{
+				fromExtension: false,
+				compactionEntry: {
+					type: "compaction",
+					summary: VALID_STRUCTURED_SUMMARY,
+					details: {},
+				},
+			} as never,
+			ctx,
+		);
+		expect(state.lastCompactTokens).toBeGreaterThan(0);
 	});
 
 	it("keeps the overflow reason when usage is already near the window", async () => {

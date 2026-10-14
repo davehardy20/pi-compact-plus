@@ -177,7 +177,9 @@ export async function prepareBudgetedCompactionFocus<
 	// fit is worse than a shorter summary, so only a cut that cannot fit without them is
 	// terminal. Dropping more turns never lengthens the request, so a binary search
 	// finds the smallest trim that fits in log2(n) measurements instead of over-trimming
-	// on a geometric schedule.
+	// on a geometric schedule. Rendering is monotone in drop count only up to formatting
+	// differences between focus blocks, so a search that lands on a slightly larger trim
+	// still yields a fitting request, never one that is too large.
 	let low = 1;
 	let high = recentUserTurns.length;
 	let fitted:

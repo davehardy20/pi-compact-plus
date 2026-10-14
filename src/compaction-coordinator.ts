@@ -381,16 +381,29 @@ export class CompactionCoordinator {
 	/**
 	 * Provider-reported usage is ground truth for the live session, and an ungated cut
 	 * is a subset of it. When usage sits comfortably under the window, an estimate above
-	 * the window is a discrepancy worth recording rather than a decline. Caller guidance
-	 * is additive to reported usage, so usage says nothing about a guided request. Fails
-	 * closed when usage is unknown, non-native, non-positive, or near the window.
+	 * the window is not sufficient authority to decline compaction. Compact+'s own issued
+	 * prompt is the payload under examination, so it is not guidance here; only a prompt
+	 * someone else supplied makes usage incomparable, because those tokens are additive to
+	 * reported usage. Fails closed when usage is unknown, non-native, non-positive, or
+	 * near the window.
 	 */
 	private estimateDiscrepancy(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
 		reserve: number,
+		ownRequest = false,
 	): boolean {
-		if (this.callerGuidance(event).length > 0) return false;
+		// An overflow of Compact+'s own request is about the payload Compact+ built, so
+		// its instructions are the payload under examination rather than guidance Pi will
+		// additionally send. For any other cut, third-party guidance is additive to
+		// reported usage and makes the comparison meaningless.
+		if (!ownRequest) {
+			const guidance =
+				event.customInstructions === this.state.lastIssuedCompactionInstructions
+					? ""
+					: this.callerGuidance(event);
+			if (guidance.length > 0) return false;
+		}
 		const model = ctx.model;
 		if (!model || !Number.isSafeInteger(model.contextWindow)) return false;
 		if (!Number.isSafeInteger(reserve) || reserve <= 0) return false;
@@ -444,6 +457,20 @@ export class CompactionCoordinator {
 			ctx,
 		);
 		if (!reason) return undefined;
+		// An exhausted output budget is about the response, so usage headroom cannot excuse
+		// it. For a request estimate on an ungated cut, comfortable provider usage outranks
+		// it: Pi compacts and the discrepancy is recorded instead of a decline.
+		if (
+			reason !== SUMMARIZATION_OUTPUT_CAP_REASON &&
+			this.estimateDiscrepancy(
+				event,
+				ctx,
+				event.preparation?.settings?.reserveTokens ?? 0,
+			)
+		) {
+			this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
+			return undefined;
+		}
 		this.reportSummarizationOverflow(
 			event,
 			ctx,
@@ -849,8 +876,9 @@ export class CompactionCoordinator {
 				);
 				return { cancel: true };
 			}
-			// Pi is about to compact on its own. Release Compact+'s attempt state, or a
-			// deferred compaction blocks every later automatic trigger.
+			// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
+			// caller treats the same deferral as no compaction this turn. Either way release
+			// Compact+'s attempt state, or a deferred attempt blocks later automatic triggers.
 			this.state.selectedMode = null;
 			this.state.isCompacting = false;
 			this.state.lastTriggerAuto = false;
@@ -916,7 +944,15 @@ export class CompactionCoordinator {
 			);
 		}
 
-		let estimateDiscrepancy = false;
+		// Computed once for this attempt: bounded provider usage headroom that contradicts
+		// an over-window estimate. It decides whether a decline is justified, and it is the
+		// reason recorded when the decline is not.
+		const usageDiscrepancy = this.estimateDiscrepancy(
+			event,
+			ctx,
+			event.preparation?.settings?.reserveTokens ?? 0,
+			attempt.requestOverflow === true,
+		);
 		if (attempt.requestOverflow) {
 			// Compact+ sends a superset of what Pi would send: its rendered instructions
 			// carry intent evidence Pi never sends, and on a split turn it merges slices
@@ -941,20 +977,10 @@ export class CompactionCoordinator {
 				);
 				nativeOverflow = measured.reason;
 				nativeOverflowKey = measured.key;
-				// Pi's own payload fits while Compact+'s estimate of its superset did not.
-				// When provider usage sits comfortably under the window that is an estimate
-				// discrepancy rather than a real overflow: record it, and defer to Pi. No
-				// guard is widened.
-				if (
-					!nativeOverflow &&
-					this.estimateDiscrepancy(
-						event,
-						ctx,
-						event.preparation?.settings?.reserveTokens ?? 0,
-					)
-				) {
-					estimateDiscrepancy = true;
-				}
+				// Provider usage is ground truth for the live session and the cut is a subset
+				// of it. Comfortable bounded headroom outranks an over-window estimate of Pi's
+				// own payload: defer to Pi instead of declining.
+				if (nativeOverflow && usageDiscrepancy) nativeOverflow = null;
 			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
@@ -1005,9 +1031,15 @@ export class CompactionCoordinator {
 			};
 		}
 
-		this.state.lastFallbackReason = estimateDiscrepancy
-			? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
-			: (attempt.fallbackReason ?? "custom summarization unavailable");
+		// The discrepancy only speaks for an overflow decline. Any other fallback reason
+		// stays exactly as the attempt reported it.
+		const overflowDecline =
+			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON ||
+			attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON;
+		this.state.lastFallbackReason =
+			usageDiscrepancy && overflowDecline
+				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+				: (attempt.fallbackReason ?? "custom summarization unavailable");
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",
@@ -1016,8 +1048,9 @@ export class CompactionCoordinator {
 			compatibilityReason:
 				telemetryBase.compatibilityReason ?? this.state.lastFallbackReason,
 		};
-		// Pi is about to compact on its own. Release Compact+'s attempt state, or a
-		// deferred compaction blocks every later automatic trigger.
+		// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
+		// caller treats the same deferral as no compaction this turn. Either way release
+		// Compact+'s attempt state, or a deferred attempt blocks later automatic triggers.
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
@@ -1039,7 +1072,7 @@ export class CompactionCoordinator {
 		// not changed since the measurement above, this is a cache hit, not a second
 		// serialization.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
-		if (fallback.reason) {
+		if (fallback.reason && !usageDiscrepancy) {
 			this.reportSummarizationOverflow(
 				event,
 				ctx,
