@@ -34,14 +34,17 @@ export interface SummaryRequestMeasurement {
  */
 /**
  * The output budget Pi reserves for a summarization request: `floor(0.8 * reserveTokens)`.
- * Pi builds the split-turn prefix request through a private helper that reserves
- * `floor(0.5 * reserveTokens)` instead, so callers model that budget explicitly.
+ * The split-turn prefix request uses a different fraction; see
+ * `piReservedTurnPrefixOutputTokens`.
  */
 export function piReservedOutputTokens(reserveTokens: number): number {
 	return Math.floor(0.8 * reserveTokens);
 }
 
-/** Pi builds the split-turn prefix request through a private helper that reserves half. */
+/**
+ * Pi builds the split-turn prefix request through a private helper that reserves
+ * `floor(0.5 * reserveTokens)` rather than the 0.8 fraction used for the summary itself.
+ */
 export function piReservedTurnPrefixOutputTokens(
 	reserveTokens: number,
 ): number {
@@ -65,10 +68,9 @@ export async function measureSummaryRequestTokens(options: {
 	model: SummaryModel | null | undefined;
 	reserveTokens: unknown;
 	/**
-	 * Replace the captured output budget. Pi builds the split-turn prefix request
-	 * through a private helper that reserves `floor(0.5 * reserveTokens)` instead
-	 * of `floor(0.8 * reserveTokens)`, so callers model that budget explicitly.
-	 * Clamped to the model's own cap before use, exactly as Pi clamps it.
+	 * Replace the captured output budget. Clamped to the model's own cap before use,
+	 * exactly as Pi clamps it. See `piReservedOutputTokens` and
+	 * `piReservedTurnPrefixOutputTokens` for the fractions Pi itself uses.
 	 */
 	reservedOutputTokens?: number;
 	signal?: AbortSignal;

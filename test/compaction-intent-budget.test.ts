@@ -652,6 +652,27 @@ it("counts cap drops and trim-search drops together", async () => {
 	expect(budgeted.evidenceTrimmed).toBe(2);
 });
 
+it("counts every dropped turn when the native prefix cannot be verified", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	const projected = [user("Task: repair login."), user(sized(60_000))];
+	// The cut does not match the projected prefix, so containment is unverifiable and the
+	// count must stay conservative rather than subtracting turns assumed to be inside the cut.
+	const cut = user(sized(150_000));
+	const budgeted = await budgetOf(projected, preparation([cut]), 200_000);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+	expect(budgeted.evidenceTrimmed).toBe(projected.length);
+});
+
 it("fails closed when instruction rendering throws", async () => {
 	const prepared = preparation([user("Task: repair login.")]);
 	const budgeted = await prepareBudgetedCompactionFocus([], prepared, {
