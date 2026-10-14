@@ -382,13 +382,15 @@ export class CompactionCoordinator {
 	/**
 	 * Provider-anchored usage (exact for the last reported request, chars/4-estimated for
 	 * anything newer) is the best available reading of the live session, and an ungated cut
-	 * is a subset of it. The estimation error inflates usage rather than shrinking it, so a
-	 * reading that still sits comfortably under the window is not consistent with an
-	 * estimate placing the request above it: an estimate above the window is not sufficient
-	 * authority to decline compaction. Compact+'s own issued prompt is the payload under
-	 * examination, so it is not guidance here; only a prompt someone else supplied makes the
-	 * comparison incomparable, because those tokens are additive to reported usage. Fails
-	 * closed when usage is unknown, non-native, non-positive, or near the window.
+	 * is a subset of it. The guard's payload estimate and the trailing part of that reading
+	 * run the same chars/4 estimator over the same messages, while the anchored part of the
+	 * reading is provider-exact, so a usage figure that still sits comfortably under the
+	 * window means the payload estimate is the inflated side: an estimate above the window is
+	 * not sufficient authority to decline compaction. Compact+'s own issued prompt is the
+	 * payload under examination, so it is not guidance here; only a prompt someone else
+	 * supplied makes the comparison incomparable, because those tokens are additive to
+	 * reported usage. Fails closed when usage is unknown, non-native, non-positive, or near
+	 * the window.
 	 */
 	private estimateDiscrepancy(
 		event: SessionBeforeCompactEvent,
@@ -867,13 +869,28 @@ export class CompactionCoordinator {
 		};
 
 		if (compatibility.executionPath === "native-fallback") {
+			// Deferring is still sending the same payload. Measure before recording why, so the
+			// persisted telemetry carries the reason the deferral actually settled on rather
+			// than needing a second write.
+			const deferred = await this.detectSummarizationRequestOverflow(
+				event,
+				ctx,
+			);
+			// Bounded provider usage headroom outranks the estimate here too: a runtime that
+			// resolves to native fallback must not reproduce the failure this change exists to
+			// fix.
+			const headroomDefers = Boolean(deferred.reason) && usageDiscrepancy;
 			this.state.pendingCompaction = {
 				...telemetryBase,
 				executionPath: "native-fallback",
 				fromExtension: false,
-				fallbackReason: compatibility.reason ?? undefined,
+				fallbackReason: headroomDefers
+					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+					: (compatibility.reason ?? undefined),
 			};
-			this.state.lastFallbackReason = compatibility.reason;
+			this.state.lastFallbackReason = headroomDefers
+				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+				: compatibility.reason;
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 
@@ -884,33 +901,16 @@ export class CompactionCoordinator {
 				);
 			}
 
-			// Deferring is still sending the same payload. Guard it too.
-			const deferred = await this.detectSummarizationRequestOverflow(
-				event,
-				ctx,
-			);
-			if (deferred.reason) {
-				if (usageDiscrepancy) {
-					// Bounded provider usage headroom outranks the estimate here too: a runtime
-					// that resolves to native fallback must not reproduce the failure this change
-					// exists to fix.
-					this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
-					if (this.state.pendingCompaction) {
-						this.state.pendingCompaction.fallbackReason =
-							SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
-					}
-					await this.persistTelemetrySnapshot();
-				} else {
-					this.reportSummarizationOverflow(
-						event,
-						ctx,
-						deferred.reason,
-						NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
-						manualAttempt,
-						deferred.key,
-					);
-					return { cancel: true };
-				}
+			if (deferred.reason && !headroomDefers) {
+				this.reportSummarizationOverflow(
+					event,
+					ctx,
+					deferred.reason,
+					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+					manualAttempt,
+					deferred.key,
+				);
+				return { cancel: true };
 			}
 			// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
 			// caller treats the same deferral as no compaction this turn. Either way release
@@ -962,13 +962,19 @@ export class CompactionCoordinator {
 			return this.cancelAbortedCompaction();
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
-		// A trimmed attempt is a success with a smaller payload, not a decline. Say so
-		// on every outcome so a live session can tell the two apart.
+		// A trimmed attempt is a success with a smaller payload, not a decline. Say so, and
+		// say how much was dropped, so a live session can tell the two apart.
 		if (
 			attempt.fallbackReason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON &&
 			ctx.hasUI
 		) {
-			ctx.ui.notify(EVIDENCE_TRIMMED_WARNING, "warning");
+			const turns = attempt.evidenceTrimmedTurns;
+			ctx.ui.notify(
+				typeof turns === "number"
+					? `${EVIDENCE_TRIMMED_WARNING} Dropped ${turns} retained ${turns === 1 ? "turn" : "turns"}.`
+					: EVIDENCE_TRIMMED_WARNING,
+				"warning",
+			);
 		}
 		if (attempt.cancel) {
 			const overflow =
@@ -1103,9 +1109,10 @@ export class CompactionCoordinator {
 		// Provider wording is not a reliable overflow signal: measure the payload
 		// Pi is about to send before letting this deferral through. When the cut has
 		// not changed since the measurement above, this is a cache hit, not a second
-		// serialization.
+		// serialization. Headroom suppresses the decline only for the same decline it may
+		// relabel: an estimate-driven context overflow.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
-		if (fallback.reason && !headroomOverride) {
+		if (fallback.reason && !(headroomOverride && overflowDecline)) {
 			this.reportSummarizationOverflow(
 				event,
 				ctx,

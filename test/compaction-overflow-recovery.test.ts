@@ -367,6 +367,12 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			expect.stringContaining("trimmed additional intent evidence"),
 			"warning",
 		);
+		// The notice names how much was dropped, so a live session can tell a trim from a
+		// decline rather than inferring it from a reason string.
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 1 retained turn"),
+			"warning",
+		);
 		expect(state.pendingCompaction?.executionPath).toBe("custom");
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,

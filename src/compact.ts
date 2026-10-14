@@ -46,6 +46,10 @@ export interface CompactionAttemptResult {
 	 * rather than estimated. Re-sending this cut through any path fails identically.
 	 */
 	providerConfirmed?: true;
+	/** Retained turns dropped from the front so the request could fit. A trimmed attempt is
+	 * a compaction that succeeded with a smaller payload, so the count is surfaced rather
+	 * than reported only as a reason string. */
+	evidenceTrimmedTurns?: number;
 	classifiedCounts?: {
 		critical: number;
 		contextual: number;
@@ -497,6 +501,7 @@ function finalizeCompactionAttempt(
 	result: CompactionResult | undefined,
 	classifiedCounts: NonNullable<CompactionAttemptResult["classifiedCounts"]>,
 	evidenceNote?: string | null,
+	trimmedTurns?: number,
 ): CompactionAttemptResult {
 	if (!result) {
 		return {
@@ -529,6 +534,9 @@ function finalizeCompactionAttempt(
 		result: normalizedResult,
 		fallbackReason: evidenceNote ?? null,
 		classifiedCounts,
+		...(trimmedTurns === undefined
+			? {}
+			: { evidenceTrimmedTurns: trimmedTurns }),
 	};
 }
 
@@ -701,6 +709,7 @@ export async function runCustomCompaction(
 			budgeted.evidenceTrimmed !== undefined
 				? SUMMARIZATION_EVIDENCE_TRIMMED_REASON
 				: null,
+			budgeted.evidenceTrimmed,
 		);
 	} catch (error) {
 		if (requestSignal?.aborted) {
