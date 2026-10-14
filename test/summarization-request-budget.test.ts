@@ -30,17 +30,21 @@ afterEach(() => {
 	fetchSpy.mockClear();
 });
 
-describe("measureSummaryRequestTokens", () => {
+describe("reserved output fractions", () => {
 	it("names the two output fractions Pi uses for its summarization requests", () => {
-		// The summary request reserves 0.8 of the configured budget and the split-turn prefix
-		// request reserves 0.5. Both are then clamped to the model's own output cap.
+		// Mirrors Pi's dist/core/compaction/compaction.js: generateSummaryWithUsage reserves
+		// floor(0.8 * reserveTokens) and the private generateTurnPrefixSummary reserves
+		// floor(0.5 * reserveTokens). Both are then min()'d against model.maxTokens, which
+		// clampReservedOutput reproduces.
 		expect(piReservedOutputTokens(16_384)).toBe(13_107);
 		expect(piReservedTurnPrefixOutputTokens(16_384)).toBe(8_192);
 		expect(clampReservedOutput({ maxTokens: 4096 }, 13_107)).toBe(4096);
 		expect(clampReservedOutput({ maxTokens: 4096 }, 8_192)).toBe(4096);
 		expect(clampReservedOutput({ maxTokens: 0 }, 8_192)).toBe(8_192);
 	});
+});
 
+describe("measureSummaryRequestTokens", () => {
 	it("measures the whole summarisation request without any network call", async () => {
 		const measurement = await measureSummaryRequestTokens({
 			messages: [user(`Task: repair login.\n${"detail ".repeat(500)}`)],
@@ -81,6 +85,7 @@ describe("measureSummaryRequestTokens", () => {
 			reserveTokens: 16_384,
 		});
 
+		// Pi's generateSummaryWithUsage sends min(floor(0.8 * reserveTokens), model.maxTokens).
 		expect(measurement?.reservedOutputTokens).toBe(
 			Math.min(Math.floor(0.8 * 16_384), 8192),
 		);
