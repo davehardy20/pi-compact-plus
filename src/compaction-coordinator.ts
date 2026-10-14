@@ -65,27 +65,36 @@ type OverflowVerdict = { reason: string | null; key: string | null };
 
 /** Cap on container nodes walked per payload so a pathological tool call cannot make
  * key building unbounded. String lengths are O(1), so sibling payload is always counted
- * until this node cap is reached. */
+ * until this node cap is reached. Reaching the cap is reported: a partial walk is not a
+ * complete key and must not be cached as one. */
 const STRUCTURAL_NODE_BUDGET = 10_000;
 const DIGEST_WINDOW = 256;
 const DIGEST_MULTIPLIER = 31;
 
+type StructuralWalk = { left: number; exhausted: boolean };
+
 /** Length proxy for a non-text payload. Only node traversal is bounded, so growing an
- * object with more keys or an array with more items always changes the key. */
-function structuralChars(value: unknown, nodes: { left: number }): number {
-	if (nodes.left <= 0) return 0;
-	nodes.left -= 1;
+ * object with more keys or an array with more items always changes the key while the
+ * budget lasts. */
+function structuralChars(value: unknown, walk: StructuralWalk): number {
+	if (walk.left <= 0) {
+		// Growth past this point is invisible to the key, so the caller must not treat
+		// the partial total as a verdict it may reuse.
+		walk.exhausted = true;
+		return 0;
+	}
+	walk.left -= 1;
 	if (typeof value === "string") return value.length;
 	if (typeof value === "number" || typeof value === "boolean") return 8;
 	if (Array.isArray(value)) {
 		let total = 2;
-		for (const item of value) total += structuralChars(item, nodes);
+		for (const item of value) total += structuralChars(item, walk);
 		return total;
 	}
 	if (value && typeof value === "object") {
 		let total = 2;
 		for (const [key, item] of Object.entries(value)) {
-			total += key.length + structuralChars(item, nodes);
+			total += key.length + structuralChars(item, walk);
 		}
 		return total;
 	}
@@ -130,6 +139,8 @@ export class CompactionCoordinator {
 	private readonly disableAutoCompaction: boolean;
 	/** Measured verdict for the last cut. Written only by the measurement. */
 	private overflowVerdict: OverflowVerdict | null = null;
+	/** Distinguishes key walks that ran out of budget. Internal only. */
+	private cutKeyNonce = 0;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
 	/** True only for the attempt a manual command started, which explains itself. */
@@ -273,8 +284,9 @@ export class CompactionCoordinator {
 	 * stale verdict. Cheap character totals only; never logged or persisted. */
 	private cutContentChars(
 		preparation: SessionBeforeCompactEvent["preparation"],
-	): number {
+	): { chars: number; exhausted: boolean } {
 		let chars = 0;
+		let exhausted = false;
 		for (const list of [
 			preparation?.messagesToSummarize ?? [],
 			preparation?.turnPrefixMessages ?? [],
@@ -306,14 +318,17 @@ export class CompactionCoordinator {
 					if (typeof partLike.text === "string") chars += partLike.text.length;
 					if (typeof partLike.data === "string") chars += partLike.data.length;
 					if (partLike.arguments !== undefined) {
-						chars += structuralChars(partLike.arguments, {
+						const walk: StructuralWalk = {
 							left: STRUCTURAL_NODE_BUDGET,
-						});
+							exhausted: false,
+						};
+						chars += structuralChars(partLike.arguments, walk);
+						exhausted ||= walk.exhausted;
 					}
 				}
 			}
 		}
-		return chars;
+		return { chars, exhausted };
 	}
 
 	private summarizationCutKey(
@@ -322,6 +337,13 @@ export class CompactionCoordinator {
 	): string {
 		const preparation = event.preparation;
 		const instructions = this.callerGuidance(event);
+		const content = this.cutContentChars(preparation);
+		// A walk that ran out of nodes saw only part of the payload, so its total is
+		// not a key another cut may match. The nonce forces a fresh measurement instead
+		// of letting a partial key reuse a verdict.
+		const contentKey = content.exhausted
+			? `partial:${++this.cutKeyNonce}`
+			: content.chars;
 		// Length alone would treat two guidance strings of the same size as the same
 		// cut. Internal key: never logged or persisted.
 		return [
@@ -331,7 +353,7 @@ export class CompactionCoordinator {
 			preparation?.settings?.reserveTokens ?? 0,
 			preparation?.messagesToSummarize?.length ?? 0,
 			preparation?.turnPrefixMessages?.length ?? 0,
-			this.cutContentChars(preparation),
+			contentKey,
 			preparation?.isSplitTurn ? "split" : "single",
 			instructions.length,
 			instructions.slice(0, 32),
@@ -412,18 +434,24 @@ export class CompactionCoordinator {
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
 		this.manualAttemptInFlight = true;
-		this.manualAttemptEpoch = this.state.currentCompactionEpoch;
+		const attemptEpoch = this.state.currentCompactionEpoch;
+		this.manualAttemptEpoch = attemptEpoch;
 		try {
 			executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
 				persist: this.persistTelemetrySnapshot,
-				// The bypass belongs to this attempt only. Settling clears it even when
-				// Pi never fires session_before_compact for the attempt.
+				// The bypass belongs to this attempt only, and only this attempt may clear
+				// it: a late settle from an attempt that no longer owns the bypass must not
+				// suppress a newer attempt's decline warning.
 				onSettled: () => {
-					this.manualAttemptInFlight = false;
+					if (this.manualAttemptEpoch === attemptEpoch) {
+						this.manualAttemptInFlight = false;
+					}
 				},
 			});
 		} catch (error) {
-			this.manualAttemptInFlight = false;
+			if (this.manualAttemptEpoch === attemptEpoch) {
+				this.manualAttemptInFlight = false;
+			}
 			throw error;
 		}
 	}

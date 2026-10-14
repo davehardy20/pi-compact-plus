@@ -471,6 +471,85 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		).toEqual({ cancel: true });
 	});
 
+	it("re-measures when the key walk ran out of node budget", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const args = (growing: string): Record<string, string> => ({
+			...Object.fromEntries(
+				Array.from({ length: 12_000 }, (_unused, index) => [`k${index}`, "v"]),
+			),
+			growing,
+		});
+		const call = (growing: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "c1",
+						name: "read",
+						arguments: args(growing),
+					},
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call("v")]), ctx),
+		).toBeUndefined();
+
+		// The walk stopped before the growing field, so the partial total cannot be a
+		// verdict another cut may match: the grown payload is measured again.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+	});
+
+	it("keeps a manual attempt's bypass when an older attempt settles late", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const oversized = () =>
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+			]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		let settleOlderAttempt: (() => void) | undefined;
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(
+			({ onComplete }: { onComplete?: () => void }) => {
+				settleOlderAttempt = onComplete;
+			},
+		);
+
+		// An automatic decline already warned about this exact cut.
+		expect(await coordinator.onSessionBeforeCompact(oversized(), ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
+
+		// A manual attempt starts, then an older attempt settles after it.
+		await coordinator.handleManualCommand("standard", ctx);
+		state.invalidateCompactionCallbacks();
+		await coordinator.handleManualCommand("standard", ctx);
+		settleOlderAttempt?.();
+
+		// The newer manual attempt still owns the bypass, so its decline explains itself
+		// instead of being deduped against the earlier automatic warning.
+		expect(await coordinator.onSessionBeforeCompact(oversized(), ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(2);
+	});
+
 	it("digests guidance content so equal-length guidance is not one cut", () => {
 		const a = "A".repeat(1_000_000);
 		const b = `${"A".repeat(499_998)}ZZ${"A".repeat(500_000)}`;
