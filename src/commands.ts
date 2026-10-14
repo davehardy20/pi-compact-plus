@@ -360,8 +360,8 @@ function getTopLevelFallback(
 }
 
 /** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
- * reason is not a fallback. Every status consumer filters it the same way, so no display
- * reports a trim as a decline. */
+ * reason is not a fallback. Every status consumer filters it the same way, and the trim is
+ * reported on its own line from `intentEvidenceTrimmedTurns` instead. */
 function informationalReason(reason: string | null): string | null {
 	return reason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON ? null : reason;
 }
