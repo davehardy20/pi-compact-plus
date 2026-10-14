@@ -7,7 +7,7 @@ import {
 	generateSummaryWithUsage,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { buildSummaryInstructions } from "../src/prompts.js";
 import { CONTINUATION_PROMPT } from "../src/types.js";
@@ -166,6 +166,45 @@ function stubSummary(text: string) {
 	};
 }
 
+// Pi's compact(preparation, model, apiKey, headers, customInstructions, signal,
+// thinkingLevel, streamFn, ...): the capturing handler is passed in the streamFn slot, so no
+// provider transport is ever reached.
+function runNativeCompact(
+	prepared: unknown,
+	maxTokens: number,
+	onRequest: (
+		context: { messages: unknown[] },
+		options?: { maxTokens?: number },
+	) => unknown,
+) {
+	return sdkCompaction.compact(
+		prepared,
+		{
+			id: "budget-test",
+			provider: "budget-test",
+			api: "openai-completions",
+			contextWindow: 200_000,
+			maxTokens,
+		} as never,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		((
+			_model: unknown,
+			context: { messages: unknown[] },
+			options?: { maxTokens?: number },
+		) => onRequest(context, options)) as never,
+	);
+}
+
+const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+afterEach(() => {
+	fetchSpy.mockClear();
+});
+
 it("pins both summarization fractions to Pi's own requests", async () => {
 	const prepared = nativeSplitTurnPreparation();
 	expect(prepared.isSplitTurn).toBe(true);
@@ -173,11 +212,7 @@ it("pins both summarization fractions to Pi's own requests", async () => {
 	expect(prepared.turnPrefixMessages.length).toBeGreaterThan(0);
 
 	const requests: Array<{ maxTokens: number; isTurnPrefix: boolean }> = [];
-	const capture = (
-		_model: unknown,
-		context: { messages: unknown[] },
-		options?: { maxTokens?: number },
-	) => {
+	await runNativeCompact(prepared, 200_000, (context, options) => {
 		requests.push({
 			maxTokens: options?.maxTokens ?? 0,
 			// Only Pi's TURN_PREFIX_SUMMARIZATION_PROMPT asks for this section.
@@ -186,67 +221,47 @@ it("pins both summarization fractions to Pi's own requests", async () => {
 			),
 		});
 		return stubSummary("## Goal\nstub summary");
-	};
-
-	await sdkCompaction.compact(
-		prepared,
-		{
-			id: "budget-test",
-			provider: "budget-test",
-			api: "openai-completions",
-			contextWindow: 200_000,
-			maxTokens: 200_000,
-		} as never,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		capture as never,
-	);
+	});
 
 	expect(requests.length).toBe(2);
-	const history = requests.find((entry) => !entry.isTurnPrefix);
-	const prefix = requests.find((entry) => entry.isTurnPrefix);
+	// Pi issues the history request before the turn-prefix request (compaction.js:693-702), so
+	// the order is pinned alongside the prompt marker instead of relying on it alone.
+	expect(requests.map((entry) => entry.isTurnPrefix)).toEqual([false, true]);
 	// Drift guard for the fractions documented in src/summarization-request-budget.ts:
 	// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
 	// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens 200_000
 	// keeps the model cap from masking either fraction.
-	expect(history?.maxTokens).toBe(13_107);
-	expect(prefix?.maxTokens).toBe(8_192);
+	expect(requests[0]?.maxTokens).toBe(13_107);
+	expect(requests[1]?.maxTokens).toBe(8_192);
+	expect(fetchSpy).not.toHaveBeenCalled();
 });
 
 it("pins the model-cap clamp Pi applies to both requests", async () => {
 	const prepared = nativeSplitTurnPreparation();
 	const captured: number[] = [];
-	const capture = (
-		_model: unknown,
-		_context: unknown,
-		options?: { maxTokens?: number },
-	) => {
+	await runNativeCompact(prepared, 4096, (_context, options) => {
 		captured.push(options?.maxTokens ?? 0);
 		return stubSummary("## Goal\nstub summary");
-	};
-	await sdkCompaction.compact(
-		prepared,
-		{
-			id: "budget-test",
-			provider: "budget-test",
-			api: "openai-completions",
-			contextWindow: 200_000,
-			maxTokens: 4096,
-		} as never,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		capture as never,
-	);
+	});
 
 	// Pi clamps both requests to model.maxTokens: min(floor(0.8 * 16_384), 4096) and
 	// min(floor(0.5 * 16_384), 4096). clampReservedOutput must keep reproducing that.
 	expect(captured).toEqual([4096, 4096]);
+	expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it("pins the unclamped requests Pi sends when the model declares no output cap", async () => {
+	const prepared = nativeSplitTurnPreparation();
+	const captured: number[] = [];
+	await runNativeCompact(prepared, 0, (_context, options) => {
+		captured.push(options?.maxTokens ?? 0);
+		return stubSummary("## Goal\nstub summary");
+	});
+
+	// Pi treats a non-positive model cap as no cap at all, so both fractions survive unclamped.
+	// clampReservedOutput mirrors that branch and must not silently clamp to zero.
+	expect(captured).toEqual([13_107, 8_192]);
+	expect(fetchSpy).not.toHaveBeenCalled();
 });
 
 it("keeps later identical requests instead of deduplicating them as a text set", async () => {
