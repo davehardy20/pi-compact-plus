@@ -21,18 +21,6 @@ export interface SummaryRequestMeasurement {
 }
 
 /**
- * Measure the exact summarization request Pi would send, without contacting a
- * provider. The public SDK builds the request, then the injected stream function
- * captures the assembled context and throws before any registry, credential,
- * transport, or network work happens.
- *
- * Estimates come from `estimateTokens` (characters / 4), so they can err in
- * either direction: base64 or minified JSON tokenizes denser than 4 chars/token,
- * prose with punctuation and markup sparser. The guard trips only above the full
- * `contextWindow`, not Pi's `contextWindow - reserveTokens` trigger, which is
- * what keeps a false-positive cancel unlikely.
- */
-/**
  * The output budget Pi reserves for a summarization request: `floor(0.8 * reserveTokens)`.
  * The split-turn prefix request uses a different fraction; see
  * `piReservedTurnPrefixOutputTokens`.
@@ -63,6 +51,18 @@ export function clampReservedOutput(
 	return model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
 }
 
+/**
+ * Measure the exact summarization request Pi would send, without contacting a
+ * provider. The public SDK builds the request, then the injected stream function
+ * captures the assembled context and throws before any registry, credential,
+ * transport, or network work happens.
+ *
+ * Estimates come from `estimateTokens` (characters / 4), so they can err in
+ * either direction: base64 or minified JSON tokenizes denser than 4 chars/token,
+ * prose with punctuation and markup sparser. The guard trips only above the full
+ * `contextWindow`, not Pi's `contextWindow - reserveTokens` trigger, which is
+ * what keeps a false-positive cancel unlikely.
+ */
 export async function measureSummaryRequestTokens(options: {
 	messages: AgentMessage[];
 	model: SummaryModel | null | undefined;
