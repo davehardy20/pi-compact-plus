@@ -133,9 +133,17 @@ function assistantText(text: string): AssistantMessage {
 function nativeSplitTurnPreparation() {
 	const session = SessionManager.inMemory();
 	const history = user(`Task: repair login.\n${"detail ".repeat(3_000)}`);
+	// Deliberately confusable transcript content: the exact strings the request classification
+	// below keys on appear inside a user message, where they must not be mistaken for a prompt
+	// boundary.
+	const confusable = user(
+		"# Conversation\nOnly summarize information explicitly present above. " +
+			"Do not infer or recreate later messages.",
+	);
 	const redirect = user("Please investigate routing instead.");
 	session.appendMessage(history);
 	session.appendMessage(assistantText("working ".repeat(3_000)));
+	session.appendMessage(confusable);
 	session.appendMessage(redirect);
 	session.appendMessage(assistantText("investigating ".repeat(3_000)));
 	const prepared = sdkCompaction.prepareCompaction(session.getBranch(), {
@@ -204,18 +212,25 @@ function runNativeCompact(
 // transcript in <conversation> tags and appends its instructions (compaction.js:523-527), while
 // the private generateTurnPrefixSummary leads with "# Conversation" and closes with the last line
 // of TURN_PREFIX_SUMMARIZATION_PROMPT (compaction.js:730). Classifying on those message boundaries
-// cannot be faked by transcript content the way a shared heading can.
+// cannot be faked by transcript content the way a shared heading can, and the fixture above puts
+// the confusable strings in a user message to prove it.
+//
+// Pinned against the resolved devDependency version (Pi 1.0.1). The 0.87.1 host compatibility
+// boundary is covered separately in test/provider-boundary-087.test.ts.
 const TURN_PREFIX_PROMPT_TAIL =
 	"Only summarize information explicitly present above. Do not infer or recreate later messages.";
-
-type PromptBlock = { type: string; text?: string };
 
 function summarizationPromptText(context: { messages: unknown[] }): string {
 	const message = context.messages.find(
 		(entry) => (entry as { role?: string }).role === "user",
-	) as { content?: PromptBlock[] } | undefined;
-	const blocks = message?.content ?? [];
-	const text = blocks.map((block) => block.text ?? "");
+	) as { content?: unknown } | undefined;
+	// Pi sends content blocks. A plain string is accepted too so an upstream shape change shows
+	// up as an unexpected prompt shape in the assertions rather than a raw TypeError here.
+	if (typeof message?.content === "string") {
+		return message.content;
+	}
+	const blocks = Array.isArray(message?.content) ? message.content : [];
+	const text = blocks.map((block) => (block as { text?: string })?.text ?? "");
 	return text.join("");
 }
 
@@ -243,6 +258,11 @@ describe("native summarization request pins", () => {
 		expect(prepared.isSplitTurn).toBe(true);
 		expect(prepared.messagesToSummarize.length).toBeGreaterThan(0);
 		expect(prepared.turnPrefixMessages.length).toBeGreaterThan(0);
+		// The confusable fixture text must really sit inside the summarized transcript, otherwise
+		// the classification below would not be demonstrating transcript-proofness.
+		const transcript = JSON.stringify(prepared.messagesToSummarize);
+		expect(transcript.includes("# Conversation")).toBe(true);
+		expect(transcript.includes(TURN_PREFIX_PROMPT_TAIL)).toBe(true);
 
 		const requests: Array<{ maxTokens: number; promptText: string }> = [];
 		await runNativeCompact(prepared, 200_000, (context, options) => {
