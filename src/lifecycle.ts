@@ -84,6 +84,9 @@ export interface LifecycleOptions {
 	sendContinuation?: boolean;
 	/** Optional callback to persist state after onComplete/onError update lastCompactTokens. */
 	persist?: () => void | Promise<void>;
+	/** Called when the attempt settles, before the epoch guard, so a caller's per-attempt
+	 * state cannot stay set when Pi never fires `session_before_compact` for it. */
+	onSettled?: () => void;
 }
 
 /**
@@ -112,9 +115,10 @@ export function executeCompaction(
 
 	const instructions = buildSummaryInstructions(mode, focus);
 	state.lastIssuedCompactionInstructions = instructions;
-	ctx.compact({
+	const request: Parameters<typeof ctx.compact>[0] = {
 		customInstructions: instructions,
 		onComplete: (result) => {
+			options?.onSettled?.();
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;
@@ -142,6 +146,7 @@ export function executeCompaction(
 			}
 		},
 		onError: (error) => {
+			options?.onSettled?.();
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;
@@ -158,5 +163,23 @@ export function executeCompaction(
 			if (state.lastOverflowReportedEpoch === compactionEpoch) return;
 			safeNotifyCompactionFailure(ctx, hadUI, error.message);
 		},
-	});
+	};
+
+	// A synchronous throw from Pi must settle the attempt exactly the way its callbacks
+	// do. Otherwise state.isCompacting stays true and every later attempt is refused as
+	// "already in progress", which blocks compaction for the rest of the session.
+	try {
+		ctx.compact(request);
+	} catch (error) {
+		options?.onSettled?.();
+		state.isCompacting = false;
+		state.selectedMode = null;
+		state.lastTriggerAuto = false;
+		state.lastIssuedCompactionInstructions = null;
+		state.lastCompactTokens = 0;
+		state.echoInjected = false;
+		state.clearPendingCompaction();
+		options?.persist?.();
+		throw error;
+	}
 }

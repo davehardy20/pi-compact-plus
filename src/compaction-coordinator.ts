@@ -59,7 +59,65 @@ type SessionBeforeCompactResultLike = {
 	cancel?: boolean;
 	compaction?: CompactionResult;
 };
-type MeasuredCut = { event: SessionBeforeCompactEvent; key: string };
+/** Verdict for one measured cut. `key` is null when the guard stopped before it
+ * needed to build one. Internal only: never logged or persisted. */
+type OverflowVerdict = { reason: string | null; key: string | null };
+
+/** Cap on container nodes walked per payload so a pathological tool call cannot make
+ * key building unbounded. String lengths are O(1), so sibling payload is always counted
+ * until this node cap is reached. Reaching the cap is reported: a partial walk is not a
+ * complete key and must not be cached as one. */
+const STRUCTURAL_NODE_BUDGET = 10_000;
+const DIGEST_WINDOW = 256;
+const DIGEST_MULTIPLIER = 31;
+
+type StructuralWalk = { left: number; exhausted: boolean };
+
+/** Length proxy for a non-text payload. Only node traversal is bounded, so growing an
+ * object with more keys or an array with more items always changes the key while the
+ * budget lasts. */
+function structuralChars(value: unknown, walk: StructuralWalk): number {
+	if (walk.exhausted) return 0;
+	if (walk.left <= 0) {
+		// Growth past this point is invisible to the key, so the caller must not treat
+		// the partial total as a verdict it may reuse.
+		walk.exhausted = true;
+		return 0;
+	}
+	walk.left -= 1;
+	if (typeof value === "string") return value.length;
+	if (typeof value === "number" || typeof value === "boolean") return 8;
+	if (Array.isArray(value)) {
+		let total = 2;
+		for (const item of value) total += structuralChars(item, walk);
+		return total;
+	}
+	if (value && typeof value === "object") {
+		let total = 2;
+		for (const [key, item] of Object.entries(value)) {
+			total += key.length + structuralChars(item, walk);
+		}
+		return total;
+	}
+	return 1;
+}
+
+/** Content discriminator for guidance text. Fully covered up to three windows of
+ * DIGEST_WINDOW characters (~768 in total: head, centred middle, tail). Beyond that it
+ * is a discriminator, not a guarantee: a difference outside all three windows can still
+ * share a key. */
+export function guidanceDigest(text: string): number {
+	const middle = Math.max(0, Math.floor(text.length / 2) - DIGEST_WINDOW / 2);
+	const tail = Math.max(0, text.length - DIGEST_WINDOW);
+	let digest = 0;
+	for (const start of [0, middle, tail]) {
+		const end = Math.min(text.length, start + DIGEST_WINDOW);
+		for (let index = start; index < end; index++) {
+			digest = (digest * DIGEST_MULTIPLIER + text.charCodeAt(index)) | 0;
+		}
+	}
+	return digest;
+}
 
 export interface CompactionCoordinatorOptions {
 	state: CompactionState;
@@ -81,13 +139,17 @@ export class CompactionCoordinator {
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
 	private readonly disableAutoCompaction: boolean;
 	/** Measured verdict for the last cut. Written only by the measurement. */
-	private overflowVerdict: { key: string; reason: string | null } | null = null;
+	private overflowVerdict: OverflowVerdict | null = null;
+	/** Distinguishes key walks that ran out of budget, so a partial walk never matches
+	 * a later cut. Bounded by the number of compaction attempts in a session, and it
+	 * resets with the session. Internal only: never logged or persisted. */
+	private cutKeyNonce = 0;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
-	/** Key measured for the event being guarded, so the notice path reuses it. */
-	private measuredEvent: MeasuredCut | null = null;
 	/** True only for the attempt a manual command started, which explains itself. */
 	private manualAttemptInFlight = false;
+	/** Epoch that bypass belongs to, so it cannot outlive a session transition. */
+	private manualAttemptEpoch = -1;
 
 	constructor({
 		state,
@@ -109,8 +171,9 @@ export class CompactionCoordinator {
 	resetOverflowState(): void {
 		this.overflowVerdict = null;
 		this.overflowNoticeKey = null;
-		this.measuredEvent = null;
 		this.manualAttemptInFlight = false;
+		this.manualAttemptEpoch = -1;
+		this.cutKeyNonce = 0;
 	}
 
 	private cancelAbortedCompaction(): { cancel: true } {
@@ -122,16 +185,25 @@ export class CompactionCoordinator {
 		return { cancel: true };
 	}
 
+	/** Caller guidance Pi will really append, normalized once for the fast path, the
+	 * measurement, and the verdict key. */
+	private callerGuidance(event: SessionBeforeCompactEvent): string {
+		return typeof event.customInstructions === "string"
+			? event.customInstructions
+			: "";
+	}
+
 	/**
-	 * Measure each request Pi would send and return the stable overflow reason when
-	 * one cannot fit. Pure: no state or UI effects, so each call site owns its
-	 * consequences. The verdict is cached per unchanged cut so a permanently
-	 * oversized session is not re-serialized every attempt.
+	 * Measure each request Pi would send and return the stable overflow reason plus the
+	 * key it was measured under, or null values when the guard stopped before measuring.
+	 * Pure: no state or UI effects, so each call site owns its consequences. The verdict
+	 * is cached per unchanged cut so a permanently oversized session is not re-serialized
+	 * every attempt.
 	 */
 	private async detectSummarizationRequestOverflow(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
-	): Promise<string | null> {
+	): Promise<OverflowVerdict> {
 		const model = ctx.model;
 		const preparation = event.preparation;
 		const reserve = preparation?.settings?.reserveTokens;
@@ -141,17 +213,16 @@ export class CompactionCoordinator {
 			!Number.isSafeInteger(reserve) ||
 			(reserve as number) <= 0
 		) {
-			return null;
+			return { reason: null, key: null };
 		}
 		// Fail-open fast path before serializing: the cut is a subset of the live
 		// session, so while Pi reports the whole session fitting inside
 		// `contextWindow - reserveTokens` the guard is skipped. That bound covers the
 		// transcript only, so it is not trusted when caller guidance adds tokens Pi
-		// will actually send. It can skip the guard, never add a cancel.
-		const guidance =
-			typeof event.customInstructions === "string"
-				? event.customInstructions
-				: "";
+		// will actually send, which means it never applies to Compact+'s own attempts:
+		// those always issue instructions. It applies to Pi-triggered and boundary cuts,
+		// and it can skip the guard but never add a cancel.
+		const guidance = this.callerGuidance(event);
 		const usage = this.getEffectiveUsage(ctx);
 		if (
 			guidance.length === 0 &&
@@ -159,11 +230,12 @@ export class CompactionCoordinator {
 			(usage?.tokens ?? 0) > 0 &&
 			(usage?.tokens ?? 0) + (reserve as number) <= model.contextWindow
 		) {
-			return null;
+			return { reason: null, key: null };
 		}
 		const key = this.summarizationCutKey(event, ctx);
-		this.measuredEvent = { event, key };
-		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
+		if (this.overflowVerdict?.key === key) {
+			return { reason: this.overflowVerdict.reason, key };
+		}
 		// Pi issues one request per preparation slice. On a split turn the prefix
 		// request carries no custom instructions or previous summary and reserves
 		// floor(0.5 * reserveTokens), matching Pi's budget for that request. Pi's
@@ -186,10 +258,7 @@ export class CompactionCoordinator {
 				wrapper: false,
 			});
 		}
-		const customInstructions =
-			typeof event.customInstructions === "string"
-				? event.customInstructions
-				: undefined;
+		const customInstructions = guidance || undefined;
 		const signal = event.signal ?? ctx.signal;
 		let reason: string | null = null;
 		for (const request of requests) {
@@ -212,15 +281,16 @@ export class CompactionCoordinator {
 			}
 		}
 		this.overflowVerdict = { key, reason };
-		return reason;
+		return { reason, key };
 	}
 
 	/** Content discriminator: message counts alone let an in-place shrink reuse a
 	 * stale verdict. Cheap character totals only; never logged or persisted. */
 	private cutContentChars(
 		preparation: SessionBeforeCompactEvent["preparation"],
-	): number {
+	): { chars: number; exhausted: boolean } {
 		let chars = 0;
+		let exhausted = false;
 		for (const list of [
 			preparation?.messagesToSummarize ?? [],
 			preparation?.turnPrefixMessages ?? [],
@@ -233,16 +303,36 @@ export class CompactionCoordinator {
 				}
 				if (!Array.isArray(content)) continue;
 				for (const part of content) {
-					// Counted structurally, not serialized, so a large tool call or image
-					// cannot make the key expensive.
-					const partLike = part as { text?: unknown; type?: unknown };
+					// Tool arguments and image data are payload too: ignoring them let a grown
+					// tool call reuse a stale verdict. Only the container walk is bounded.
+					const partLike = part as {
+						type?: unknown;
+						name?: unknown;
+						text?: unknown;
+						arguments?: unknown;
+						data?: unknown;
+						mimeType?: unknown;
+					};
 					chars += 1;
 					if (typeof partLike.type === "string") chars += partLike.type.length;
+					if (typeof partLike.name === "string") chars += partLike.name.length;
+					if (typeof partLike.mimeType === "string") {
+						chars += partLike.mimeType.length;
+					}
 					if (typeof partLike.text === "string") chars += partLike.text.length;
+					if (typeof partLike.data === "string") chars += partLike.data.length;
+					if (partLike.arguments !== undefined) {
+						const walk: StructuralWalk = {
+							left: STRUCTURAL_NODE_BUDGET,
+							exhausted: false,
+						};
+						chars += structuralChars(partLike.arguments, walk);
+						exhausted ||= walk.exhausted;
+					}
 				}
 			}
 		}
-		return chars;
+		return { chars, exhausted };
 	}
 
 	private summarizationCutKey(
@@ -250,10 +340,14 @@ export class CompactionCoordinator {
 		ctx: ExtensionEventContext,
 	): string {
 		const preparation = event.preparation;
-		const instructions =
-			typeof event.customInstructions === "string"
-				? event.customInstructions
-				: "";
+		const instructions = this.callerGuidance(event);
+		const content = this.cutContentChars(preparation);
+		// A walk that ran out of nodes saw only part of the payload, so its total is
+		// not a key another cut may match. The nonce forces a fresh measurement instead
+		// of letting a partial key reuse a verdict.
+		const contentKey = content.exhausted
+			? `partial:${++this.cutKeyNonce}`
+			: content.chars;
 		// Length alone would treat two guidance strings of the same size as the same
 		// cut. Internal key: never logged or persisted.
 		return [
@@ -263,12 +357,20 @@ export class CompactionCoordinator {
 			preparation?.settings?.reserveTokens ?? 0,
 			preparation?.messagesToSummarize?.length ?? 0,
 			preparation?.turnPrefixMessages?.length ?? 0,
-			this.cutContentChars(preparation),
+			contentKey,
 			preparation?.isSplitTurn ? "split" : "single",
 			instructions.length,
 			instructions.slice(0, 32),
 			instructions.slice(-32),
+			guidanceDigest(instructions),
 		].join(":");
+	}
+
+	/** The notice dedupe must stay deterministic across attempts, so a key whose walk
+	 * ran out of budget is compared in its stable partial form. The verdict cache keeps
+	 * the nonce, because a partial total cannot identify a cut. */
+	private noticeKey(key: string): string {
+		return key.replace(/partial:\d+/, "partial");
 	}
 
 	/** Record the decline, and warn at most once for an unchanged cut. */
@@ -278,14 +380,14 @@ export class CompactionCoordinator {
 		reason: string,
 		warning: string,
 		manualAttempt: boolean,
+		measuredKey: string | null,
 	): void {
 		this.state.lastFallbackReason = reason;
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
-		const key =
-			this.measuredEvent?.event === event
-				? this.measuredEvent.key
-				: this.summarizationCutKey(event, ctx);
+		const key = this.noticeKey(
+			measuredKey ?? this.summarizationCutKey(event, ctx),
+		);
 		// A manual command always explains itself. Only automatic repeats of an
 		// unchanged cut are deduped.
 		if (!manualAttempt && this.overflowNoticeKey === key) return;
@@ -298,7 +400,10 @@ export class CompactionCoordinator {
 		ctx: ExtensionEventContext,
 		manualAttempt: boolean,
 	): Promise<SessionBeforeCompactResultLike | undefined> {
-		const reason = await this.detectSummarizationRequestOverflow(event, ctx);
+		const { reason, key } = await this.detectSummarizationRequestOverflow(
+			event,
+			ctx,
+		);
 		if (!reason) return undefined;
 		this.reportSummarizationOverflow(
 			event,
@@ -306,6 +411,7 @@ export class CompactionCoordinator {
 			reason,
 			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 			manualAttempt,
+			key,
 		);
 		return { cancel: true };
 	}
@@ -341,9 +447,26 @@ export class CompactionCoordinator {
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
 		this.manualAttemptInFlight = true;
-		executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
-			persist: this.persistTelemetrySnapshot,
-		});
+		const attemptEpoch = this.state.currentCompactionEpoch;
+		this.manualAttemptEpoch = attemptEpoch;
+		try {
+			executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
+				persist: this.persistTelemetrySnapshot,
+				// The bypass belongs to this attempt only, and only an attempt from this
+				// attempt's epoch may clear it: a late settle from an earlier epoch must not
+				// suppress a newer attempt's decline warning.
+				onSettled: () => {
+					if (this.manualAttemptEpoch === attemptEpoch) {
+						this.manualAttemptInFlight = false;
+					}
+				},
+			});
+		} catch (error) {
+			if (this.manualAttemptEpoch === attemptEpoch) {
+				this.manualAttemptInFlight = false;
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -581,8 +704,12 @@ export class CompactionCoordinator {
 		nativeFallbackAvailable = true,
 		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
-		// Only the attempt a manual command started bypasses the notice dedupe.
-		const manualAttempt = this.manualAttemptInFlight;
+		// Only the attempt a manual command started bypasses the notice dedupe, and only
+		// for the epoch that attempt belongs to: a bypass left set by an attempt Pi never
+		// settled expires here rather than leaking into a later session's automatic runs.
+		const manualAttempt =
+			this.manualAttemptInFlight &&
+			this.manualAttemptEpoch === this.state.currentCompactionEpoch;
 		this.manualAttemptInFlight = false;
 		const mode = this.state.selectedMode;
 
@@ -668,17 +795,18 @@ export class CompactionCoordinator {
 			}
 
 			// Deferring is still sending the same payload. Guard it too.
-			const deferredOverflow = await this.detectSummarizationRequestOverflow(
+			const deferred = await this.detectSummarizationRequestOverflow(
 				event,
 				ctx,
 			);
-			if (deferredOverflow) {
+			if (deferred.reason) {
 				this.reportSummarizationOverflow(
 					event,
 					ctx,
-					deferredOverflow,
+					deferred.reason,
 					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
+					deferred.key,
 				);
 				return { cancel: true };
 			}
@@ -745,6 +873,7 @@ export class CompactionCoordinator {
 			// authoritative after re-measuring Pi's own requests. For a single slice
 			// the superset is treated as authoritative and the attempt is cancelled.
 			let nativeOverflow: string | null;
+			let nativeOverflowKey: string | null = null;
 			// Pi only sends separate requests when the split turn has a prefix. Compact+'
 			// own boundary preparation reports isSplitTurn with an empty prefix, so the
 			// gate must match the real split, not the flag alone.
@@ -752,10 +881,12 @@ export class CompactionCoordinator {
 				event.preparation?.isSplitTurn === true &&
 				(event.preparation?.turnPrefixMessages?.length ?? 0) > 0;
 			if (splitsPayload) {
-				nativeOverflow = await this.detectSummarizationRequestOverflow(
+				const measured = await this.detectSummarizationRequestOverflow(
 					event,
 					ctx,
 				);
+				nativeOverflow = measured.reason;
+				nativeOverflowKey = measured.key;
 			} else {
 				// The kill switch must restore native compaction even when Compact+
 				// confirmed an overflow of a payload that contains Pi's unchanged cut.
@@ -775,6 +906,7 @@ export class CompactionCoordinator {
 						? SUMMARIZATION_OUTPUT_CAP_WARNING
 						: SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
+					nativeOverflowKey,
 				);
 				return cancelCustom(nativeOverflow);
 			}
@@ -841,19 +973,17 @@ export class CompactionCoordinator {
 		// Pi is about to send before letting this deferral through. When the cut has
 		// not changed since the measurement above, this is a cache hit, not a second
 		// serialization.
-		const fallbackOverflow = await this.detectSummarizationRequestOverflow(
-			event,
-			ctx,
-		);
-		if (fallbackOverflow) {
+		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
+		if (fallback.reason) {
 			this.reportSummarizationOverflow(
 				event,
 				ctx,
-				fallbackOverflow,
+				fallback.reason,
 				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 				manualAttempt,
+				fallback.key,
 			);
-			return cancelCustom(fallbackOverflow);
+			return cancelCustom(fallback.reason);
 		}
 
 		return undefined;

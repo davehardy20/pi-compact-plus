@@ -8,6 +8,17 @@ import {
 
 const { compactMock } = vi.hoisted(() => ({ compactMock: vi.fn() }));
 
+vi.mock("../src/persist.js", () => ({
+	loadTelemetryWithDiagnostics: vi.fn(async () => ({
+		telemetry: null,
+		issue: null,
+	})),
+	saveTelemetryWithDiagnostics: vi.fn(async () => ({
+		saved: true,
+		issue: null,
+	})),
+}));
+
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
@@ -19,7 +30,11 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return { ...actual, compact: compactMock };
 });
 
-import { CompactionCoordinator } from "../src/compaction-coordinator.js";
+import {
+	CompactionCoordinator,
+	guidanceDigest,
+} from "../src/compaction-coordinator.js";
+import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
@@ -365,6 +380,319 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 				ctx,
 			),
 		).toBeUndefined();
+	});
+
+	it("clears the manual bypass when the attempt settles without reaching the guard", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValue(new Error(STRATA_CONTEXT_OVERFLOW));
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		// An automatic attempt already warned once about this cut.
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+
+		// A manual attempt settles without Pi ever firing session_before_compact.
+		await coordinator.handleManualCommand("standard", ctx);
+		const compactSpy = ctx.compact as ReturnType<typeof vi.fn>;
+		const issued = compactSpy.mock.calls[0]?.[0] as {
+			onComplete?: (result: unknown) => void;
+		};
+		issued.onComplete?.({ estimatedTokensAfter: 1000 });
+
+		// The bypass must have expired with that attempt, so the unchanged cut dedupes.
+		state.selectedMode = "standard";
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
+	});
+
+	it("does not leave the session compacting when Pi throws synchronously", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+			throw new Error("Pi rejected the compaction request");
+		});
+
+		await expect(
+			coordinator.handleManualCommand("standard", ctx),
+		).rejects.toThrow("Pi rejected the compaction request");
+		expect(state.isCompacting).toBe(false);
+
+		// A later manual command must still run, not be refused as already in progress.
+		await coordinator.handleManualCommand("standard", ctx);
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) =>
+					call[1] === "warning" &&
+					String(call[0]).includes("already in progress"),
+			),
+		).toHaveLength(0);
+	});
+
+	it("re-measures when tool arguments grow by adding siblings", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const args = (count: number): Record<string, string> =>
+			Object.fromEntries(
+				Array.from({ length: count }, (_unused, index) => [
+					`key_${index}`,
+					"v".repeat(267),
+				]),
+			);
+		const call = (count: number): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: args(count) },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call(100)]), ctx),
+		).toBeUndefined();
+
+		// Same part, same type, same name. The payload grew through sibling keys, which
+		// a character accumulator would have stopped counting.
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call(3000)]), ctx),
+		).toEqual({ cancel: true });
+	});
+
+	it("re-measures when the key walk ran out of node budget", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const args = (growing: string): Record<string, string> => ({
+			...Object.fromEntries(
+				Array.from({ length: 12_000 }, (_unused, index) => [`k${index}`, "v"]),
+			),
+			growing,
+		});
+		const call = (growing: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "c1",
+						name: "read",
+						arguments: args(growing),
+					},
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call("v")]), ctx),
+		).toBeUndefined();
+
+		// The walk stopped before the growing field, so the partial total cannot be a
+		// verdict another cut may match: the grown payload is measured again.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+	});
+
+	it("keeps a manual attempt's bypass when an older attempt settles late", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const oversized = () =>
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+			]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		const settles: Array<(() => void) | undefined> = [];
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onComplete }: { onComplete?: () => void }) => {
+				settles.push(onComplete);
+			},
+		);
+
+		// Attempt A starts, and the session transitions before Pi ever settles it.
+		await coordinator.handleManualCommand("standard", ctx);
+		state.reset();
+
+		// An automatic decline in the new epoch already warned about this exact cut.
+		expect(await coordinator.onSessionBeforeCompact(oversized(), ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
+
+		// Attempt B starts in the new epoch, then A settles late.
+		await coordinator.handleManualCommand("standard", ctx);
+		settles[0]?.();
+
+		// B still owns the bypass, so its decline explains itself instead of being
+		// deduped against the earlier automatic warning.
+		expect(await coordinator.onSessionBeforeCompact(oversized(), ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(2);
+	});
+
+	it("warns once for a budget-exhausting cut even though it is re-measured", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const args: Record<string, string> = {
+			...Object.fromEntries(
+				Array.from({ length: 12_000 }, (_unused, index) => [`k${index}`, "v"]),
+			),
+			growing: "x".repeat(1_000_000),
+		};
+		const call = (): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: args },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		// The verdict cache cannot reuse a partial total, so each attempt measures
+		// again. The notice dedupe uses the stable partial form, so the user still
+		// hears about the unchanged cut only once.
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+	});
+
+	it("digests guidance content so equal-length guidance is not one cut", () => {
+		const a = "A".repeat(1_000_000);
+		const b = `${"A".repeat(499_998)}ZZ${"A".repeat(500_000)}`;
+		expect(a.length).toBe(b.length);
+		expect(a.slice(0, 32)).toBe(b.slice(0, 32));
+		expect(a.slice(-32)).toBe(b.slice(-32));
+		expect(guidanceDigest(a)).not.toBe(guidanceDigest(b));
+		expect(guidanceDigest(a)).toBe(guidanceDigest("A".repeat(1_000_000)));
+	});
+
+	it("cannot see image growth because Pi drops image parts from the request", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const image = (data: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [{ type: "image", data, mimeType: "image/png" }],
+				timestamp: 1,
+			}) as unknown as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [image("aGVsbG8=")]),
+				ctx,
+			),
+		).toBeUndefined();
+
+		// Characterization: Pi renders the summarization conversation through
+		// contentText, which keeps only type "text" blocks, so image bytes are never sent
+		// to the provider and estimateTokens scores an image part at zero. A 1,000,000
+		// character base64 payload therefore cannot make the request overflow, and the
+		// guard correctly leaves it alone. The key still counts the data, so a cut whose
+		// image changed is not judged by a stale verdict.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [image("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toBeUndefined();
+	});
+
+	it("resets guard state when the registered session_start handler runs", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const resetSpy = vi.spyOn(coordinator, "resetOverflowState");
+		const handlers = new Map<
+			string,
+			(event: unknown, ctx: unknown) => unknown
+		>();
+		const pi = {
+			on: vi.fn((name: string, handler: unknown) => {
+				handlers.set(
+					name,
+					handler as (event: unknown, ctx: unknown) => unknown,
+				);
+			}),
+		} as never;
+
+		registerCompactPlusEventHandlers(pi, {
+			state,
+			toolOutputPruning: { onSessionStart: vi.fn() } as never,
+			compactionCoordinator: coordinator,
+			persistTelemetrySnapshot: vi.fn(),
+		});
+
+		const sessionStart = handlers.get("session_start");
+		expect(sessionStart).toBeDefined();
+		await sessionStart?.({}, ctx);
+		expect(resetSpy).toHaveBeenCalledTimes(1);
+		resetSpy.mockRestore();
+	});
+
+	it("re-measures when only a tool call's arguments grow", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const call = (args: unknown): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: args },
+					{ type: "text", text: "done" },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call({ path: "a.txt" })]),
+				ctx,
+			),
+		).toBeUndefined();
+
+		// Same part count, types, and text lengths. Only the tool arguments grew.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call({ path: "x".repeat(1_000_000) })]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
 	});
 
 	it("measures caller guidance instead of trusting the session-fit fast path", async () => {

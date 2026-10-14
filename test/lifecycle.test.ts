@@ -40,6 +40,99 @@ function createMockPi(): MockPi {
 }
 
 describe("executeCompaction", () => {
+	it("settles the attempt through onError even when the run failed", () => {
+		const state = new CompactionState();
+		const onSettled = vi.fn();
+		const ctx = createMockCtx();
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: unknown) => void }) => {
+				onError?.(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"standard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as never,
+			createMockPi() as never,
+			{ onSettled },
+		);
+
+		expect(onSettled).toHaveBeenCalledTimes(1);
+		expect(state.isCompacting).toBe(false);
+	});
+
+	it("settles a stale-epoch attempt without clearing its state", () => {
+		const state = new CompactionState();
+		const onSettled = vi.fn();
+		const ctx = createMockCtx();
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onComplete }: { onComplete?: () => void }) => {
+				// A session transition happened while the attempt was in flight.
+				state.invalidateCompactionCallbacks();
+				onComplete?.();
+			},
+		);
+
+		executeCompaction(
+			"standard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as never,
+			createMockPi() as never,
+			{ onSettled },
+		);
+
+		// The caller's per-attempt state must still expire, while the newer session's
+		// compaction state is left alone.
+		expect(onSettled).toHaveBeenCalledTimes(1);
+		expect(state.isCompacting).toBe(true);
+	});
+
+	it("settles the attempt when Pi throws synchronously", () => {
+		const state = new CompactionState();
+		const onSettled = vi.fn();
+		const ctx = createMockCtx();
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(() => {
+			throw new Error("Pi rejected the compaction request");
+		});
+
+		expect(() =>
+			executeCompaction(
+				"standard",
+				{
+					objective: "test",
+					blockers: [],
+					decisions: [],
+					activeFiles: [],
+					dependencyChain: [],
+				},
+				state,
+				ctx as never,
+				createMockPi() as never,
+				{ onSettled },
+			),
+		).toThrow("Pi rejected the compaction request");
+
+		// Without this the session stays "compacting" and every later attempt is refused.
+		expect(onSettled).toHaveBeenCalledTimes(1);
+		expect(state.isCompacting).toBe(false);
+		expect(state.selectedMode).toBeNull();
+	});
+
 	it("calls persist callback in onComplete with post-compaction tokens", () => {
 		const state = new CompactionState();
 		const persist = vi.fn();

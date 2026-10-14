@@ -1,4 +1,4 @@
-import type { CompactionMode, CompactionTelemetry } from "./types.js";
+import type { CompactionTelemetry } from "./types.js";
 
 /** Version of the persisted telemetry schema owned by this module. */
 export const PERSIST_VERSION = 3;
