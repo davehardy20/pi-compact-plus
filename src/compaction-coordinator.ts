@@ -139,7 +139,8 @@ export class CompactionCoordinator {
 	private readonly disableAutoCompaction: boolean;
 	/** Measured verdict for the last cut. Written only by the measurement. */
 	private overflowVerdict: OverflowVerdict | null = null;
-	/** Distinguishes key walks that ran out of budget. Internal only. */
+	/** Distinguishes key walks that ran out of budget, so a partial walk never matches
+	 * a later cut. Internal only: never logged or persisted. */
 	private cutKeyNonce = 0;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
