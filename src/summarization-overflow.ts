@@ -31,6 +31,19 @@ export const SUMMARIZATION_OUTPUT_CAP_REASON =
 export const SUMMARIZATION_EVIDENCE_TRIMMED_REASON =
 	"intent evidence was trimmed to fit the summary request";
 
+/** Compact+'s own optional intent evidence is what did not fit, not the transcript. */
+export const SUMMARIZATION_INTENT_EVIDENCE_REASON =
+	"additional intent evidence exceeds the summary request budget";
+
+/**
+ * Not a cancel: the estimate said the request could not fit, but provider-reported
+ * usage sat comfortably under the window, so the estimate was not treated as
+ * sufficient authority to decline compaction. Recorded so a live session can see that
+ * the discrepancy happened.
+ */
+export const SUMMARIZATION_SUSPECT_ESTIMATE_REASON =
+	"summarization estimate exceeded the window while provider usage reported headroom";
+
 /** `prompt (300932 tokens) + max tokens (1) exceeds the context (262144)` */
 const CONTEXT_OVERFLOW_PATTERNS = [
 	/prompt \(\d[\d,]* tokens\) \+ max tokens \(\d[\d,]*\) exceeds the context \(\d[\d,]*\)/i,

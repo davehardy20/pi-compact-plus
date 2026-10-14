@@ -17,6 +17,7 @@ import {
 	classifySummarizationFailure,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+	SUMMARIZATION_INTENT_EVIDENCE_REASON,
 	summarizationFailureReason,
 } from "./summarization-overflow.js";
 import {
@@ -653,8 +654,7 @@ export async function runCustomCompaction(
 		) {
 			return {
 				result: undefined,
-				fallbackReason:
-					"additional intent evidence exceeds the summary request budget",
+				fallbackReason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
 				cancel: true,
 			};
 		}
@@ -692,7 +692,9 @@ export async function runCustomCompaction(
 		return finalizeCompactionAttempt(
 			result,
 			getCompactionClassifiedCounts(prepared, mode),
-			budgeted.evidenceTrimmed ? SUMMARIZATION_EVIDENCE_TRIMMED_REASON : null,
+			budgeted.evidenceTrimmed !== undefined
+				? SUMMARIZATION_EVIDENCE_TRIMMED_REASON
+				: null,
 		);
 	} catch (error) {
 		if (requestSignal?.aborted) {

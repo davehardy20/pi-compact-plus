@@ -28,7 +28,9 @@ import type { CompactionState } from "./state.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+	SUMMARIZATION_INTENT_EVIDENCE_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
+	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "./summarization-overflow.js";
 import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
 import {
@@ -72,6 +74,12 @@ type OverflowVerdict = { reason: string | null; key: string | null };
  * until this node cap is reached. Reaching the cap is reported: a partial walk is not a
  * complete key and must not be cached as one. */
 const STRUCTURAL_NODE_BUDGET = 10_000;
+/**
+ * How far under the model window provider-reported usage must sit before an
+ * over-window estimate stops being sufficient authority to decline compaction. Named
+ * and bounded so the rule is auditable rather than an ad-hoc percentage.
+ */
+const SUSPECT_ESTIMATE_HEADROOM_TOKENS = 16_384;
 const DIGEST_WINDOW = 256;
 const DIGEST_MULTIPLIER = 31;
 
@@ -368,6 +376,33 @@ export class CompactionCoordinator {
 			instructions.slice(-32),
 			guidanceDigest(instructions),
 		].join(":");
+	}
+
+	/**
+	 * Provider-reported usage is ground truth for the live session, and an ungated cut
+	 * is a subset of it. When usage sits comfortably under the window, an estimate above
+	 * the window is a discrepancy worth recording rather than a decline. Caller guidance
+	 * is additive to reported usage, so usage says nothing about a guided request. Fails
+	 * closed when usage is unknown, non-native, non-positive, or near the window.
+	 */
+	private estimateDiscrepancy(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+		reserve: number,
+	): boolean {
+		if (this.callerGuidance(event).length > 0) return false;
+		const model = ctx.model;
+		if (!model || !Number.isSafeInteger(model.contextWindow)) return false;
+		if (!Number.isSafeInteger(reserve) || reserve <= 0) return false;
+		const usage = this.getEffectiveUsage(ctx);
+		if (usage?.source !== "native") return false;
+		const tokens = usage.tokens;
+		if (typeof tokens !== "number" || !Number.isSafeInteger(tokens))
+			return false;
+		if (tokens <= 0) return false;
+		return (
+			tokens + reserve + SUSPECT_ESTIMATE_HEADROOM_TOKENS < model.contextWindow
+		);
 	}
 
 	/** The notice dedupe must stay deterministic across attempts, so a key whose walk
@@ -814,7 +849,11 @@ export class CompactionCoordinator {
 				);
 				return { cancel: true };
 			}
-
+			// Pi is about to compact on its own. Release Compact+'s attempt state, or a
+			// deferred compaction blocks every later automatic trigger.
+			this.state.selectedMode = null;
+			this.state.isCompacting = false;
+			this.state.lastTriggerAuto = false;
 			return undefined;
 		}
 
@@ -867,8 +906,7 @@ export class CompactionCoordinator {
 		}
 		if (attempt.cancel) {
 			const overflow =
-				attempt.fallbackReason ===
-				"additional intent evidence exceeds the summary request budget";
+				attempt.fallbackReason === SUMMARIZATION_INTENT_EVIDENCE_REASON;
 			if (overflow && ctx.hasUI)
 				ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
 			return cancelCustom(
@@ -878,6 +916,7 @@ export class CompactionCoordinator {
 			);
 		}
 
+		let estimateDiscrepancy = false;
 		if (attempt.requestOverflow) {
 			// Compact+ sends a superset of what Pi would send: its rendered instructions
 			// carry intent evidence Pi never sends, and on a split turn it merges slices
@@ -902,6 +941,20 @@ export class CompactionCoordinator {
 				);
 				nativeOverflow = measured.reason;
 				nativeOverflowKey = measured.key;
+				// Pi's own payload fits while Compact+'s estimate of its superset did not.
+				// When provider usage sits comfortably under the window that is an estimate
+				// discrepancy rather than a real overflow: record it, and defer to Pi. No
+				// guard is widened.
+				if (
+					!nativeOverflow &&
+					this.estimateDiscrepancy(
+						event,
+						ctx,
+						event.preparation?.settings?.reserveTokens ?? 0,
+					)
+				) {
+					estimateDiscrepancy = true;
+				}
 			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
@@ -952,8 +1005,9 @@ export class CompactionCoordinator {
 			};
 		}
 
-		this.state.lastFallbackReason =
-			attempt.fallbackReason ?? "custom summarization unavailable";
+		this.state.lastFallbackReason = estimateDiscrepancy
+			? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+			: (attempt.fallbackReason ?? "custom summarization unavailable");
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",

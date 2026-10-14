@@ -172,17 +172,19 @@ export async function prepareBudgetedCompactionFocus<
 	if (baseline && baseline.totalTokens > model.contextWindow) {
 		return reject(true);
 	}
-	// Evidence-driven: shrink what Compact+ added, oldest turns first, and
-	// re-measure. Discarding the whole compaction because Compact+'s own optional
-	// additions did not fit is worse than a shorter summary, so only a cut that
-	// cannot fit without them is terminal. Drops grow geometrically to bound the
-	// number of re-measurements on a long session.
-	const drops: number[] = [];
-	for (let dropped = 1; dropped < recentUserTurns.length; dropped *= 2) {
-		drops.push(dropped);
-	}
-	drops.push(recentUserTurns.length);
-	for (const dropped of drops) {
+	// Evidence-driven: shrink what Compact+ added, oldest turns first, and re-measure.
+	// Discarding the whole compaction because Compact+'s own optional additions did not
+	// fit is worse than a shorter summary, so only a cut that cannot fit without them is
+	// terminal. Dropping more turns never lengthens the request, so a binary search
+	// finds the smallest trim that fits in log2(n) measurements instead of over-trimming
+	// on a geometric schedule.
+	let low = 1;
+	let high = recentUserTurns.length;
+	let fitted:
+		| { dropped: number; kept: string[]; instructions: string }
+		| undefined;
+	while (low <= high) {
+		const dropped = (low + high) >> 1;
 		const kept = recentUserTurns.slice(dropped);
 		const instructions = render(kept);
 		if (!instructions) break;
@@ -190,13 +192,19 @@ export async function prepareBudgetedCompactionFocus<
 		// Fail closed: an unmeasurable rendering is never sent to a provider.
 		if (!trimmed) break;
 		if (trimmed.totalTokens <= model.contextWindow) {
-			return {
-				focus: withEvidence(kept),
-				preparation: unified,
-				renderedInstructions: instructions,
-				evidenceTrimmed: dropped,
-			};
+			fitted = { dropped, kept, instructions };
+			high = dropped - 1;
+		} else {
+			low = dropped + 1;
 		}
+	}
+	if (fitted) {
+		return {
+			focus: withEvidence(fitted.kept),
+			preparation: unified,
+			renderedInstructions: fitted.instructions,
+			evidenceTrimmed: fitted.dropped,
+		};
 	}
 	return reject();
 }

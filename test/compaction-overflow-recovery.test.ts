@@ -41,6 +41,7 @@ import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
+	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
@@ -193,6 +194,40 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		// window while the characters/4 estimate of Compact+'s own merged request
 		// exceeds it. Pi sends a smaller payload, so declining here leaves a session
 		// that never compacts.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		// Provider usage sits comfortably under the window, so the estimate that denied
+		// the request is recorded as a discrepancy rather than passed on as the reason.
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+
+		// A deferred compaction hands off to Pi, so it must not leave a stuck attempt
+		// behind: that blocks every later automatic trigger.
+		expect(state.selectedMode).toBeNull();
+		expect(state.isCompacting).toBe(false);
+		expect(state.lastTriggerAuto).toBe(false);
+
+		await coordinator.maybeAutoCompact(ctx, "turn_end");
+		expect(state.lastTriggerAuto).toBe(true);
+	});
+
+	it("keeps the overflow reason when usage is already near the window", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Usage leaves no bounded headroom, so the estimate is not treated as a
+		// discrepancy and the real overflow reason is recorded instead.
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [
 				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
