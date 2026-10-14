@@ -22,6 +22,7 @@ import {
 	resolveCompactPlusSettings,
 } from "./settings.js";
 import type { CompactionState } from "./state.js";
+import { SUMMARIZATION_EVIDENCE_TRIMMED_REASON } from "./summarization-overflow.js";
 import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";
 import type { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
 import {
@@ -341,17 +342,21 @@ function formatLastCompactionLines(
 function getCompactionFallback(
 	compaction: CompactionTelemetry | null,
 ): string | null {
-	return compaction?.fallbackReason ?? null;
+	return informationalReason(compaction?.fallbackReason ?? null);
 }
 
 function getTopLevelFallback(
 	status: CompactPlusStatus,
 	compactionFallback: string | null,
 ): string | null {
-	return status.lastFallbackReason &&
-		status.lastFallbackReason !== compactionFallback
-		? status.lastFallbackReason
-		: null;
+	const topLevel = informationalReason(status.lastFallbackReason);
+	return topLevel && topLevel !== compactionFallback ? topLevel : null;
+}
+
+/** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
+ * reason is not a fallback and must not be reported as one. */
+function informationalReason(reason: string | null): string | null {
+	return reason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON ? null : reason;
 }
 
 function formatTopLevelFallback(fallback: string | null): string[] {

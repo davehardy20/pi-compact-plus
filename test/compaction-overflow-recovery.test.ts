@@ -91,7 +91,11 @@ function createCtx(options?: {
 
 function createCoordinator(
 	state: CompactionState,
-	options?: { guardNativeCompaction?: boolean; usageTokens?: number },
+	options?: {
+		guardNativeCompaction?: boolean;
+		usageTokens?: number;
+		usageSource?: EffectiveUsage["source"];
+	},
 ) {
 	return new CompactionCoordinator({
 		state,
@@ -105,7 +109,7 @@ function createCoordinator(
 			percent: 95,
 			tokens: options?.usageTokens ?? 250_000,
 			contextWindow: 262_144,
-			source: "native",
+			source: options?.usageSource ?? "native",
 		}),
 		persistTelemetrySnapshot: vi.fn(),
 	});
@@ -192,15 +196,14 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		// release happened rather than that the fields were never set.
 		state.isCompacting = true;
 		state.lastTriggerAuto = true;
-		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
-		// The live failure shape, reached through the fail-open session bound: the provider
-		// reports the session well under the window, so Pi's own payload is not measured as
-		// oversized and Compact+'s superset overflow alone does not decline the compaction.
-		// Pi sends a smaller payload, so declining here leaves a session that never compacts.
+		// The live failure shape: Compact+'s own measurement of its superset request denied
+		// the compaction before any provider was consulted, while provider usage reports the
+		// session well under the window. Pi sends a smaller payload, so declining here leaves
+		// a session that never compacts.
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [
-				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
+				user(`Task: repair login.\n${"old context ".repeat(120_000)}`),
 			]),
 			ctx,
 		);
@@ -459,6 +462,56 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toEqual({ cancel: true });
 		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+	});
+
+	it("does not let usage headroom rewrite a provider-confirmed overflow", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// The provider itself rejected the request, so the overflow is proven rather than
+		// estimated. Headroom may still let Pi try its own smaller cut, but it must not
+		// relabel a proven rejection as a suspect estimate.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("fails closed when usage is not provider-reported", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Comfortable headroom, but the number is Compact+'s own estimate rather than
+		// provider-reported usage, so it cannot outrank the measured overflow.
+		const coordinator = createCoordinator(state, {
+			usageTokens: 150_000,
+			usageSource: "estimated",
+		});
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.
+${"old context ".repeat(90_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
 	});
 
 	it("guards the final fall-back to native compaction too", async () => {

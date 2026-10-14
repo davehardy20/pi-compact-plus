@@ -1118,6 +1118,7 @@ describe("runCustomCompaction characterization", () => {
 			result: undefined,
 			fallbackReason: "summarization request exceeded the model context window",
 			requestOverflow: true,
+			providerConfirmed: true,
 		});
 		expect(attempt.fallbackReason).not.toContain("300932");
 		expect(attempt.fallbackReason).not.toContain("fit_max_tokens");

@@ -188,16 +188,26 @@ export async function prepareBudgetedCompactionFocus<
 	let fitted:
 		| { dropped: number; kept: string[]; instructions: string }
 		| undefined;
+	let probeFailed = false;
 	while (low <= high) {
 		// An aborted request must not keep probing: every probe re-serializes the cut.
-		if (options.signal?.aborted) return reject(true);
+		if (options.signal?.aborted) {
+			probeFailed = true;
+			break;
+		}
 		const dropped = (low + high) >> 1;
 		const kept = recentUserTurns.slice(dropped);
 		const instructions = render(kept);
-		if (!instructions) break;
+		if (!instructions) {
+			probeFailed = true;
+			break;
+		}
 		const trimmed = await measure(instructions);
 		// Fail closed: an unmeasurable rendering is never sent to a provider.
-		if (!trimmed) break;
+		if (!trimmed) {
+			probeFailed = true;
+			break;
+		}
 		if (trimmed.totalTokens <= model.contextWindow) {
 			fitted = { dropped, kept, instructions };
 			high = dropped - 1;
@@ -213,6 +223,9 @@ export async function prepareBudgetedCompactionFocus<
 			evidenceTrimmed: fitted.dropped,
 		};
 	}
+	// A probe that could not render or measure says nothing about the trim schedule, so it
+	// stays an evidence-driven rejection rather than a claim about the transcript.
+	if (probeFailed) return reject();
 	// No trim fits, not even dropping every retained turn. What is left is the transcript
 	// plus Compact+'s base prompt, so this is not evidence-driven: report it as a request
 	// overflow and let the coordinator judge it against the payload Pi actually sends.

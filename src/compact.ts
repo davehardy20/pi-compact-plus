@@ -41,6 +41,11 @@ export interface CompactionAttemptResult {
 	 * Retrying the same cut through any other path would fail identically.
 	 */
 	requestOverflow?: true;
+	/**
+	 * The provider itself rejected the summarization request, so the overflow is proven
+	 * rather than estimated. Re-sending this cut through any path fails identically.
+	 */
+	providerConfirmed?: true;
 	classifiedCounts?: {
 		critical: number;
 		contextual: number;
@@ -711,6 +716,7 @@ export async function runCustomCompaction(
 			result: undefined,
 			fallbackReason: reason,
 			requestOverflow: true,
+			providerConfirmed: true,
 		};
 	}
 }

@@ -392,15 +392,16 @@ export class CompactionCoordinator {
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
 		reserve: number,
-		issuedInstructions: string | null = this.state
-			.lastIssuedCompactionInstructions,
+		issuedInstructions: string | null,
 	): boolean {
 		// Compact+'s own issued prompt is the payload under examination, so it is not
 		// guidance Pi will additionally send. Any other prompt is additive to reported
 		// usage and makes the comparison meaningless.
-		if (event.customInstructions !== issuedInstructions) {
-			if (this.callerGuidance(event).length > 0) return false;
-		}
+		if (
+			event.customInstructions !== issuedInstructions &&
+			this.callerGuidance(event).length > 0
+		)
+			return false;
 		const model = ctx.model;
 		if (!model || !Number.isSafeInteger(model.contextWindow)) return false;
 		if (!Number.isSafeInteger(reserve) || reserve <= 0) return false;
@@ -474,6 +475,7 @@ export class CompactionCoordinator {
 				event,
 				ctx,
 				event.preparation?.settings?.reserveTokens ?? 0,
+				this.state.lastIssuedCompactionInstructions,
 			)
 		) {
 			this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
@@ -978,6 +980,10 @@ export class CompactionCoordinator {
 			);
 		}
 
+		// The discrepancy only speaks for an estimate. A provider-confirmed rejection is
+		// proven: Pi would re-send the identical oversized cut, so headroom cannot excuse it.
+		const headroomOverride = usageDiscrepancy && !attempt.providerConfirmed;
+
 		if (attempt.requestOverflow) {
 			// Compact+ sends a superset of what Pi would send: its rendered instructions
 			// carry intent evidence Pi never sends, and on a split turn it merges slices
@@ -1005,7 +1011,7 @@ export class CompactionCoordinator {
 				// Provider usage is ground truth for the live session and the cut is a subset
 				// of it. Comfortable bounded headroom outranks an over-window estimate of Pi's
 				// own payload: defer to Pi instead of declining.
-				if (nativeOverflow && usageDiscrepancy) nativeOverflow = null;
+				if (nativeOverflow && headroomOverride) nativeOverflow = null;
 			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
@@ -1062,7 +1068,7 @@ export class CompactionCoordinator {
 		const overflowDecline =
 			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		this.state.lastFallbackReason =
-			usageDiscrepancy && overflowDecline
+			headroomOverride && overflowDecline
 				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
 				: (attempt.fallbackReason ?? "custom summarization unavailable");
 		this.state.pendingCompaction = {
@@ -1097,7 +1103,7 @@ export class CompactionCoordinator {
 		// not changed since the measurement above, this is a cache hit, not a second
 		// serialization.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
-		if (fallback.reason && !usageDiscrepancy) {
+		if (fallback.reason && !headroomOverride) {
 			this.reportSummarizationOverflow(
 				event,
 				ctx,
