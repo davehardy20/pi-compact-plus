@@ -31,6 +31,9 @@ afterEach(() => {
 });
 
 describe("reserved output fractions", () => {
+	// These are the arithmetic checks. The same fractions are also pinned against Pi's own
+	// compact() in test/compaction-intent-budget.test.ts, describe "native summarization request
+	// pins", which is the drift guard for upstream changes.
 	it("names the two output fractions Pi uses for its summarization requests", () => {
 		// Mirrors Pi's dist/core/compaction/compaction.js: generateSummaryWithUsage reserves
 		// floor(0.8 * reserveTokens) and the private generateTurnPrefixSummary reserves

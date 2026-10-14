@@ -200,11 +200,38 @@ function runNativeCompact(
 	);
 }
 
+// Pi builds the two summarization prompts differently: generateSummaryWithUsage wraps the
+// transcript in <conversation> tags and appends its instructions (compaction.js:523-527), while
+// the private generateTurnPrefixSummary leads with "# Conversation" and closes with the last line
+// of TURN_PREFIX_SUMMARIZATION_PROMPT (compaction.js:730). Classifying on those message boundaries
+// cannot be faked by transcript content the way a shared heading can.
+const TURN_PREFIX_PROMPT_TAIL =
+	"Only summarize information explicitly present above. Do not infer or recreate later messages.";
+
+type PromptBlock = { type: string; text?: string };
+
+function summarizationPromptText(context: { messages: unknown[] }): string {
+	const message = context.messages.find(
+		(entry) => (entry as { role?: string }).role === "user",
+	) as { content?: PromptBlock[] } | undefined;
+	const blocks = message?.content ?? [];
+	const text = blocks.map((block) => block.text ?? "");
+	return text.join("");
+}
+
+function isTurnPrefixRequest(promptText: string): boolean {
+	const leads = promptText.startsWith("# Conversation");
+	const closes = promptText.endsWith(TURN_PREFIX_PROMPT_TAIL);
+	return leads && closes;
+}
+
 describe("native summarization request pins", () => {
 	let fetchSpy: MockInstance;
 
 	beforeEach(() => {
-		fetchSpy = vi.spyOn(globalThis, "fetch");
+		fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockRejectedValue(new Error("Native pins must not contact a provider"));
 	});
 
 	afterEach(() => {
@@ -217,25 +244,28 @@ describe("native summarization request pins", () => {
 		expect(prepared.messagesToSummarize.length).toBeGreaterThan(0);
 		expect(prepared.turnPrefixMessages.length).toBeGreaterThan(0);
 
-		const requests: Array<{ maxTokens: number; isTurnPrefix: boolean }> = [];
+		const requests: Array<{ maxTokens: number; promptText: string }> = [];
 		await runNativeCompact(prepared, 200_000, (context, options) => {
 			requests.push({
 				maxTokens: options?.maxTokens ?? 0,
-				// Only Pi's TURN_PREFIX_SUMMARIZATION_PROMPT asks for this section, and it is sent
-				// in the serialized prompt message rather than the system prompt.
-				isTurnPrefix: context.messages
-					.filter((message) => (message as { role?: string }).role === "user")
-					.some((message) =>
-						JSON.stringify(message).includes("Context Needed to Continue"),
-					),
+				promptText: summarizationPromptText(context),
 			});
 			return stubSummary("## Goal\nstub summary");
 		});
 
 		expect(requests.length).toBe(2);
-		// Pi issues the history request before the turn-prefix request (compaction.js:693-702),
-		// so the order is pinned alongside the prompt marker instead of relying on it alone.
-		expect(requests.map((entry) => entry.isTurnPrefix)).toEqual([false, true]);
+		// Pi issues the history request before the turn-prefix request (compaction.js:693-702), and
+		// each request is identified by its own prompt shape rather than by a heading that
+		// transcript content could also contain.
+		const classified = requests.map((r) => isTurnPrefixRequest(r.promptText));
+		expect(classified).toEqual([false, true]);
+		// The prompt shapes are pinned too, so a Pi change to either prompt fails here instead of
+		// silently re-classifying a request.
+		const historyPrompt = requests[0]?.promptText ?? "";
+		const prefixPrompt = requests[1]?.promptText ?? "";
+		expect(historyPrompt.startsWith("<conversation>")).toBe(true);
+		expect(prefixPrompt.startsWith("# Conversation")).toBe(true);
+		expect(prefixPrompt.endsWith(TURN_PREFIX_PROMPT_TAIL)).toBe(true);
 		// Drift guard for the fractions documented in src/summarization-request-budget.ts:
 		// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
 		// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens
