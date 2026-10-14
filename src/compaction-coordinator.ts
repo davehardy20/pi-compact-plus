@@ -391,18 +391,14 @@ export class CompactionCoordinator {
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
 		reserve: number,
-		ownRequest = false,
+		issuedInstructions: string | null = this.state
+			.lastIssuedCompactionInstructions,
 	): boolean {
-		// An overflow of Compact+'s own request is about the payload Compact+ built, so
-		// its instructions are the payload under examination rather than guidance Pi will
-		// additionally send. For any other cut, third-party guidance is additive to
-		// reported usage and makes the comparison meaningless.
-		if (!ownRequest) {
-			const guidance =
-				event.customInstructions === this.state.lastIssuedCompactionInstructions
-					? ""
-					: this.callerGuidance(event);
-			if (guidance.length > 0) return false;
+		// Compact+'s own issued prompt is the payload under examination, so it is not
+		// guidance Pi will additionally send. Any other prompt is additive to reported
+		// usage and makes the comparison meaningless.
+		if (event.customInstructions !== issuedInstructions) {
+			if (this.callerGuidance(event).length > 0) return false;
 		}
 		const model = ctx.model;
 		if (!model || !Number.isSafeInteger(model.contextWindow)) return false;
@@ -790,8 +786,11 @@ export class CompactionCoordinator {
 		const epoch = this.state.currentCompactionEpoch;
 		// Only the exact prompt this lifecycle issued is an SDK echo. Caller
 		// guidance, even generated-looking or modified text, is not ours to drop.
+		// The echo is transient, so capture it here: later overflow decisions in this
+		// attempt still need to know which prompt was ours.
+		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
 		const customInstructions =
-			event.customInstructions === this.state.lastIssuedCompactionInstructions
+			event.customInstructions === issuedPrompt
 				? undefined
 				: event.customInstructions;
 		this.state.lastIssuedCompactionInstructions = null;
@@ -911,6 +910,8 @@ export class CompactionCoordinator {
 			this.state.lastFallbackReason = reason;
 			return { cancel: true };
 		};
+		// The lifecycle clears the issued prompt when the attempt settles, so the echo
+		// identity is captured with the SDK echo above.
 		const attempt = await runCustomCompaction(
 			event.preparation,
 			mode,
@@ -951,7 +952,7 @@ export class CompactionCoordinator {
 			event,
 			ctx,
 			event.preparation?.settings?.reserveTokens ?? 0,
-			attempt.requestOverflow === true,
+			issuedPrompt,
 		);
 		if (attempt.requestOverflow) {
 			// Compact+ sends a superset of what Pi would send: its rendered instructions
@@ -1031,11 +1032,11 @@ export class CompactionCoordinator {
 			};
 		}
 
-		// The discrepancy only speaks for an overflow decline. Any other fallback reason
-		// stays exactly as the attempt reported it.
+		// The discrepancy only speaks for a context-overflow decline. An exhausted output
+		// budget is about the response, and any other fallback reason stays exactly as the
+		// attempt reported it.
 		const overflowDecline =
-			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON ||
-			attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON;
+			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		this.state.lastFallbackReason =
 			usageDiscrepancy && overflowDecline
 				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
@@ -1051,11 +1052,11 @@ export class CompactionCoordinator {
 		// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
 		// caller treats the same deferral as no compaction this turn. Either way release
 		// Compact+'s attempt state, or a deferred attempt blocks later automatic triggers.
+		await this.persistTelemetrySnapshot();
+		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
-		await this.persistTelemetrySnapshot();
-		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (!isCurrent()) return cancelCustom("compaction context changed");
 
 		if (ctx.hasUI) {

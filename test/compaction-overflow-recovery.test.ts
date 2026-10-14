@@ -262,6 +262,48 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastCompactTokens).toBeGreaterThan(0);
 	});
 
+	it("suppresses a native-guard decline when usage headroom contradicts the estimate", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = null;
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+		const guided = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+
+		expect(
+			await coordinator.onSessionBeforeCompact(guided, ctx),
+		).toBeUndefined();
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+	});
+
+	it("keeps the native-guard decline when the guidance is not Compact+'s own", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = null;
+		// Third-party guidance is additive to reported usage, so usage headroom says
+		// nothing about whether the request Pi will send can fit.
+		state.lastIssuedCompactionInstructions = "a different prompt";
+		const guided = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "focus on the failing tests" },
+		);
+
+		expect(await coordinator.onSessionBeforeCompact(guided, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
 	it("keeps the overflow reason when usage is already near the window", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
