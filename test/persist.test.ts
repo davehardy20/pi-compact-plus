@@ -890,6 +890,73 @@ describe("Persisted telemetry schema validation", () => {
 		});
 	});
 
+	it("preserves intentEvidenceTrimmedTurns across a reload", async () => {
+		const filePath = path.join(makeTempDir(), "telemetry.json");
+		fs.writeFileSync(
+			filePath,
+			JSON.stringify({
+				version: 3,
+				lastCompaction: {
+					mode: "standard",
+					triggerSource: "turn_end",
+					triggerReason: "auto at threshold",
+					timestamp: 1_234_567_890,
+					focusTags: [],
+					previousSummaryPresent: false,
+					splitTurn: false,
+					usageSource: "native",
+					messagesSummarizedCount: 8,
+					executionPath: "custom",
+					fromExtension: true,
+					intentEvidenceTrimmedTurns: 2,
+				},
+			}),
+			"utf8",
+		);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		// A trim must stay visible after a reload, otherwise status cannot tell a trimmed
+		// compaction from a clean one on the next session.
+		expect(result.issue).toBeNull();
+		expect(result.telemetry?.lastCompaction?.intentEvidenceTrimmedTurns).toBe(
+			2,
+		);
+	});
+
+	it("drops lastCompaction with an invalid intentEvidenceTrimmedTurns", async () => {
+		const filePath = path.join(makeTempDir(), "telemetry.json");
+		fs.writeFileSync(
+			filePath,
+			JSON.stringify({
+				version: 3,
+				lastCompaction: {
+					mode: "standard",
+					triggerSource: "turn_end",
+					triggerReason: "auto at threshold",
+					timestamp: 1_234_567_890,
+					focusTags: [],
+					previousSummaryPresent: false,
+					splitTurn: false,
+					usageSource: "native",
+					messagesSummarizedCount: 8,
+					executionPath: "custom",
+					fromExtension: true,
+					intentEvidenceTrimmedTurns: 0,
+				},
+			}),
+			"utf8",
+		);
+
+		const result = await loadTelemetryWithDiagnostics({ filePath });
+
+		expect(result.telemetry).toMatchObject({
+			lastCompaction: null,
+			version: 3,
+		});
+		expect(result.issue).toMatchObject({ code: "invalid-schema" });
+	});
+
 	it("loads valid full CompactionTelemetry without issues", async () => {
 		const filePath = path.join(makeTempDir(), "telemetry.json");
 		const compaction = {

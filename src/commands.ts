@@ -22,6 +22,7 @@ import {
 	resolveCompactPlusSettings,
 } from "./settings.js";
 import type { CompactionState } from "./state.js";
+import { SUMMARIZATION_EVIDENCE_TRIMMED_REASON } from "./summarization-overflow.js";
 import { formatPruningStatusLines } from "./tool-output-pruning/commands.js";
 import type { ToolOutputPruningCoordinator } from "./tool-output-pruning/coordinator.js";
 import {
@@ -327,13 +328,19 @@ function formatLastCompactionLines(
 	pushWhen(lines, compaction.splitTurn, "    Split-turn: yes");
 	pushWhen(
 		lines,
+		typeof compaction.intentEvidenceTrimmedTurns === "number" &&
+			compaction.intentEvidenceTrimmedTurns > 0,
+		`    Intent evidence: trimmed ${compaction.intentEvidenceTrimmedTurns} retained ${compaction.intentEvidenceTrimmedTurns === 1 ? "turn" : "turns"}`,
+	);
+	pushWhen(
+		lines,
 		isDistinctCompatibilityReason(compaction),
 		`    Compatibility: ${compaction.compatibilityReason}`,
 	);
 	pushWhen(
 		lines,
-		Boolean(compaction.fallbackReason),
-		`    Fallback: ${compaction.fallbackReason}`,
+		Boolean(informationalReason(compaction.fallbackReason ?? null)),
+		`    Fallback: ${informationalReason(compaction.fallbackReason ?? null)}`,
 	);
 	return lines;
 }
@@ -341,17 +348,22 @@ function formatLastCompactionLines(
 function getCompactionFallback(
 	compaction: CompactionTelemetry | null,
 ): string | null {
-	return compaction?.fallbackReason ?? null;
+	return informationalReason(compaction?.fallbackReason ?? null);
 }
 
 function getTopLevelFallback(
 	status: CompactPlusStatus,
 	compactionFallback: string | null,
 ): string | null {
-	return status.lastFallbackReason &&
-		status.lastFallbackReason !== compactionFallback
-		? status.lastFallbackReason
-		: null;
+	const topLevel = informationalReason(status.lastFallbackReason);
+	return topLevel && topLevel !== compactionFallback ? topLevel : null;
+}
+
+/** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
+ * reason is not a fallback. Every status consumer filters it the same way, and the trim is
+ * reported on its own line from `intentEvidenceTrimmedTurns` instead. */
+function informationalReason(reason: string | null): string | null {
+	return reason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON ? null : reason;
 }
 
 function formatTopLevelFallback(fallback: string | null): string[] {
@@ -379,7 +391,12 @@ function formatLastFocusEchoLines(
 			...status.lastInjectedEcho.split("\n").map(formatEchoLine),
 		];
 	}
-	if (hasFallback(compactionFallback, status.lastFallbackReason)) {
+	if (
+		hasFallback(
+			compactionFallback,
+			informationalReason(status.lastFallbackReason),
+		)
+	) {
 		return [
 			"  Last focus echo: (none — last compaction fell back before a custom summary was injected)",
 		];

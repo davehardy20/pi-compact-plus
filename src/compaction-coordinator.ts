@@ -9,6 +9,7 @@ import type {
 	SessionCompactEvent,
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 import { prepareBoundaryCompaction } from "./boundary-preparation.js";
 import { runCustomCompaction } from "./compact.js";
@@ -27,9 +28,16 @@ import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+	SUMMARIZATION_INTENT_EVIDENCE_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
+	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "./summarization-overflow.js";
-import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
+import {
+	clampReservedOutput,
+	measureSummaryRequestTokens,
+	piReservedTurnPrefixOutputTokens,
+} from "./summarization-request-budget.js";
 import {
 	type CompactionMode,
 	type CompactionTelemetry,
@@ -39,7 +47,7 @@ import {
 } from "./types.js";
 
 const INTENT_OVERFLOW_WARNING =
-	"Compact+ intent evidence exceeds the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
+	"Compact+ could not capture its additional intent evidence; compaction cancelled rather than sending an unmeasured summary request. Save the current objective before attempting a different compaction path.";
 
 const SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";
@@ -49,6 +57,9 @@ const SUMMARIZATION_OUTPUT_CAP_WARNING =
 
 const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
+
+const EVIDENCE_TRIMMED_WARNING =
+	"Compact+ trimmed additional intent evidence so the summary request could fit.";
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
@@ -68,6 +79,12 @@ type OverflowVerdict = { reason: string | null; key: string | null };
  * until this node cap is reached. Reaching the cap is reported: a partial walk is not a
  * complete key and must not be cached as one. */
 const STRUCTURAL_NODE_BUDGET = 10_000;
+/**
+ * How far under the model window provider-reported usage must sit before an
+ * over-window estimate stops being sufficient authority to decline compaction. Named
+ * and bounded so the rule is auditable rather than an ad-hoc percentage.
+ */
+const SUSPECT_ESTIMATE_HEADROOM_TOKENS = 16_384;
 const DIGEST_WINDOW = 256;
 const DIGEST_MULTIPLIER = 31;
 
@@ -251,9 +268,9 @@ export class CompactionCoordinator {
 		if (preparation.isSplitTurn && prefix.length > 0) {
 			requests.push({
 				messages: prefix,
-				output: Math.min(
-					Math.floor(0.5 * (reserve as number)),
-					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+				output: clampReservedOutput(
+					model,
+					piReservedTurnPrefixOutputTokens(reserve as number),
 				),
 				wrapper: false,
 			});
@@ -366,6 +383,58 @@ export class CompactionCoordinator {
 		].join(":");
 	}
 
+	/**
+	 * Provider-anchored usage (exact for the last reported request, chars/4-estimated for
+	 * anything newer) is the best available reading of the live session, and an ungated cut
+	 * is a subset of it. The guard's payload estimate and the trailing part of that reading
+	 * run the same chars/4 estimator over the same messages, while the anchored part of the
+	 * reading is provider-exact, so a usage figure that still sits comfortably under the
+	 * window means the payload estimate is the inflated side: an estimate above the window is
+	 * not sufficient authority to decline compaction. Compact+'s own issued prompt is the
+	 * payload under examination, so it is not guidance here; only a prompt someone else
+	 * supplied makes the comparison incomparable, because those tokens are additive to
+	 * reported usage. Fails closed when usage is unknown, non-native, non-positive, or near
+	 * the window.
+	 */
+	private estimateDiscrepancy(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+		reserve: number,
+		issuedInstructions: string | null,
+	): boolean {
+		// Compact+'s own issued prompt is the payload under examination, so it is not
+		// guidance Pi will additionally send. Any other prompt is additive to reported
+		// usage and makes the comparison meaningless.
+		if (
+			event.customInstructions !== issuedInstructions &&
+			this.callerGuidance(event).length > 0
+		)
+			return false;
+		const model = ctx.model;
+		if (!model || !Number.isSafeInteger(model.contextWindow)) return false;
+		if (!Number.isSafeInteger(reserve) || reserve <= 0) return false;
+		const usage = this.getEffectiveUsage(ctx);
+		if (usage?.source !== "native") return false;
+		const tokens = usage.tokens;
+		if (typeof tokens !== "number" || !Number.isSafeInteger(tokens))
+			return false;
+		if (tokens <= 0) return false;
+		// On the deferral path Pi appends Compact+'s own prompt verbatim, so the prompt is
+		// part of what must fit. Omitting it would let a large prompt defer a genuinely
+		// oversized request.
+		const promptTokens = issuedInstructions
+			? estimateTokens({
+					role: "user",
+					content: issuedInstructions,
+					timestamp: 0,
+				})
+			: 0;
+		return (
+			tokens + reserve + promptTokens + SUSPECT_ESTIMATE_HEADROOM_TOKENS <
+			model.contextWindow
+		);
+	}
+
 	/** The notice dedupe must stay deterministic across attempts, so a key whose walk
 	 * ran out of budget is compared in its stable partial form. The verdict cache keeps
 	 * the nonce, because a partial total cannot identify a cut. */
@@ -405,6 +474,21 @@ export class CompactionCoordinator {
 			ctx,
 		);
 		if (!reason) return undefined;
+		// The measured reason is always a request estimate here: an exhausted output budget
+		// is a provider response failure and never reaches this guard. Comfortable provider
+		// usage on a cut Pi sends without foreign guidance outranks the estimate, so Pi
+		// compacts and the discrepancy is recorded instead of a decline.
+		if (
+			this.estimateDiscrepancy(
+				event,
+				ctx,
+				event.preparation?.settings?.reserveTokens ?? 0,
+				this.state.lastIssuedCompactionInstructions,
+			)
+		) {
+			this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
+			return undefined;
+		}
 		this.reportSummarizationOverflow(
 			event,
 			ctx,
@@ -724,11 +808,23 @@ export class CompactionCoordinator {
 		const epoch = this.state.currentCompactionEpoch;
 		// Only the exact prompt this lifecycle issued is an SDK echo. Caller
 		// guidance, even generated-looking or modified text, is not ours to drop.
+		// The echo is transient, so capture it here: later overflow decisions in this
+		// attempt still need to know which prompt was ours.
+		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
 		const customInstructions =
-			event.customInstructions === this.state.lastIssuedCompactionInstructions
+			event.customInstructions === issuedPrompt
 				? undefined
 				: event.customInstructions;
 		this.state.lastIssuedCompactionInstructions = null;
+		// Computed once for this attempt: bounded provider usage headroom that contradicts
+		// an over-window estimate. It decides whether a decline is justified, and it is the
+		// reason recorded when the decline is not.
+		const usageDiscrepancy = this.estimateDiscrepancy(
+			event,
+			ctx,
+			event.preparation?.settings?.reserveTokens ?? 0,
+			issuedPrompt,
+		);
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction();
 		}
@@ -777,13 +873,31 @@ export class CompactionCoordinator {
 		};
 
 		if (compatibility.executionPath === "native-fallback") {
+			// Deferring is still sending the same payload. Measure before recording why, so the
+			// headroom case needs no second write: the persisted telemetry already carries the
+			// reason the deferral settled on.
+			const deferred = await this.detectSummarizationRequestOverflow(
+				event,
+				ctx,
+			);
+			// The measurement awaits, so re-check the epoch before writing: a superseded
+			// attempt must not clobber the telemetry of the attempt that replaced it.
+			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
+			// Bounded provider usage headroom outranks the estimate here too: a runtime that
+			// resolves to native fallback must not reproduce the failure this change exists to
+			// fix.
+			const headroomDefers = Boolean(deferred.reason) && usageDiscrepancy;
 			this.state.pendingCompaction = {
 				...telemetryBase,
 				executionPath: "native-fallback",
 				fromExtension: false,
-				fallbackReason: compatibility.reason ?? undefined,
+				fallbackReason: headroomDefers
+					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+					: (compatibility.reason ?? undefined),
 			};
-			this.state.lastFallbackReason = compatibility.reason;
+			this.state.lastFallbackReason = headroomDefers
+				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+				: compatibility.reason;
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 
@@ -794,12 +908,7 @@ export class CompactionCoordinator {
 				);
 			}
 
-			// Deferring is still sending the same payload. Guard it too.
-			const deferred = await this.detectSummarizationRequestOverflow(
-				event,
-				ctx,
-			);
-			if (deferred.reason) {
+			if (deferred.reason && !headroomDefers) {
 				this.reportSummarizationOverflow(
 					event,
 					ctx,
@@ -810,7 +919,12 @@ export class CompactionCoordinator {
 				);
 				return { cancel: true };
 			}
-
+			// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
+			// caller treats the same deferral as no compaction this turn. Either way release
+			// Compact+'s attempt state, or a deferred attempt blocks later automatic triggers.
+			this.state.selectedMode = null;
+			this.state.isCompacting = false;
+			this.state.lastTriggerAuto = false;
 			return undefined;
 		}
 
@@ -840,6 +954,8 @@ export class CompactionCoordinator {
 			this.state.lastFallbackReason = reason;
 			return { cancel: true };
 		};
+		// The lifecycle clears the issued prompt when the attempt settles, so the echo
+		// identity is captured with the SDK echo above.
 		const attempt = await runCustomCompaction(
 			event.preparation,
 			mode,
@@ -853,49 +969,64 @@ export class CompactionCoordinator {
 			return this.cancelAbortedCompaction();
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
+		// A trimmed attempt is a success with a smaller payload, not a decline. Say so, and
+		// say how much was dropped, so a live session can tell the two apart.
+		if (
+			attempt.fallbackReason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON &&
+			ctx.hasUI
+		) {
+			const turns = attempt.evidenceTrimmedTurns;
+			ctx.ui.notify(
+				typeof turns === "number"
+					? `${EVIDENCE_TRIMMED_WARNING} Dropped ${turns} retained ${turns === 1 ? "turn" : "turns"}.`
+					: EVIDENCE_TRIMMED_WARNING,
+				"warning",
+			);
+		}
 		if (attempt.cancel) {
 			const overflow =
-				attempt.fallbackReason ===
-				"additional intent evidence exceeds the summary request budget";
+				attempt.fallbackReason === SUMMARIZATION_INTENT_EVIDENCE_REASON;
 			if (overflow && ctx.hasUI)
 				ctx.ui.notify(INTENT_OVERFLOW_WARNING, "warning");
 			return cancelCustom(
 				overflow
-					? "intent evidence exceeds safety budget"
+					? SUMMARIZATION_INTENT_EVIDENCE_REASON
 					: (attempt.fallbackReason ?? "custom compaction cancelled"),
 			);
 		}
 
+		// The discrepancy only speaks for an estimate. A provider-confirmed rejection is
+		// proven: Pi would re-send the identical oversized cut, so headroom cannot excuse it.
+		const headroomOverride = usageDiscrepancy && !attempt.providerConfirmed;
+
 		if (attempt.requestOverflow) {
-			// Compact+ sends a superset of what Pi would send: its rendered
-			// instructions carry intent evidence Pi never sends. On a split turn it
-			// also merges slices Pi sends separately, so there the failure is only
-			// authoritative after re-measuring Pi's own requests. For a single slice
-			// the superset is treated as authoritative and the attempt is cancelled.
+			// Compact+ sends a superset of what Pi would send: its rendered instructions
+			// carry intent evidence Pi never sends, and on a split turn it merges slices
+			// Pi sends separately. An overflow of Compact+'s own request is therefore not
+			// an overflow of Pi's. Measure the payload Pi would actually send and cancel
+			// only when that cannot fit either; assuming the superset is authoritative is
+			// what left a session at 69% of its window unable to compact at all.
 			let nativeOverflow: string | null;
 			let nativeOverflowKey: string | null = null;
-			// Pi only sends separate requests when the split turn has a prefix. Compact+'
-			// own boundary preparation reports isSplitTurn with an empty prefix, so the
-			// gate must match the real split, not the flag alone.
-			const splitsPayload =
-				event.preparation?.isSplitTurn === true &&
-				(event.preparation?.turnPrefixMessages?.length ?? 0) > 0;
-			if (splitsPayload) {
+			if (attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON) {
+				// An exhausted output budget is about the response, not the request: Pi
+				// would hit the same cap on the same cut, so this stays a cancel unless
+				// the kill switch has restored native compaction.
+				nativeOverflow =
+					this.thresholdSettings.guardNativeCompaction === false
+						? null
+						: SUMMARIZATION_OUTPUT_CAP_REASON;
+			} else {
 				const measured = await this.detectSummarizationRequestOverflow(
 					event,
 					ctx,
 				);
 				nativeOverflow = measured.reason;
 				nativeOverflowKey = measured.key;
-			} else {
-				// The kill switch must restore native compaction even when Compact+
-				// confirmed an overflow of a payload that contains Pi's unchanged cut.
-				nativeOverflow =
-					this.thresholdSettings.guardNativeCompaction === false
-						? null
-						: attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON
-							? SUMMARIZATION_OUTPUT_CAP_REASON
-							: SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				// Provider-anchored usage is the best reading of the live session and the cut is
+				// a subset of it. Comfortable bounded headroom outranks an over-window estimate of
+				// Pi's own payload: defer to Pi instead of declining.
+				if (nativeOverflow && headroomOverride) nativeOverflow = null;
 			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
@@ -919,6 +1050,7 @@ export class CompactionCoordinator {
 				...telemetryBase,
 				classifiedCounts: attempt.classifiedCounts,
 				fallbackReason: attempt.fallbackReason ?? undefined,
+				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
 			this.state.lastFallbackReason = attempt.fallbackReason;
 			await this.persistTelemetrySnapshot();
@@ -946,8 +1078,15 @@ export class CompactionCoordinator {
 			};
 		}
 
+		// The discrepancy only speaks for a context-overflow decline. An exhausted output
+		// budget is about the response, and any other fallback reason stays exactly as the
+		// attempt reported it.
+		const overflowDecline =
+			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		this.state.lastFallbackReason =
-			attempt.fallbackReason ?? "custom summarization unavailable";
+			headroomOverride && overflowDecline
+				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+				: (attempt.fallbackReason ?? "custom summarization unavailable");
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",
@@ -956,8 +1095,14 @@ export class CompactionCoordinator {
 			compatibilityReason:
 				telemetryBase.compatibilityReason ?? this.state.lastFallbackReason,
 		};
+		// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
+		// caller treats the same deferral as no compaction this turn. Either way release
+		// Compact+'s attempt state, or a deferred attempt blocks later automatic triggers.
 		await this.persistTelemetrySnapshot();
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
+		this.state.selectedMode = null;
+		this.state.isCompacting = false;
+		this.state.lastTriggerAuto = false;
 		if (!isCurrent()) return cancelCustom("compaction context changed");
 
 		if (ctx.hasUI) {
@@ -970,11 +1115,15 @@ export class CompactionCoordinator {
 		}
 
 		// Provider wording is not a reliable overflow signal: measure the payload
-		// Pi is about to send before letting this deferral through. When the cut has
-		// not changed since the measurement above, this is a cache hit, not a second
-		// serialization.
+		// Pi is about to send before letting this deferral through. When the attempt already
+		// measured this cut (the `requestOverflow` branch above), this is a cache hit rather
+		// than a second serialization; otherwise it is the first measurement for the attempt.
+		// Headroom contradicts the measurement itself, so it suppresses the decline here
+		// regardless of why the attempt fell back: a session with comfortable provider
+		// headroom must not be left unable to compact. Only the relabelling above is scoped
+		// to an estimate-driven context overflow.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
-		if (fallback.reason) {
+		if (fallback.reason && !headroomOverride) {
 			this.reportSummarizationOverflow(
 				event,
 				ctx,

@@ -282,7 +282,9 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		);
 
 		expect(result).not.toEqual({ cancel: true });
-		expect(state.lastFallbackReason).not.toContain("intent evidence exceeds");
+		expect(state.lastFallbackReason).not.toContain(
+			"additional intent evidence could not be captured",
+		);
 	});
 
 	it("defers evidence budgeting until Pi supplies the actual preparation", async () => {
@@ -301,7 +303,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(state.selectedMode).toBe("standard");
 	});
 
-	it("cancels a compaction if omitted evidence exceeds the actual request budget", async () => {
+	it("caps omitted evidence instead of cancelling when it exceeds the request budget", async () => {
 		const { coordinator, state } = createCoordinator();
 		state.selectedMode = "standard";
 		const ctx = createMockCtx({
@@ -330,14 +332,69 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			ctx,
 		);
 
-		expect(result).toEqual({ cancel: true });
+		// Oversized omitted evidence is capped, not a cancel: the cut itself still fits, so
+		// the attempt runs and only the mocked provider route stops it.
+		expect(result).toBeUndefined();
 		expect(state.selectedMode).toBeNull();
 		expect(state.isCompacting).toBe(false);
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("intent evidence exceeds"),
+		expect(state.lastFallbackReason).toBe(
+			"compact error: provider request failed",
+		);
+		// The cancel warning is gone: nothing was cancelled, and the fallback notice is the
+		// provider-route one rather than the evidence-capture one.
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining(
+				"could not capture its additional intent evidence",
+			),
 			"warning",
 		);
 	});
+
+	it("explains evidence budgeting that the configuration cannot measure", async () => {
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		const ctx = createMockCtx({
+			mode: "tui",
+			sessionFile: "/tmp/session.jsonl",
+			contextWindow: 64_000,
+		});
+		Object.defineProperty(ctx, "modelRegistry", {
+			value: { streamSimple: vi.fn() },
+		});
+		setProjectedUser(ctx, "Task: repair login.");
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+					settings: {
+						enabled: true,
+						keepRecentTokens: 100,
+						reserveTokens: 0,
+					},
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+
+		// The budget is unusable, so nothing was measured and the warning says the evidence
+		// could not be captured rather than claiming it was too large.
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
+			"additional intent evidence could not be captured within the summary request budget",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"could not capture its additional intent evidence",
+			),
+			"warning",
+		);
+	});
+
+	// The other route to the same diagnostic, a capture that never resolved, is pinned at
+	// the measurement level in test/summarization-request-budget.test.ts.
 
 	it.each([
 		"queue",

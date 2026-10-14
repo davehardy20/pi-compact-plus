@@ -39,9 +39,12 @@ import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
+	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 type ExtensionEventContext = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
@@ -88,7 +91,12 @@ function createCtx(options?: {
 
 function createCoordinator(
 	state: CompactionState,
-	options?: { guardNativeCompaction?: boolean; usageTokens?: number },
+	options?: {
+		guardNativeCompaction?: boolean;
+		usageTokens?: number;
+		usageSource?: EffectiveUsage["source"];
+		persistTelemetrySnapshot?: () => Promise<void>;
+	},
 ) {
 	return new CompactionCoordinator({
 		state,
@@ -102,9 +110,9 @@ function createCoordinator(
 			percent: 95,
 			tokens: options?.usageTokens ?? 250_000,
 			contextWindow: 262_144,
-			source: "native",
+			source: options?.usageSource ?? "native",
 		}),
-		persistTelemetrySnapshot: vi.fn(),
+		persistTelemetrySnapshot: options?.persistTelemetrySnapshot ?? vi.fn(),
 	});
 }
 
@@ -150,18 +158,20 @@ afterEach(() => {
 });
 
 describe("CompactionCoordinator summarisation overflow handling", () => {
-	it("declines native fallback when the custom request itself overflowed", async () => {
+	it("cancels when the custom request overflowed and Pi's own cut cannot fit either", async () => {
 		const state = new CompactionState();
-		const ctx = createCtx();
-		const coordinator = createCoordinator(state);
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 250_000 });
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
-		// Asymmetry is intentional: Compact+ sends a superset of what Pi sends (its
-		// rendered instructions carry intent evidence Pi never sends), so a
-		// provider-confirmed overflow cancels even though Pi's own cut would fit.
+		// Compact+ sends a superset of what Pi sends, so a superset overflow alone is
+		// not authority to decline. Here the transcript itself is oversized: Pi would
+		// send the same cut, so the attempt cancels instead of re-sending it.
 		const result = await coordinator.onSessionBeforeCompact(
-			event(ctx, [user("Task: repair login.")]),
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+			]),
 			ctx,
 		);
 
@@ -176,6 +186,288 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			expect.stringContaining("cannot fit"),
 			"warning",
 		);
+	});
+
+	it("defers to native compaction when Pi's own payload fits under the session bound", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		// Pre-set the attempt state the deferral must release, so the assertions prove the
+		// release happened rather than that the fields were never set.
+		state.isCompacting = true;
+		state.lastTriggerAuto = true;
+
+		// The live failure shape: Compact+'s own measurement of its superset request denied
+		// the compaction before any provider was consulted, while provider usage reports the
+		// session well under the window. Pi sends a smaller payload, so declining here leaves
+		// a session that never compacts.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(120_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		// Provider usage sits comfortably under the window, so the estimate that denied
+		// the request is recorded as a discrepancy rather than passed on as the reason.
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+
+		// A deferred compaction hands off to Pi, so it must not leave a stuck attempt
+		// behind: that blocks every later automatic trigger.
+		expect(state.selectedMode).toBeNull();
+		expect(state.isCompacting).toBe(false);
+		expect(state.lastTriggerAuto).toBe(false);
+
+		await coordinator.maybeAutoCompact(ctx, "turn_end");
+		expect(state.lastTriggerAuto).toBe(true);
+	});
+
+	it("defers a guided attempt instead of declining when usage reports headroom", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Seeds acceptance shape: provider usage sits well under the window while the
+		// characters/4 estimate of the guided attempt claims it cannot fit. Compact+'s own
+		// issued prompt is the payload under examination, not third-party guidance, so
+		// bounded usage headroom outranks the estimate and the session still compacts.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+		const guided = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+
+		const result = await coordinator.onSessionBeforeCompact(guided, ctx);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+
+		await coordinator.onSessionCompact(
+			{
+				fromExtension: false,
+				compactionEntry: {
+					type: "compaction",
+					summary: VALID_STRUCTURED_SUMMARY,
+					details: {},
+				},
+			} as never,
+			ctx,
+		);
+		expect(state.lastCompactTokens).toBeGreaterThan(0);
+	});
+
+	it("suppresses a native-guard decline when usage headroom contradicts the estimate", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = null;
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+		const guided = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+
+		expect(
+			await coordinator.onSessionBeforeCompact(guided, ctx),
+		).toBeUndefined();
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+	});
+
+	it("keeps the native-guard decline when the guidance is not Compact+'s own", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = null;
+		// Third-party guidance is additive to reported usage, so usage headroom says
+		// nothing about whether the request Pi will send can fit.
+		state.lastIssuedCompactionInstructions = "a different prompt";
+		const guided = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "focus on the failing tests" },
+		);
+
+		expect(await coordinator.onSessionBeforeCompact(guided, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("keeps the overflow reason when usage is already near the window", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Usage leaves no bounded headroom, so the estimate is not treated as a
+		// discrepancy and the real overflow reason is recorded instead.
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("names every trimmed turn when more than one had to go", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+
+		const source = user(
+			`Task: repair login.\n${"old context ".repeat(60_000)}`,
+		);
+		// Two large retained turns must both go before the request fits, so the notice has
+		// to pluralise rather than reuse the single-turn wording.
+		const retained = [
+			user("oldest retained instruction ".repeat(4000)),
+			user("middle retained instruction ".repeat(4000)),
+			user("latest retained instruction ".repeat(40)),
+		];
+		ctx.sessionManager.buildSessionProjection = vi.fn(() => ({
+			messages: [source, ...retained],
+		})) as never;
+		compactMock.mockResolvedValueOnce({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: null,
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [source]),
+			ctx,
+		);
+
+		expect(result?.compaction).toBeDefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 2 retained turns."),
+			"warning",
+		);
+	});
+
+	it("trims intent evidence instead of cancelling when the trimmed request fits", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+
+		const source = user(
+			`Task: repair login.\n${"old context ".repeat(60_000)}`,
+		);
+		const retained = [
+			user("oldest retained instruction ".repeat(4000)),
+			user("latest retained instruction ".repeat(400)),
+		];
+		ctx.sessionManager.buildSessionProjection = vi.fn(() => ({
+			messages: [source, ...retained],
+		})) as never;
+		compactMock.mockResolvedValueOnce({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: null,
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [source]),
+			ctx,
+		);
+
+		// Compact+ sends a superset of what Pi sends. When the superset only fails
+		// because of the evidence Compact+ added itself, the attempt must shrink that
+		// evidence and continue, not discard the whole compaction.
+		expect(result).not.toEqual({ cancel: true });
+		expect(result?.compaction).toBeDefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("trimmed additional intent evidence"),
+			"warning",
+		);
+		// The notice names how much was dropped, so a live session can tell a trim from a
+		// decline rather than inferring it from a reason string.
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 1 retained turn"),
+			"warning",
+		);
+		expect(state.pendingCompaction?.executionPath).toBe("custom");
+		// The count reaches telemetry, so status can distinguish a trimmed compaction from a
+		// clean one after the session reloads.
+		expect(state.pendingCompaction?.intentEvidenceTrimmedTurns).toBe(1);
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+		);
+
+		await coordinator.onSessionCompact(
+			{
+				fromExtension: true,
+				compactionEntry: {
+					type: "compaction",
+					summary: VALID_STRUCTURED_SUMMARY,
+					details: {},
+				},
+			} as never,
+			ctx,
+		);
+		// The count survives the settle into lastCompaction, so status can still tell a
+		// trimmed compaction from a clean one after the session reloads.
+		expect(state.lastCompaction?.intentEvidenceTrimmedTurns).toBe(1);
+	});
+
+	it("reports retained turns the evidence cap never admitted", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+
+		const source = user("Task: repair login.");
+		const oversized = user("oversized retained paste ".repeat(60_000));
+		const recent = user("latest retained instruction ".repeat(40));
+		ctx.sessionManager.buildSessionProjection = vi.fn(() => ({
+			messages: [source, oversized, recent],
+		})) as never;
+		compactMock.mockResolvedValueOnce({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: null,
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [source]),
+			ctx,
+		);
+
+		// The cap dropped this turn before the trim search ever ran, so the count the session
+		// sees comes from the cap rather than a probe, and the compaction still proceeds.
+		expect(result?.compaction).toBeDefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 1 retained turn"),
+			"warning",
+		);
+		expect(state.pendingCompaction?.intentEvidenceTrimmedTurns).toBe(1);
 	});
 
 	it("cancels a native Pi compaction whose transcript alone cannot fit", async () => {
@@ -201,6 +493,74 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			"warning",
 		);
 		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("keeps the compatibility reason when the session-bound fast path defers", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const persist = vi.fn(async () => {});
+		const coordinator = createCoordinator(state, {
+			usageTokens: 150_000,
+			persistTelemetrySnapshot: persist,
+		});
+		state.selectedMode = "standard";
+
+		const deferred = event(ctx, [
+			user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+		]);
+		delete (deferred as { streamFn?: unknown }).streamFn;
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		// The runtime resolves to native fallback on an over-window cut. Provider usage
+		// reports bounded headroom, so the session-bound fast path skips the measurement and
+		// the deferral stands, with the compatibility reason as the single persisted write.
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.pendingCompaction?.fallbackReason).toBe(
+			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(state.lastFallbackReason).toBe(
+			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
+
+	it("records the discrepancy reason when guidance forces the measurement", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const persist = vi.fn(async () => {});
+		const coordinator = createCoordinator(state, {
+			usageTokens: 150_000,
+			persistTelemetrySnapshot: persist,
+		});
+		state.selectedMode = "standard";
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+
+		// Guidance is Compact+'s own prompt: it bypasses the fail-open session bound, so the
+		// cut is really measured, while estimateDiscrepancy stays eligible because the prompt
+		// is the payload under examination rather than something Pi adds on top.
+		const deferred = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+		delete (deferred as { streamFn?: unknown }).streamFn;
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.pendingCompaction?.fallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+		expect(state.pendingCompaction?.compatibilityReason).toBe(
+			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+		expect(persist).toHaveBeenCalledTimes(1);
 	});
 
 	it("cancels the deferred native path too when the payload cannot fit", async () => {
@@ -248,6 +608,122 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
 			expect.stringContaining("cannot fit"),
 			"warning",
+		);
+	});
+
+	it("never lets usage headroom excuse an exhausted output budget", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Usage leaves bounded headroom, but an exhausted output budget is about the
+		// response: Pi would hit the same cap on the same cut, so this stays a cancel.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [user("Task: repair login.")]),
+			ctx,
+		);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+	});
+
+	it("does not let usage headroom rewrite a provider-confirmed overflow", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// The provider itself rejected the request, so the overflow is proven rather than
+		// estimated. Headroom may still let Pi try its own smaller cut, but it must not
+		// relabel a proven rejection as a suspect estimate.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("fails closed when usage is not provider-reported", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Comfortable headroom, but the number is Compact+'s own estimate rather than
+		// provider-reported usage, so it cannot outrank the measured overflow.
+		const coordinator = createCoordinator(state, {
+			usageTokens: 150_000,
+			usageSource: "estimated",
+		});
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.
+${"old context ".repeat(90_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("defers the final fall-back when usage headroom contradicts the estimate", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+
+		// The attempt failed for a reason that is not an overflow, and the guidance Pi would
+		// append is Compact+'s own prompt. Headroom contradicts the estimate of Pi's payload,
+		// so the session must still compact rather than be left unable to.
+		const deferred = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).not.toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("keeps the final decline when oversized guidance is not Compact+'s own", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Comfortable headroom, but the guidance is third-party: those tokens are additive to
+		// reported usage, so usage no longer contradicts the measurement of the payload Pi
+		// would send and the decline stands.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+
+		const deferred = event(ctx, [user("Task: repair login.")], {
+			instructions: "retained guidance ".repeat(90_000),
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
 
@@ -737,13 +1213,15 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
 		// Compact+'s boundary preparation reports isSplitTurn with an empty prefix.
-		// Pi still sends one request, so the overflow is authoritative: no silent
-		// deferral that performs no compaction and emits no warning.
+		// Pi still sends one request, and this cut cannot fit it, so the overflow is
+		// authoritative: no silent deferral that performs no compaction and emits no
+		// warning.
 		const result = await coordinator.onSessionBeforeCompact(
-			event(ctx, [user("Task: repair login.")], {
-				splitTurn: true,
-				prefix: [],
-			}),
+			event(
+				ctx,
+				[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+				{ splitTurn: true, prefix: [] },
+			),
 			ctx,
 		);
 

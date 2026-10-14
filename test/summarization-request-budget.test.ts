@@ -1,7 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { measureSummaryRequestTokens } from "../src/summarization-request-budget.js";
+import {
+	clampReservedOutput,
+	measureSummaryRequestTokens,
+	piReservedOutputTokens,
+	piReservedTurnPrefixOutputTokens,
+} from "../src/summarization-request-budget.js";
 
 type SummaryModel = Parameters<typeof generateSummaryWithUsage>[1];
 
@@ -26,6 +31,16 @@ afterEach(() => {
 });
 
 describe("measureSummaryRequestTokens", () => {
+	it("names the two output fractions Pi uses for its summarization requests", () => {
+		// The summary request reserves 0.8 of the configured budget and the split-turn prefix
+		// request reserves 0.5. Both are then clamped to the model's own output cap.
+		expect(piReservedOutputTokens(16_384)).toBe(13_107);
+		expect(piReservedTurnPrefixOutputTokens(16_384)).toBe(8_192);
+		expect(clampReservedOutput({ maxTokens: 4096 }, 13_107)).toBe(4096);
+		expect(clampReservedOutput({ maxTokens: 4096 }, 8_192)).toBe(4096);
+		expect(clampReservedOutput({ maxTokens: 0 }, 8_192)).toBe(8_192);
+	});
+
 	it("measures the whole summarisation request without any network call", async () => {
 		const measurement = await measureSummaryRequestTokens({
 			messages: [user(`Task: repair login.\n${"detail ".repeat(500)}`)],

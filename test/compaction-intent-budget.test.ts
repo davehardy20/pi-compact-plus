@@ -227,7 +227,7 @@ it("names a transcript-driven rejection as transcript overflow, not as added int
 	expect(budgeted.transcriptOverflow).toBe(true);
 });
 
-it("keeps an evidence-driven rejection out of the transcript overflow class", async () => {
+it("shrinks added evidence instead of reporting a transcript overflow", async () => {
 	const source = user("x".repeat(600_000));
 	const retained = user("Keep this instruction.".repeat(4000));
 	const budgeted = await budgetOf(
@@ -236,7 +236,87 @@ it("keeps an evidence-driven rejection out of the transcript overflow class", as
 		200_000,
 	);
 	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.evidenceTrimmed).toBe(1);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("shrinks omitted intent evidence instead of rejecting when a trimmed request fits", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = [
+		user("oldest retained instruction ".repeat(4000)),
+		user("middle retained instruction ".repeat(4000)),
+		user("latest retained instruction ".repeat(400)),
+	];
+	const budgeted = await budgetOf(
+		[source, ...retained],
+		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
+		200_000,
+	);
+	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.renderedInstructions).toBeTypeOf("string");
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns.length).toBeLessThan(
+		retained.length,
+	);
+	expect(budgeted.evidenceTrimmed).toBeTypeOf("number");
+});
+
+it("drops the oldest evidence first when a smaller trim is enough", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = [
+		user("oldest retained instruction ".repeat(4000)),
+		user("latest retained instruction ".repeat(40)),
+	];
+	const budgeted = await budgetOf(
+		[source, ...retained],
+		{ ...preparation([source]), settings: { reserveTokens: 50_000 } },
+		200_000,
+	);
+	expect(budgeted.evidenceTrimmed).toBe(1);
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		retained[1].content.trim(),
+	]);
+});
+
+it("still rejects when the request cannot fit even with all added evidence dropped", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = user("Keep this instruction.".repeat(4000));
+	const budgeted = await prepareBudgetedCompactionFocus(
+		[source, retained],
+		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
+		{
+			model: {
+				id: "budget-test",
+				provider: "budget-test",
+				api: "openai-completions",
+				contextWindow: 199_000,
+				maxTokens: 199_000,
+			} as Parameters<typeof generateSummaryWithUsage>[1],
+			renderInstructions: () => "oversized base prompt ".repeat(20_000),
+		},
+	);
+	// No trim fits, not even with every retained turn dropped: what is left is the
+	// transcript plus the base prompt, so this is a request overflow the coordinator
+	// judges against the payload Pi sends, not an evidence-driven rejection.
+	expect(budgeted.transcriptOverflow).toBe(true);
+	expect(budgeted.renderedInstructions).toBeUndefined();
 	expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("still rejects when even the trimmed request cannot fit", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = [user("a".repeat(100_000)), user("b".repeat(100_000))];
+	const budgeted = await budgetOf(
+		[source, ...retained],
+		{ ...preparation([source]), settings: { reserveTokens: 100_000 } },
+		200_000,
+	);
+	expect(budgeted.transcriptOverflow).toBe(true);
+	expect(budgeted.renderedInstructions).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
 });
 
 it("rejects a small-model request when native prompt plus output exceeds context", async () => {
@@ -292,12 +372,15 @@ it("rejects a small-model request when native prompt plus output exceeds context
 it("honors a large configured output reserve when budgeting additional evidence", async () => {
 	const source = user("x".repeat(600_000));
 	const retained = user("Keep this instruction.".repeat(4000));
-	const focus = await extractCompactionFocus(
+	const budgeted = await budgetOf(
 		[source, retained],
 		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
 		200_000,
 	);
-	expect(focus.intentEvidence?.overflow).toBe(true);
+	// The configured 60k reserve leaves no room for the added evidence, so the
+	// evidence is trimmed rather than the cut being declared oversized.
+	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.evidenceTrimmed).toBe(1);
 });
 
 it("fits a small model using its actual capped output allowance", async () => {
@@ -408,6 +491,186 @@ it("omits only the exact generated continuation after verifying the native prefi
 		expect(focus.intentEvidence?.overflow).toBeUndefined();
 		expect(focus.intentEvidence?.recentUserTurns).toEqual([real.content]);
 	}
+});
+
+it("caps evidence rather than cancelling when a retained paste alone exceeds the window", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	const source = user("Task: repair login.");
+	const older = user("Preserve the audit constraints.");
+	const tooBig = user(sized(260_000));
+	const recent = user(sized(60_000));
+
+	// The lower bound says this much evidence cannot fit. That is a reason to cap the
+	// evidence, not to discard the compaction: the cut itself is small and still fits. The
+	// oversized paste cannot fit at any budget position, so it is the turn that gets dropped;
+	// the older turn that still fits survives.
+	const budgeted = await budgetOf(
+		[source, older, tooBig, recent],
+		preparation([source]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.renderedInstructions).toBeDefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		older.content,
+		recent.content.trim(),
+	]);
+	// The cap is reported, so a session can see that evidence was dropped rather than
+	// inferring it from a shorter summary.
+	expect(budgeted.evidenceTrimmed).toBe(1);
+});
+
+it("keeps an older turn when the newest retained turn alone cannot fit", async () => {
+	const unit = "old context ";
+	let huge = "";
+	while (
+		estimateTokens({ role: "user", content: huge, timestamp: 1 }) < 260_000
+	) {
+		huge += unit.repeat(2_000);
+	}
+	const source = user("Task: repair login.");
+	const older = user("Preserve the audit constraints.");
+	const newest = user(huge);
+
+	// The cap skips the turn that cannot fit, so an oversized newest turn costs itself
+	// rather than everything older than it.
+	const budgeted = await budgetOf(
+		[source, older, newest],
+		preparation([source]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		older.content,
+	]);
+	expect(budgeted.evidenceTrimmed).toBe(1);
+});
+
+it("keeps evidence that fits the clamped output budget the measurement actually uses", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	const source = user("Task: repair login.");
+	// reserveTokens is 16_384 and maxTokens is the whole window here, so the binding term is
+	// Pi's floor(0.8 * reserveTokens) = 13_107 rather than the model cap. Evidence between
+	// 186_893 and 183_616 tokens fits that budget but not the unclamped reserve.
+	const evidence = user(sized(185_000));
+	const budgeted = await budgetOf(
+		[source, evidence],
+		preparation([source]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		evidence.content.trim(),
+	]);
+	expect(budgeted.evidenceTrimmed).toBeUndefined();
+});
+
+it("caps evidence against the model output cap when the cap is the binding term", async () => {
+	const unit = "old context ";
+	let evidenceText = "";
+	while (
+		estimateTokens({ role: "user", content: evidenceText, timestamp: 1 }) <
+		190_000
+	) {
+		evidenceText += unit.repeat(2_000);
+	}
+	const source = user("Task: repair login.");
+	const evidence = user(evidenceText);
+
+	// maxTokens 4096 is below floor(0.8 * 16_384), so the clamp is what binds: the budget is
+	// 200_000 - 4096 = 195_904, and 190_000 tokens of evidence fits it. Against the
+	// unclamped 13_107 the budget would be 186_893 and this turn would be dropped.
+	const prepared = preparation([source]);
+	const budgeted = await prepareBudgetedCompactionFocus(
+		[source, evidence],
+		prepared,
+		{
+			model: {
+				id: "budget-test",
+				provider: "budget-test",
+				api: "openai-completions",
+				contextWindow: 200_000,
+				maxTokens: 4096,
+			} as Parameters<typeof generateSummaryWithUsage>[1],
+			renderInstructions: (focus) =>
+				buildSummaryInstructions("standard", focus, {
+					isSplitTurn: prepared.isSplitTurn,
+					turnPrefixCount: prepared.turnPrefixMessages.length,
+				}),
+		},
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		evidence.content.trim(),
+	]);
+	expect(budgeted.evidenceTrimmed).toBeUndefined();
+});
+
+it("counts cap drops and trim-search drops together", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	// A transcript large enough that the admitted evidence no longer fits alongside it,
+	// plus a retained turn the cap never admits.
+	const cut = user(sized(150_000));
+	const admitted = user("Preserve the audit constraints.".repeat(8000));
+	const oversized = user(sized(260_000));
+
+	const budgeted = await budgetOf(
+		[cut, admitted, oversized],
+		preparation([cut]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+	// One turn never entered the evidence, one entered it and was trimmed by the search.
+	expect(budgeted.evidenceTrimmed).toBe(2);
+});
+
+it("counts every dropped turn when the native prefix cannot be verified", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	const projected = [user("Task: repair login."), user(sized(60_000))];
+	// The cut does not match the projected prefix, so containment is unverifiable and the
+	// count must stay conservative rather than subtracting turns assumed to be inside the cut.
+	const cut = user(sized(150_000));
+	const budgeted = await budgetOf(projected, preparation([cut]), 200_000);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+	expect(budgeted.evidenceTrimmed).toBe(projected.length);
 });
 
 it("fails closed when instruction rendering throws", async () => {

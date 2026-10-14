@@ -21,6 +21,37 @@ export interface SummaryRequestMeasurement {
 }
 
 /**
+ * The output budget Pi reserves for a summarization request: `floor(0.8 * reserveTokens)`.
+ * The split-turn prefix request uses a different fraction; see
+ * `piReservedTurnPrefixOutputTokens`.
+ */
+export function piReservedOutputTokens(reserveTokens: number): number {
+	return Math.floor(0.8 * reserveTokens);
+}
+
+/**
+ * Pi builds the split-turn prefix request through a private helper that reserves
+ * `floor(0.5 * reserveTokens)` rather than the 0.8 fraction used for the summary itself.
+ */
+export function piReservedTurnPrefixOutputTokens(
+	reserveTokens: number,
+): number {
+	return Math.floor(0.5 * reserveTokens);
+}
+
+/**
+ * Pi clamps every summarization request to the model's own output cap. A model with no
+ * output cap leaves the request unclamped. Shared so the measurement and the
+ * intent-evidence cap cannot drift apart.
+ */
+export function clampReservedOutput(
+	model: { maxTokens: number },
+	requested: number,
+): number {
+	return model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
+}
+
+/**
  * Measure the exact summarization request Pi would send, without contacting a
  * provider. The public SDK builds the request, then the injected stream function
  * captures the assembled context and throws before any registry, credential,
@@ -37,10 +68,9 @@ export async function measureSummaryRequestTokens(options: {
 	model: SummaryModel | null | undefined;
 	reserveTokens: unknown;
 	/**
-	 * Replace the captured output budget. Pi builds the split-turn prefix request
-	 * through a private helper that reserves `floor(0.5 * reserveTokens)` instead
-	 * of `floor(0.8 * reserveTokens)`, so callers model that budget explicitly.
-	 * Clamped to the model's own cap before use, exactly as Pi clamps it.
+	 * Replace the captured output budget. Clamped to the model's own cap before use,
+	 * exactly as Pi clamps it. See `piReservedOutputTokens` and
+	 * `piReservedTurnPrefixOutputTokens` for the fractions Pi itself uses.
 	 */
 	reservedOutputTokens?: number;
 	signal?: AbortSignal;
@@ -115,11 +145,7 @@ export async function measureSummaryRequestTokens(options: {
 			Number.isSafeInteger(override) && (override ?? 0) >= 0
 				? (override as number)
 				: (reservedOutputTokens as number);
-		// Pi clamps every summarization request to the model's own output cap, so
-		// the measured total models the request Pi sends rather than the unclamped
-		// fraction a caller named.
-		const output =
-			model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
+		const output = clampReservedOutput(model, requested);
 		return {
 			transcriptTokens: transcript,
 			reservedOutputTokens: output,

@@ -16,6 +16,8 @@ import { buildSummaryInstructions } from "./prompts.js";
 import {
 	classifySummarizationFailure,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+	SUMMARIZATION_INTENT_EVIDENCE_REASON,
 	summarizationFailureReason,
 } from "./summarization-overflow.js";
 import {
@@ -39,6 +41,15 @@ export interface CompactionAttemptResult {
 	 * Retrying the same cut through any other path would fail identically.
 	 */
 	requestOverflow?: true;
+	/**
+	 * The provider itself rejected the summarization request, so the overflow is proven
+	 * rather than estimated. Re-sending this cut through any path fails identically.
+	 */
+	providerConfirmed?: true;
+	/** Retained turns dropped from the front so the request could fit. A trimmed attempt is
+	 * a compaction that succeeded with a smaller payload, so the count is named in the UI
+	 * notice rather than reported only as a reason string. */
+	evidenceTrimmedTurns?: number;
 	classifiedCounts?: {
 		critical: number;
 		contextual: number;
@@ -489,6 +500,8 @@ function getCompactionClassifiedCounts(
 function finalizeCompactionAttempt(
 	result: CompactionResult | undefined,
 	classifiedCounts: NonNullable<CompactionAttemptResult["classifiedCounts"]>,
+	evidenceNote?: string | null,
+	trimmedTurns?: number,
 ): CompactionAttemptResult {
 	if (!result) {
 		return {
@@ -517,7 +530,14 @@ function finalizeCompactionAttempt(
 			classifiedCounts,
 		};
 	}
-	return { result: normalizedResult, fallbackReason: null, classifiedCounts };
+	return {
+		result: normalizedResult,
+		fallbackReason: evidenceNote ?? null,
+		classifiedCounts,
+		...(trimmedTurns === undefined
+			? {}
+			: { evidenceTrimmedTurns: trimmedTurns }),
+	};
 }
 
 function authUnavailableResult(): CompactionAttemptResult {
@@ -602,6 +622,7 @@ export async function runCustomCompaction(
 			actualPreparation,
 			{
 				model,
+				signal: requestSignal,
 				thinkingLevel: compatibility.helperSupportsThinkingLevel
 					? (compatibility.thinkingLevel ?? undefined)
 					: undefined,
@@ -647,8 +668,7 @@ export async function runCustomCompaction(
 		) {
 			return {
 				result: undefined,
-				fallbackReason:
-					"additional intent evidence exceeds the summary request budget",
+				fallbackReason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
 				cancel: true,
 			};
 		}
@@ -686,6 +706,10 @@ export async function runCustomCompaction(
 		return finalizeCompactionAttempt(
 			result,
 			getCompactionClassifiedCounts(prepared, mode),
+			budgeted.evidenceTrimmed !== undefined
+				? SUMMARIZATION_EVIDENCE_TRIMMED_REASON
+				: null,
+			budgeted.evidenceTrimmed,
 		);
 	} catch (error) {
 		if (requestSignal?.aborted) {
@@ -701,6 +725,7 @@ export async function runCustomCompaction(
 			result: undefined,
 			fallbackReason: reason,
 			requestOverflow: true,
+			providerConfirmed: true,
 		};
 	}
 }
