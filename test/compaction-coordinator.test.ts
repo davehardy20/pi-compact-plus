@@ -339,9 +339,11 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			"compact error: provider request failed",
 		);
 		// The cancel warning is gone: nothing was cancelled, and the fallback notice is the
-		// provider-route one rather than the intent-evidence one.
+		// provider-route one rather than the evidence-capture one.
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(
-			expect.stringContaining("intent evidence exceeds"),
+			expect.stringContaining(
+				"could not capture its additional intent evidence",
+			),
 			"warning",
 		);
 	});

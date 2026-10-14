@@ -117,11 +117,13 @@ export async function prepareBudgetedCompactionFocus<
 	}
 	const recentUserTurns: string[] = [];
 	let evidenceLowerBound = 0;
-	// Accumulate newest first. A lower bound above the window says only that this much
-	// evidence cannot fit, not that the compaction must be discarded: the evidence exists to
-	// carry the current objective, so an oversized set skips turns that no longer fit the
-	// remaining budget and never evicts a newer one. The authoritative measurement and the
-	// trim search below still decide the final fit.
+	// Evidence alone can never cost more than the window minus the reserved output, so the
+	// cap uses that necessary bound rather than the whole window. Accumulate newest first:
+	// a turn that cannot fit the remaining budget is skipped, including a newer oversized
+	// one, and older turns that still fit are kept. The cap never evicts a newer turn to
+	// make room for an older one that would not otherwise fit. The authoritative measurement
+	// and the trim search below still decide the final fit.
+	const evidenceCapTokens = model.contextWindow - reserve;
 	for (let index = eligibleTurns.length - 1; index >= 0; index--) {
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.
@@ -135,7 +137,7 @@ export async function prepareBudgetedCompactionFocus<
 					timestamp: 0,
 				}) - 1,
 			);
-		if (nextLowerBound > model.contextWindow) continue;
+		if (nextLowerBound > evidenceCapTokens) continue;
 		evidenceLowerBound = nextLowerBound;
 		recentUserTurns.push(eligibleTurns[index]);
 	}

@@ -436,6 +436,40 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastCompaction?.intentEvidenceTrimmedTurns).toBe(1);
 	});
 
+	it("reports retained turns the evidence cap never admitted", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+
+		const source = user("Task: repair login.");
+		const oversized = user("oversized retained paste ".repeat(60_000));
+		const recent = user("latest retained instruction ".repeat(40));
+		ctx.sessionManager.buildSessionProjection = vi.fn(() => ({
+			messages: [source, oversized, recent],
+		})) as never;
+		compactMock.mockResolvedValueOnce({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: null,
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [source]),
+			ctx,
+		);
+
+		// The cap dropped this turn before the trim search ever ran, so the count the session
+		// sees comes from the cap rather than a probe, and the compaction still proceeds.
+		expect(result?.compaction).toBeDefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 1 retained turn"),
+			"warning",
+		);
+		expect(state.pendingCompaction?.intentEvidenceTrimmedTurns).toBe(1);
+	});
+
 	it("cancels a native Pi compaction whose transcript alone cannot fit", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });

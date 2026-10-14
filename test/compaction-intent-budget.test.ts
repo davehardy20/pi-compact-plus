@@ -510,9 +510,9 @@ it("caps evidence rather than cancelling when a retained paste alone exceeds the
 	const recent = user(sized(60_000));
 
 	// The lower bound says this much evidence cannot fit. That is a reason to cap the
-	// evidence, not to discard the compaction: the cut itself is small and still fits.
-	// Capping goes newest-first, so the oversized paste costs the oldest turns and the
-	// current objective survives.
+	// evidence, not to discard the compaction: the cut itself is small and still fits. The
+	// oversized paste cannot fit at any budget position, so it is the turn that gets dropped;
+	// the older turn that still fits survives.
 	const budgeted = await budgetOf(
 		[source, older, tooBig, recent],
 		preparation([source]),
@@ -526,6 +526,32 @@ it("caps evidence rather than cancelling when a retained paste alone exceeds the
 	]);
 	// The cap is reported, so a session can see that evidence was dropped rather than
 	// inferring it from a shorter summary.
+	expect(budgeted.evidenceTrimmed).toBe(1);
+});
+
+it("keeps an older turn when the newest retained turn alone cannot fit", async () => {
+	const unit = "old context ";
+	let huge = "";
+	while (
+		estimateTokens({ role: "user", content: huge, timestamp: 1 }) < 260_000
+	) {
+		huge += unit.repeat(2_000);
+	}
+	const source = user("Task: repair login.");
+	const older = user("Preserve the audit constraints.");
+	const newest = user(huge);
+
+	// The cap skips the turn that cannot fit, so an oversized newest turn costs itself
+	// rather than everything older than it.
+	const budgeted = await budgetOf(
+		[source, older, newest],
+		preparation([source]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		older.content,
+	]);
 	expect(budgeted.evidenceTrimmed).toBe(1);
 });
 
