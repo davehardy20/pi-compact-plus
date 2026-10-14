@@ -63,44 +63,47 @@ type SessionBeforeCompactResultLike = {
  * needed to build one. Internal only: never logged or persisted. */
 type OverflowVerdict = { reason: string | null; key: string | null };
 
-/** Length proxy for a non-text payload. The container walk stops after `budget`
- * characters so a deeply nested tool call cannot make the key expensive, but string
- * lengths are counted exactly, so growth above the budget still changes the key. */
-function structuralChars(value: unknown, budget: number): number {
-	if (budget <= 0) return 0;
+/** Cap on container nodes walked per payload so a pathological tool call cannot make
+ * key building unbounded. String lengths are O(1), so sibling payload is always counted
+ * until this node cap is reached. */
+const STRUCTURAL_NODE_BUDGET = 10_000;
+const DIGEST_WINDOW = 256;
+const DIGEST_MULTIPLIER = 31;
+
+/** Length proxy for a non-text payload. Only node traversal is bounded, so growing an
+ * object with more keys or an array with more items always changes the key. */
+function structuralChars(value: unknown, nodes: { left: number }): number {
+	if (nodes.left <= 0) return 0;
+	nodes.left -= 1;
 	if (typeof value === "string") return value.length;
 	if (typeof value === "number" || typeof value === "boolean") return 8;
 	if (Array.isArray(value)) {
 		let total = 2;
-		for (const item of value) {
-			total += structuralChars(item, budget - total);
-			if (total >= budget) return total;
-		}
+		for (const item of value) total += structuralChars(item, nodes);
 		return total;
 	}
 	if (value && typeof value === "object") {
 		let total = 2;
 		for (const [key, item] of Object.entries(value)) {
-			total += key.length;
-			total += structuralChars(item, budget - total);
-			if (total >= budget) return total;
+			total += key.length + structuralChars(item, nodes);
 		}
 		return total;
 	}
 	return 1;
 }
 
-/** Content discriminator for guidance text. Reads at most three 256-character windows
- * (head, centred middle, tail), so the whole string is never walked but a difference in
- * the middle still changes the key. Two same-length strings must not share a verdict. */
+/** Content discriminator for guidance text. Fully covered up to three windows of
+ * DIGEST_WINDOW characters (~768 in total: head, centred middle, tail). Beyond that it
+ * is a discriminator, not a guarantee: a difference outside all three windows can still
+ * share a key. */
 export function guidanceDigest(text: string): number {
-	const middle = Math.max(0, Math.floor(text.length / 2) - 128);
-	const tail = Math.max(0, text.length - 256);
+	const middle = Math.max(0, Math.floor(text.length / 2) - DIGEST_WINDOW / 2);
+	const tail = Math.max(0, text.length - DIGEST_WINDOW);
 	let digest = 0;
 	for (const start of [0, middle, tail]) {
-		const end = Math.min(text.length, start + 256);
+		const end = Math.min(text.length, start + DIGEST_WINDOW);
 		for (let index = start; index < end; index++) {
-			digest = (digest * 31 + text.charCodeAt(index)) | 0;
+			digest = (digest * DIGEST_MULTIPLIER + text.charCodeAt(index)) | 0;
 		}
 	}
 	return digest;
@@ -126,11 +129,13 @@ export class CompactionCoordinator {
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
 	private readonly disableAutoCompaction: boolean;
 	/** Measured verdict for the last cut. Written only by the measurement. */
-	private overflowVerdict: { key: string; reason: string | null } | null = null;
+	private overflowVerdict: OverflowVerdict | null = null;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
 	/** True only for the attempt a manual command started, which explains itself. */
 	private manualAttemptInFlight = false;
+	/** Epoch that bypass belongs to, so it cannot outlive a session transition. */
+	private manualAttemptEpoch = -1;
 
 	constructor({
 		state,
@@ -153,6 +158,7 @@ export class CompactionCoordinator {
 		this.overflowVerdict = null;
 		this.overflowNoticeKey = null;
 		this.manualAttemptInFlight = false;
+		this.manualAttemptEpoch = -1;
 	}
 
 	private cancelAbortedCompaction(): { cancel: true } {
@@ -300,7 +306,9 @@ export class CompactionCoordinator {
 					if (typeof partLike.text === "string") chars += partLike.text.length;
 					if (typeof partLike.data === "string") chars += partLike.data.length;
 					if (partLike.arguments !== undefined) {
-						chars += structuralChars(partLike.arguments, 512);
+						chars += structuralChars(partLike.arguments, {
+							left: STRUCTURAL_NODE_BUDGET,
+						});
 					}
 				}
 			}
@@ -404,6 +412,7 @@ export class CompactionCoordinator {
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
 		this.manualAttemptInFlight = true;
+		this.manualAttemptEpoch = this.state.currentCompactionEpoch;
 		try {
 			executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
 				persist: this.persistTelemetrySnapshot,
@@ -654,8 +663,12 @@ export class CompactionCoordinator {
 		nativeFallbackAvailable = true,
 		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
-		// Only the attempt a manual command started bypasses the notice dedupe.
-		const manualAttempt = this.manualAttemptInFlight;
+		// Only the attempt a manual command started bypasses the notice dedupe, and only
+		// for the epoch that attempt belongs to: a bypass left set by an attempt Pi never
+		// settled expires here rather than leaking into a later session's automatic runs.
+		const manualAttempt =
+			this.manualAttemptInFlight &&
+			this.manualAttemptEpoch === this.state.currentCompactionEpoch;
 		this.manualAttemptInFlight = false;
 		const mode = this.state.selectedMode;
 

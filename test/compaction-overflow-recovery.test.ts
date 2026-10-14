@@ -415,6 +415,62 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(warnings()).toBe(1);
 	});
 
+	it("does not leave the session compacting when Pi throws synchronously", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+			throw new Error("Pi rejected the compaction request");
+		});
+
+		await expect(
+			coordinator.handleManualCommand("standard", ctx),
+		).rejects.toThrow("Pi rejected the compaction request");
+		expect(state.isCompacting).toBe(false);
+
+		// A later manual command must still run, not be refused as already in progress.
+		await coordinator.handleManualCommand("standard", ctx);
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) =>
+					call[1] === "warning" &&
+					String(call[0]).includes("already in progress"),
+			),
+		).toHaveLength(0);
+	});
+
+	it("re-measures when tool arguments grow by adding siblings", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const args = (count: number): Record<string, string> =>
+			Object.fromEntries(
+				Array.from({ length: count }, (_unused, index) => [
+					`key_${index}`,
+					"v".repeat(267),
+				]),
+			);
+		const call = (count: number): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: args(count) },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call(100)]), ctx),
+		).toBeUndefined();
+
+		// Same part, same type, same name. The payload grew through sibling keys, which
+		// a character accumulator would have stopped counting.
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call(3000)]), ctx),
+		).toEqual({ cancel: true });
+	});
+
 	it("digests guidance content so equal-length guidance is not one cut", () => {
 		const a = "A".repeat(1_000_000);
 		const b = `${"A".repeat(499_998)}ZZ${"A".repeat(500_000)}`;
@@ -425,7 +481,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(guidanceDigest(a)).toBe(guidanceDigest("A".repeat(1_000_000)));
 	});
 
-	it("cannot see image growth because Pi estimates image parts as zero", async () => {
+	it("cannot see image growth because Pi drops image parts from the request", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
@@ -444,10 +500,12 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			),
 		).toBeUndefined();
 
-		// Characterization, not an aspiration: Pi's estimateTokens returns 0 for an image
-		// part, so a 1,000,000-character base64 payload estimates as nothing and the guard
-		// cannot cancel it. The verdict key does count the data, so a stale verdict is not
-		// reused; the measurement itself is the blind spot.
+		// Characterization: Pi renders the summarization conversation through
+		// contentText, which keeps only type "text" blocks, so image bytes are never sent
+		// to the provider and estimateTokens scores an image part at zero. A 1,000,000
+		// character base64 payload therefore cannot make the request overflow, and the
+		// guard correctly leaves it alone. The key still counts the data, so a cut whose
+		// image changed is not judged by a stale verdict.
 		expect(
 			await coordinator.onSessionBeforeCompact(
 				event(ctx, [image("x".repeat(1_000_000))]),

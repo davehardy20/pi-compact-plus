@@ -102,6 +102,37 @@ describe("executeCompaction", () => {
 		expect(state.isCompacting).toBe(true);
 	});
 
+	it("settles the attempt when Pi throws synchronously", () => {
+		const state = new CompactionState();
+		const onSettled = vi.fn();
+		const ctx = createMockCtx();
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(() => {
+			throw new Error("Pi rejected the compaction request");
+		});
+
+		expect(() =>
+			executeCompaction(
+				"standard",
+				{
+					objective: "test",
+					blockers: [],
+					decisions: [],
+					activeFiles: [],
+					dependencyChain: [],
+				},
+				state,
+				ctx as never,
+				createMockPi() as never,
+				{ onSettled },
+			),
+		).toThrow("Pi rejected the compaction request");
+
+		// Without this the session stays "compacting" and every later attempt is refused.
+		expect(onSettled).toHaveBeenCalledTimes(1);
+		expect(state.isCompacting).toBe(false);
+		expect(state.selectedMode).toBeNull();
+	});
+
 	it("calls persist callback in onComplete with post-compaction tokens", () => {
 		const state = new CompactionState();
 		const persist = vi.fn();
