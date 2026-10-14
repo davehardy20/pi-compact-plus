@@ -609,6 +609,7 @@ export async function runCustomCompaction(
 			actualPreparation,
 			{
 				model,
+				signal: requestSignal,
 				thinkingLevel: compatibility.helperSupportsThinkingLevel
 					? (compatibility.thinkingLevel ?? undefined)
 					: undefined,

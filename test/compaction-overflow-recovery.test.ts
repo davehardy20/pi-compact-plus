@@ -183,7 +183,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 	});
 
-	it("defers to native compaction when only Compact+'s own superset overflowed", async () => {
+	it("defers to native compaction when Pi's own payload fits under the session bound", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
@@ -194,10 +194,10 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		state.lastTriggerAuto = true;
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
-		// The live failure shape: the provider reports the session well under the
-		// window while the characters/4 estimate of Compact+'s own merged request
-		// exceeds it. Pi sends a smaller payload, so declining here leaves a session
-		// that never compacts.
+		// The live failure shape, reached through the fail-open session bound: the provider
+		// reports the session well under the window, so Pi's own payload is not measured as
+		// oversized and Compact+'s superset overflow alone does not decline the compaction.
+		// Pi sends a smaller payload, so declining here leaves a session that never compacts.
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [
 				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),

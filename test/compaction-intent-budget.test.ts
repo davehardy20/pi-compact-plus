@@ -296,7 +296,10 @@ it("still rejects when the request cannot fit even with all added evidence dropp
 			renderInstructions: () => "oversized base prompt ".repeat(20_000),
 		},
 	);
-	expect(budgeted.transcriptOverflow).toBeUndefined();
+	// No trim fits, not even with every retained turn dropped: what is left is the
+	// transcript plus the base prompt, so this is a request overflow the coordinator
+	// judges against the payload Pi sends, not an evidence-driven rejection.
+	expect(budgeted.transcriptOverflow).toBe(true);
 	expect(budgeted.renderedInstructions).toBeUndefined();
 	expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
 	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);

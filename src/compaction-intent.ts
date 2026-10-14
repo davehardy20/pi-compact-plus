@@ -58,6 +58,7 @@ export async function prepareBudgetedCompactionFocus<
 		model: SummaryModel | null | undefined;
 		thinkingLevel?: SummaryThinking;
 		renderInstructions: (focus: CurrentFocus) => string;
+		signal?: AbortSignal;
 	},
 ): Promise<BudgetedIntent<T>> {
 	const originalFocus = extractCurrentFocus(projected);
@@ -143,6 +144,7 @@ export async function prepareBudgetedCompactionFocus<
 				: { customInstructions: instructions }),
 			previousSummary: preparation.previousSummary,
 			thinkingLevel: options.thinkingLevel,
+			...(options.signal ? { signal: options.signal } : {}),
 		});
 	const render = (turns: string[]): string | undefined => {
 		try {
@@ -187,6 +189,8 @@ export async function prepareBudgetedCompactionFocus<
 		| { dropped: number; kept: string[]; instructions: string }
 		| undefined;
 	while (low <= high) {
+		// An aborted request must not keep probing: every probe re-serializes the cut.
+		if (options.signal?.aborted) return reject(true);
 		const dropped = (low + high) >> 1;
 		const kept = recentUserTurns.slice(dropped);
 		const instructions = render(kept);
@@ -209,7 +213,10 @@ export async function prepareBudgetedCompactionFocus<
 			evidenceTrimmed: fitted.dropped,
 		};
 	}
-	return reject();
+	// No trim fits, not even dropping every retained turn. What is left is the transcript
+	// plus Compact+'s base prompt, so this is not evidence-driven: report it as a request
+	// overflow and let the coordinator judge it against the payload Pi actually sends.
+	return reject(true);
 }
 
 /** Trigger-time hints cannot budget evidence until Pi has selected its cut. */

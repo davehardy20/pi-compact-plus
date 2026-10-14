@@ -806,6 +806,15 @@ export class CompactionCoordinator {
 				? undefined
 				: event.customInstructions;
 		this.state.lastIssuedCompactionInstructions = null;
+		// Computed once for this attempt: bounded provider usage headroom that contradicts
+		// an over-window estimate. It decides whether a decline is justified, and it is the
+		// reason recorded when the decline is not.
+		const usageDiscrepancy = this.estimateDiscrepancy(
+			event,
+			ctx,
+			event.preparation?.settings?.reserveTokens ?? 0,
+			issuedPrompt,
+		);
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction();
 		}
@@ -877,15 +886,27 @@ export class CompactionCoordinator {
 				ctx,
 			);
 			if (deferred.reason) {
-				this.reportSummarizationOverflow(
-					event,
-					ctx,
-					deferred.reason,
-					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
-					manualAttempt,
-					deferred.key,
-				);
-				return { cancel: true };
+				if (usageDiscrepancy) {
+					// Bounded provider usage headroom outranks the estimate here too: a runtime
+					// that resolves to native fallback must not reproduce the failure this change
+					// exists to fix.
+					this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
+					if (this.state.pendingCompaction) {
+						this.state.pendingCompaction.fallbackReason =
+							SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
+					}
+					await this.persistTelemetrySnapshot();
+				} else {
+					this.reportSummarizationOverflow(
+						event,
+						ctx,
+						deferred.reason,
+						NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+						manualAttempt,
+						deferred.key,
+					);
+					return { cancel: true };
+				}
 			}
 			// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
 			// caller treats the same deferral as no compaction this turn. Either way release
@@ -957,15 +978,6 @@ export class CompactionCoordinator {
 			);
 		}
 
-		// Computed once for this attempt: bounded provider usage headroom that contradicts
-		// an over-window estimate. It decides whether a decline is justified, and it is the
-		// reason recorded when the decline is not.
-		const usageDiscrepancy = this.estimateDiscrepancy(
-			event,
-			ctx,
-			event.preparation?.settings?.reserveTokens ?? 0,
-			issuedPrompt,
-		);
 		if (attempt.requestOverflow) {
 			// Compact+ sends a superset of what Pi would send: its rendered instructions
 			// carry intent evidence Pi never sends, and on a split turn it merges slices
