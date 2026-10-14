@@ -1113,10 +1113,12 @@ export class CompactionCoordinator {
 		// Provider wording is not a reliable overflow signal: measure the payload
 		// Pi is about to send before letting this deferral through. When the cut has
 		// not changed since the measurement above, this is a cache hit, not a second
-		// serialization. Headroom suppresses the decline only for the same decline it may
-		// relabel: an estimate-driven context overflow.
+		// serialization. Headroom contradicts the measurement itself, so it suppresses the
+		// decline here regardless of why the attempt fell back: a session with comfortable
+		// provider headroom must not be left unable to compact. Only the relabelling above is
+		// scoped to an estimate-driven context overflow.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
-		if (fallback.reason && !(headroomOverride && overflowDecline)) {
+		if (fallback.reason && !headroomOverride) {
 			this.reportSummarizationOverflow(
 				event,
 				ctx,

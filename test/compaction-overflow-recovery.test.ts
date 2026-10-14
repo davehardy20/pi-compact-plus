@@ -413,6 +413,9 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			"warning",
 		);
 		expect(state.pendingCompaction?.executionPath).toBe("custom");
+		// The count reaches telemetry, so status can distinguish a trimmed compaction from a
+		// clean one after the session reloads.
+		expect(state.pendingCompaction?.intentEvidenceTrimmedTurns).toBe(1);
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 		);
@@ -612,6 +615,28 @@ ${"old context ".repeat(90_000)}`),
 		expect(result).toBeUndefined();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 		expect(state.lastFallbackReason).not.toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("keeps the final decline when oversized guidance is not Compact+'s own", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Comfortable headroom, but the guidance is third-party: those tokens are additive to
+		// reported usage, so usage no longer contradicts the measurement of the payload Pi
+		// would send and the decline stands.
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+
+		const deferred = event(ctx, [user("Task: repair login.")], {
+			instructions: "retained guidance ".repeat(90_000),
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});

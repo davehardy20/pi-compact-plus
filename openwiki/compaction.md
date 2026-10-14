@@ -219,7 +219,7 @@ Any invalid summary — missing title, missing/unknown/duplicate heading, empty 
 
 ## Telemetry
 
-`CompactionTelemetry` records: mode, triggerSource (`message_end`/`turn_end`/`command`), triggerReason, timestamp, focusTags (active file basenames), previousSummaryPresent, splitTurn, usageSource, fallbackReason, classifiedCounts, usagePercentAtTrigger, usageTokensAtTrigger, executionPath (`custom`/`native-fallback`), fromExtension, thinkingLevel, compatibilityReason.
+`CompactionTelemetry` records: mode, triggerSource (`message_end`/`turn_end`/`command`), triggerReason, timestamp, focusTags (active file basenames), previousSummaryPresent, splitTurn, usageSource, fallbackReason, classifiedCounts, usagePercentAtTrigger, usageTokensAtTrigger, executionPath (`custom`/`native-fallback`), fromExtension, thinkingLevel, compatibilityReason, intentEvidenceTrimmedTurns (retained turns dropped from Compact+'s own intent evidence so the request could fit). Optional numbers are validated on load (`telemetry-validation.ts`) — a trimmed-turn count must be a positive safe integer within the message bound — so a trim stays visible to `/compact-plus status` after a reload rather than being silently dropped.
 
 See [settings-and-state.md](settings-and-state.md) for persistence details.
 

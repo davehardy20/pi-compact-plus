@@ -50,6 +50,12 @@ function isValidMessageCount(value: unknown): value is number {
 	return isSafeNonNegativeInteger(value) && value <= MAX_REASONABLE_MESSAGES;
 }
 
+/** Retained turns dropped from Compact+'s own intent evidence are a count of messages, so
+ * they share the message bound rather than the token bound. */
+function isValidTrimmedTurnCount(value: unknown): value is number {
+	return isValidMessageCount(value) && value > 0;
+}
+
 // ── Schema validation / coercion ─────────────────────────────────────
 
 export function validatePersistedTelemetry(
@@ -251,7 +257,10 @@ function applyOptionalClassifiedCounts(
 	return true;
 }
 
-type OptionalNumberKey = "usagePercentAtTrigger" | "usageTokensAtTrigger";
+type OptionalNumberKey =
+	| "usagePercentAtTrigger"
+	| "usageTokensAtTrigger"
+	| "intentEvidenceTrimmedTurns";
 
 function applyOptionalNumber(
 	target: CompactionTelemetry,
@@ -300,7 +309,13 @@ function applyOptionalCompactionTelemetry(
 			isValidTokenCount,
 		) &&
 		applyOptionalNullableString(target, source, "thinkingLevel") &&
-		applyOptionalNullableString(target, source, "compatibilityReason")
+		applyOptionalNullableString(target, source, "compatibilityReason") &&
+		applyOptionalNumber(
+			target,
+			source,
+			"intentEvidenceTrimmedTurns",
+			isValidTrimmedTurnCount,
+		)
 	);
 }
 
