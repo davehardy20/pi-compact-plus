@@ -419,6 +419,21 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 		);
+
+		await coordinator.onSessionCompact(
+			{
+				fromExtension: true,
+				compactionEntry: {
+					type: "compaction",
+					summary: VALID_STRUCTURED_SUMMARY,
+					details: {},
+				},
+			} as never,
+			ctx,
+		);
+		// The count survives the settle into lastCompaction, so status can still tell a
+		// trimmed compaction from a clean one after the session reloads.
+		expect(state.lastCompaction?.intentEvidenceTrimmedTurns).toBe(1);
 	});
 
 	it("cancels a native Pi compaction whose transcript alone cannot fit", async () => {
@@ -446,7 +461,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it("records the discrepancy reason on a native-fallback deferral", async () => {
+	it("keeps the compatibility reason when the session-bound fast path defers", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const persist = vi.fn(async () => {});
@@ -473,6 +488,43 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 		expect(state.lastFallbackReason).toBe(
 			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
+
+	it("records the discrepancy reason when guidance forces the measurement", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const persist = vi.fn(async () => {});
+		const coordinator = createCoordinator(state, {
+			usageTokens: 150_000,
+			persistTelemetrySnapshot: persist,
+		});
+		state.selectedMode = "standard";
+		state.lastIssuedCompactionInstructions = "summarize the current task";
+
+		// Guidance is Compact+'s own prompt: it bypasses the fail-open session bound, so the
+		// cut is really measured, while estimateDiscrepancy stays eligible because the prompt
+		// is the payload under examination rather than something Pi adds on top.
+		const deferred = event(
+			ctx,
+			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+			{ instructions: "summarize the current task" },
+		);
+		delete (deferred as { streamFn?: unknown }).streamFn;
+
+		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.pendingCompaction?.fallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		);
+		expect(state.pendingCompaction?.compatibilityReason).toBe(
+			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
+		);
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 		);
 		expect(persist).toHaveBeenCalledTimes(1);
 	});
