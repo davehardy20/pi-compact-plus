@@ -84,6 +84,9 @@ export interface LifecycleOptions {
 	sendContinuation?: boolean;
 	/** Optional callback to persist state after onComplete/onError update lastCompactTokens. */
 	persist?: () => void | Promise<void>;
+	/** Called when the attempt settles, before the epoch guard, so a caller's per-attempt
+	 * state cannot stay set when Pi never fires `session_before_compact` for it. */
+	onSettled?: () => void;
 }
 
 /**
@@ -115,6 +118,7 @@ export function executeCompaction(
 	ctx.compact({
 		customInstructions: instructions,
 		onComplete: (result) => {
+			options?.onSettled?.();
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;
@@ -142,6 +146,7 @@ export function executeCompaction(
 			}
 		},
 		onError: (error) => {
+			options?.onSettled?.();
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
 			state.isCompacting = false;
 			state.selectedMode = null;

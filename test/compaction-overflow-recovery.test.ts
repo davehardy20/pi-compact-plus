@@ -367,6 +367,70 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		).toBeUndefined();
 	});
 
+	it("clears the manual bypass when the attempt settles without reaching the guard", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValue(new Error(STRATA_CONTEXT_OVERFLOW));
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		// An automatic attempt already warned once about this cut.
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+
+		// A manual attempt settles without Pi ever firing session_before_compact.
+		await coordinator.handleManualCommand("standard", ctx);
+		const compactSpy = ctx.compact as ReturnType<typeof vi.fn>;
+		const issued = compactSpy.mock.calls[0]?.[0] as {
+			onComplete?: (result: unknown) => void;
+		};
+		issued.onComplete?.({ estimatedTokensAfter: 1000 });
+
+		// The bypass must have expired with that attempt, so the unchanged cut dedupes.
+		state.selectedMode = "standard";
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
+	});
+
+	it("re-measures when only a tool call's arguments grow", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const call = (args: unknown): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: args },
+					{ type: "text", text: "done" },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call({ path: "a.txt" })]),
+				ctx,
+			),
+		).toBeUndefined();
+
+		// Same part count, types, and text lengths. Only the tool arguments grew.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call({ path: "x".repeat(1_000_000) })]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+	});
+
 	it("measures caller guidance instead of trusting the session-fit fast path", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });

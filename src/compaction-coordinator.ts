@@ -61,6 +61,44 @@ type SessionBeforeCompactResultLike = {
 };
 type MeasuredCut = { event: SessionBeforeCompactEvent; key: string };
 
+/** Length proxy for a non-text payload, walked only up to `budget` characters so a
+ * huge tool call or image cannot make the verdict key expensive to build. */
+function structuralChars(value: unknown, budget: number): number {
+	if (budget <= 0) return 0;
+	if (typeof value === "string") return Math.min(value.length, budget);
+	if (typeof value === "number" || typeof value === "boolean") return 8;
+	if (Array.isArray(value)) {
+		let total = 2;
+		for (const item of value) {
+			total += structuralChars(item, budget - total);
+			if (total >= budget) return budget;
+		}
+		return total;
+	}
+	if (value && typeof value === "object") {
+		let total = 2;
+		for (const [key, item] of Object.entries(value)) {
+			total += Math.min(key.length, budget - total);
+			total += structuralChars(item, budget - total);
+			if (total >= budget) return budget;
+		}
+		return total;
+	}
+	return 1;
+}
+
+/** Content discriminator for guidance text, sampled at most 512 positions so the
+ * whole string is never walked. Two same-length strings that differ in the middle
+ * must not share a verdict. */
+function guidanceDigest(text: string): number {
+	const step = Math.max(1, Math.floor(text.length / 512));
+	let digest = 0;
+	for (let index = 0; index < text.length; index += step) {
+		digest = (digest * 31 + text.charCodeAt(index)) | 0;
+	}
+	return digest;
+}
+
 export interface CompactionCoordinatorOptions {
 	state: CompactionState;
 	pi: ExtensionAPI;
@@ -233,12 +271,24 @@ export class CompactionCoordinator {
 				}
 				if (!Array.isArray(content)) continue;
 				for (const part of content) {
-					// Counted structurally, not serialized, so a large tool call or image
-					// cannot make the key expensive.
-					const partLike = part as { text?: unknown; type?: unknown };
+					// Counted structurally with every term bounded, so a large tool call or
+					// image cannot make the key expensive. Tool arguments and image data are
+					// payload too: ignoring them let a grown tool call reuse a stale verdict.
+					const partLike = part as {
+						type?: unknown;
+						text?: unknown;
+						arguments?: unknown;
+						input?: unknown;
+						data?: unknown;
+					};
 					chars += 1;
 					if (typeof partLike.type === "string") chars += partLike.type.length;
 					if (typeof partLike.text === "string") chars += partLike.text.length;
+					if (typeof partLike.data === "string") {
+						chars += Math.min(partLike.data.length, 512);
+					}
+					const args = partLike.arguments ?? partLike.input;
+					if (args !== undefined) chars += structuralChars(args, 512);
 				}
 			}
 		}
@@ -268,6 +318,7 @@ export class CompactionCoordinator {
 			instructions.length,
 			instructions.slice(0, 32),
 			instructions.slice(-32),
+			guidanceDigest(instructions),
 		].join(":");
 	}
 
@@ -341,9 +392,19 @@ export class CompactionCoordinator {
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
 		this.manualAttemptInFlight = true;
-		executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
-			persist: this.persistTelemetrySnapshot,
-		});
+		try {
+			executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
+				persist: this.persistTelemetrySnapshot,
+				// The bypass belongs to this attempt only. Settling clears it even when
+				// Pi never fires session_before_compact for the attempt.
+				onSettled: () => {
+					this.manualAttemptInFlight = false;
+				},
+			});
+		} catch (error) {
+			this.manualAttemptInFlight = false;
+			throw error;
+		}
 	}
 
 	/**
