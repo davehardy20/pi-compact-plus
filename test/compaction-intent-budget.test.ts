@@ -505,21 +505,28 @@ it("caps evidence rather than cancelling when a retained paste alone exceeds the
 		return text;
 	};
 	const source = user("Task: repair login.");
-	const fits = user(sized(60_000));
+	const older = user("Preserve the audit constraints.");
 	const tooBig = user(sized(260_000));
+	const recent = user(sized(60_000));
 
-	// The lower bound says this much evidence cannot fit. That is a reason to stop adding
+	// The lower bound says this much evidence cannot fit. That is a reason to cap the
 	// evidence, not to discard the compaction: the cut itself is small and still fits.
+	// Capping goes newest-first, so the oversized paste costs the oldest turns and the
+	// current objective survives.
 	const budgeted = await budgetOf(
-		[source, fits, tooBig],
+		[source, older, tooBig, recent],
 		preparation([source]),
 		200_000,
 	);
 	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
 	expect(budgeted.renderedInstructions).toBeDefined();
 	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
-		fits.content.trim(),
+		older.content,
+		recent.content.trim(),
 	]);
+	// The cap is reported, so a session can see that evidence was dropped rather than
+	// inferring it from a shorter summary.
+	expect(budgeted.evidenceTrimmed).toBe(1);
 });
 
 it("fails closed when instruction rendering throws", async () => {

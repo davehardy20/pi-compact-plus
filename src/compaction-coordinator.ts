@@ -43,7 +43,7 @@ import {
 } from "./types.js";
 
 const INTENT_OVERFLOW_WARNING =
-	"Compact+ intent evidence exceeds the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
+	"Compact+ could not capture its additional intent evidence within the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
 
 const SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";

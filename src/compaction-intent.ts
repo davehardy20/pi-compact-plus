@@ -109,27 +109,41 @@ export async function prepareBudgetedCompactionFocus<
 			extractTextContent(message) === extractTextContent(users[index]),
 	);
 	const omitted = prefixMatches ? users.slice(supplied.length) : users;
-	const recentUserTurns: string[] = [];
-	let evidenceLowerBound = 0;
+	const eligibleTurns: string[] = [];
 	for (const message of omitted) {
 		const text = extractTextContent(message).trim();
 		if (!text || text === CONTINUATION_PROMPT) continue;
+		eligibleTurns.push(text);
+	}
+	const recentUserTurns: string[] = [];
+	let evidenceLowerBound = 0;
+	// Accumulate newest first. A lower bound above the window says only that this much
+	// evidence cannot fit, not that the compaction must be discarded: the evidence exists to
+	// carry the current objective, so an oversized set skips turns that no longer fit the
+	// remaining budget and never evicts a newer one. The authoritative measurement and the
+	// trim search below still decide the final fit.
+	for (let index = eligibleTurns.length - 1; index >= 0; index--) {
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.
 		const nextLowerBound =
 			evidenceLowerBound +
 			Math.max(
 				0,
-				estimateTokens({ role: "user", content: text, timestamp: 0 }) - 1,
+				estimateTokens({
+					role: "user",
+					content: eligibleTurns[index],
+					timestamp: 0,
+				}) - 1,
 			);
-		// A lower bound above the window says only that this much evidence cannot fit, not
-		// that the compaction must be discarded. Stop adding evidence and let the
-		// authoritative measurement and the trim search decide, so a large retained paste
-		// shrinks the evidence instead of cancelling the compaction.
-		if (nextLowerBound > model.contextWindow) break;
+		if (nextLowerBound > model.contextWindow) continue;
 		evidenceLowerBound = nextLowerBound;
-		recentUserTurns.push(text);
+		recentUserTurns.push(eligibleTurns[index]);
 	}
+	recentUserTurns.reverse();
+	// Turns the cap never admitted are still turns dropped from Compact+'s own evidence, so
+	// they are reported alongside the trim search's drops rather than silently shrinking the
+	// evidence behind the summary model's back.
+	const evidenceCapped = eligibleTurns.length - recentUserTurns.length;
 	const withEvidence = (turns: string[]): CurrentFocus => ({
 		...originalFocus,
 		intentEvidence: originalFocus.intentEvidence
@@ -171,7 +185,12 @@ export async function prepareBudgetedCompactionFocus<
 	// unchecked cut to a provider.
 	if (!measurement) return reject();
 	if (measurement.totalTokens <= model.contextWindow) {
-		return { focus, preparation: unified, renderedInstructions };
+		return {
+			focus,
+			preparation: unified,
+			renderedInstructions,
+			...(evidenceCapped ? { evidenceTrimmed: evidenceCapped } : {}),
+		};
 	}
 	// Separate transcript-driven from evidence-driven rejection: re-measure the
 	// same cut carrying no custom instructions. If it still cannot fit, the
@@ -226,7 +245,7 @@ export async function prepareBudgetedCompactionFocus<
 			focus: withEvidence(fitted.kept),
 			preparation: unified,
 			renderedInstructions: fitted.instructions,
-			evidenceTrimmed: fitted.dropped,
+			evidenceTrimmed: fitted.dropped + evidenceCapped,
 		};
 	}
 	// A probe that could not render or measure says nothing about the trim schedule, so it
