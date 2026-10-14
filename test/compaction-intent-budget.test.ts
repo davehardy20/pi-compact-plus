@@ -597,8 +597,9 @@ it("caps evidence against the model output cap when the cap is the binding term"
 	const evidence = user(evidenceText);
 
 	// maxTokens 4096 is below floor(0.8 * 16_384), so the clamp is what binds: the budget is
-	// 200_000 - 4096 = 195_904, and 190_000 tokens of evidence fits it. Against the
-	// unclamped 13_107 the budget would be 186_893 and this turn would be dropped.
+	// 200_000 - 4096 = 195_904, and the evidence fits it with 3_904 to spare. The sizing loop
+	// overshoots its 190_000 target by one ~6_000 step, so the turn measures exactly 192_000.
+	// Against the unclamped 13_107 the budget would be 186_893 and this turn would be dropped.
 	const budgeted = await budgetOf(
 		[source, evidence],
 		preparation([source]),

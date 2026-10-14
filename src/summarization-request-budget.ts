@@ -25,8 +25,9 @@ export interface SummaryRequestMeasurement {
  * Mirrors `generateSummaryWithUsage` in `@earendil-works/pi-coding-agent`
  * (`dist/core/compaction/compaction.js`), which sends
  * `min(floor(0.8 * reserveTokens), model.maxTokens)` when the model declares a positive cap.
- * Both call sites pass the result through `clampReservedOutput`, so the model cap applies
- * here too. The split-turn prefix request uses a different fraction; see
+ * Compact+'s own call sites pass the result through `clampReservedOutput` - `src/compaction-intent.ts`
+ * for the summary fraction, `src/compaction-coordinator.ts` for the prefix fraction - so the
+ * model cap applies there too. The split-turn prefix request uses a different fraction; see
  * `piReservedTurnPrefixOutputTokens`.
  */
 export function piReservedOutputTokens(reserveTokens: number): number {
@@ -37,7 +38,8 @@ export function piReservedOutputTokens(reserveTokens: number): number {
  * Pi builds the split-turn prefix request through its private `generateTurnPrefixSummary`
  * (`dist/core/compaction/compaction.js`, not exported from the SDK), which reserves
  * `floor(0.5 * reserveTokens)` rather than the 0.8 fraction `generateSummaryWithUsage` uses.
- * Callers pass the result through `clampReservedOutput`, so the model cap applies here too.
+ * Compact+'s split-turn guard passes the result through `clampReservedOutput`
+ * (`src/compaction-coordinator.ts`), so the model cap applies there too.
  */
 export function piReservedTurnPrefixOutputTokens(
 	reserveTokens: number,
