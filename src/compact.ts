@@ -16,6 +16,7 @@ import { buildSummaryInstructions } from "./prompts.js";
 import {
 	classifySummarizationFailure,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	summarizationFailureReason,
 } from "./summarization-overflow.js";
 import {
@@ -489,6 +490,7 @@ function getCompactionClassifiedCounts(
 function finalizeCompactionAttempt(
 	result: CompactionResult | undefined,
 	classifiedCounts: NonNullable<CompactionAttemptResult["classifiedCounts"]>,
+	evidenceNote?: string | null,
 ): CompactionAttemptResult {
 	if (!result) {
 		return {
@@ -517,7 +519,11 @@ function finalizeCompactionAttempt(
 			classifiedCounts,
 		};
 	}
-	return { result: normalizedResult, fallbackReason: null, classifiedCounts };
+	return {
+		result: normalizedResult,
+		fallbackReason: evidenceNote ?? null,
+		classifiedCounts,
+	};
 }
 
 function authUnavailableResult(): CompactionAttemptResult {
@@ -686,6 +692,7 @@ export async function runCustomCompaction(
 		return finalizeCompactionAttempt(
 			result,
 			getCompactionClassifiedCounts(prepared, mode),
+			budgeted.evidenceTrimmed ? SUMMARIZATION_EVIDENCE_TRIMMED_REASON : null,
 		);
 	} catch (error) {
 		if (requestSignal?.aborted) {

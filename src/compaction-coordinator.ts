@@ -27,6 +27,7 @@ import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
 } from "./summarization-overflow.js";
 import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
@@ -49,6 +50,9 @@ const SUMMARIZATION_OUTPUT_CAP_WARNING =
 
 const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
+
+const EVIDENCE_TRIMMED_WARNING =
+	"Compact+ trimmed additional intent evidence so the summary request could fit. The compaction proceeded.";
 
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
@@ -853,6 +857,14 @@ export class CompactionCoordinator {
 			return this.cancelAbortedCompaction();
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
+		// A trimmed attempt is a success with a smaller payload, not a decline. Say so
+		// on every outcome so a live session can tell the two apart.
+		if (
+			attempt.fallbackReason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON &&
+			ctx.hasUI
+		) {
+			ctx.ui.notify(EVIDENCE_TRIMMED_WARNING, "warning");
+		}
 		if (attempt.cancel) {
 			const overflow =
 				attempt.fallbackReason ===
@@ -867,35 +879,29 @@ export class CompactionCoordinator {
 		}
 
 		if (attempt.requestOverflow) {
-			// Compact+ sends a superset of what Pi would send: its rendered
-			// instructions carry intent evidence Pi never sends. On a split turn it
-			// also merges slices Pi sends separately, so there the failure is only
-			// authoritative after re-measuring Pi's own requests. For a single slice
-			// the superset is treated as authoritative and the attempt is cancelled.
+			// Compact+ sends a superset of what Pi would send: its rendered instructions
+			// carry intent evidence Pi never sends, and on a split turn it merges slices
+			// Pi sends separately. An overflow of Compact+'s own request is therefore not
+			// an overflow of Pi's. Measure the payload Pi would actually send and cancel
+			// only when that cannot fit either; assuming the superset is authoritative is
+			// what left a session at 69% of its window unable to compact at all.
 			let nativeOverflow: string | null;
 			let nativeOverflowKey: string | null = null;
-			// Pi only sends separate requests when the split turn has a prefix. Compact+'
-			// own boundary preparation reports isSplitTurn with an empty prefix, so the
-			// gate must match the real split, not the flag alone.
-			const splitsPayload =
-				event.preparation?.isSplitTurn === true &&
-				(event.preparation?.turnPrefixMessages?.length ?? 0) > 0;
-			if (splitsPayload) {
+			if (attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON) {
+				// An exhausted output budget is about the response, not the request: Pi
+				// would hit the same cap on the same cut, so this stays a cancel unless
+				// the kill switch has restored native compaction.
+				nativeOverflow =
+					this.thresholdSettings.guardNativeCompaction === false
+						? null
+						: SUMMARIZATION_OUTPUT_CAP_REASON;
+			} else {
 				const measured = await this.detectSummarizationRequestOverflow(
 					event,
 					ctx,
 				);
 				nativeOverflow = measured.reason;
 				nativeOverflowKey = measured.key;
-			} else {
-				// The kill switch must restore native compaction even when Compact+
-				// confirmed an overflow of a payload that contains Pi's unchanged cut.
-				nativeOverflow =
-					this.thresholdSettings.guardNativeCompaction === false
-						? null
-						: attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON
-							? SUMMARIZATION_OUTPUT_CAP_REASON
-							: SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 			}
 			if (nativeOverflow) {
 				this.reportSummarizationOverflow(
@@ -956,6 +962,11 @@ export class CompactionCoordinator {
 			compatibilityReason:
 				telemetryBase.compatibilityReason ?? this.state.lastFallbackReason,
 		};
+		// Pi is about to compact on its own. Release Compact+'s attempt state, or a
+		// deferred compaction blocks every later automatic trigger.
+		this.state.selectedMode = null;
+		this.state.isCompacting = false;
+		this.state.lastTriggerAuto = false;
 		await this.persistTelemetrySnapshot();
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (!isCurrent()) return cancelCustom("compaction context changed");

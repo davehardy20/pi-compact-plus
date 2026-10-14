@@ -39,9 +39,11 @@ import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
 } from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 type ExtensionEventContext = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
@@ -150,18 +152,20 @@ afterEach(() => {
 });
 
 describe("CompactionCoordinator summarisation overflow handling", () => {
-	it("declines native fallback when the custom request itself overflowed", async () => {
+	it("cancels when the custom request overflowed and Pi's own cut cannot fit either", async () => {
 		const state = new CompactionState();
-		const ctx = createCtx();
-		const coordinator = createCoordinator(state);
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 250_000 });
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
-		// Asymmetry is intentional: Compact+ sends a superset of what Pi sends (its
-		// rendered instructions carry intent evidence Pi never sends), so a
-		// provider-confirmed overflow cancels even though Pi's own cut would fit.
+		// Compact+ sends a superset of what Pi sends, so a superset overflow alone is
+		// not authority to decline. Here the transcript itself is oversized: Pi would
+		// send the same cut, so the attempt cancels instead of re-sending it.
 		const result = await coordinator.onSessionBeforeCompact(
-			event(ctx, [user("Task: repair login.")]),
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+			]),
 			ctx,
 		);
 
@@ -175,6 +179,74 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("cannot fit"),
 			"warning",
+		);
+	});
+
+	it("defers to native compaction when only Compact+'s own superset overflowed", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		// The live failure shape: the provider reports the session well under the
+		// window while the characters/4 estimate of Compact+'s own merged request
+		// exceeds it. Pi sends a smaller payload, so declining here leaves a session
+		// that never compacts.
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [
+				user(`Task: repair login.\n${"old context ".repeat(60_000)}`),
+			]),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+	});
+
+	it("trims intent evidence instead of cancelling when the trimmed request fits", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+
+		const source = user(
+			`Task: repair login.\n${"old context ".repeat(60_000)}`,
+		);
+		const retained = [
+			user("oldest retained instruction ".repeat(4000)),
+			user("latest retained instruction ".repeat(400)),
+		];
+		ctx.sessionManager.buildSessionProjection = vi.fn(() => ({
+			messages: [source, ...retained],
+		})) as never;
+		compactMock.mockResolvedValueOnce({
+			summary: VALID_STRUCTURED_SUMMARY,
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: null,
+		});
+
+		const result = await coordinator.onSessionBeforeCompact(
+			event(ctx, [source]),
+			ctx,
+		);
+
+		// Compact+ sends a superset of what Pi sends. When the superset only fails
+		// because of the evidence Compact+ added itself, the attempt must shrink that
+		// evidence and continue, not discard the whole compaction.
+		expect(result).not.toEqual({ cancel: true });
+		expect(result?.compaction).toBeDefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("trimmed additional intent evidence"),
+			"warning",
+		);
+		expect(state.pendingCompaction?.executionPath).toBe("custom");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 		);
 	});
 
@@ -737,13 +809,15 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
 		// Compact+'s boundary preparation reports isSplitTurn with an empty prefix.
-		// Pi still sends one request, so the overflow is authoritative: no silent
-		// deferral that performs no compaction and emits no warning.
+		// Pi still sends one request, and this cut cannot fit it, so the overflow is
+		// authoritative: no silent deferral that performs no compaction and emits no
+		// warning.
 		const result = await coordinator.onSessionBeforeCompact(
-			event(ctx, [user("Task: repair login.")], {
-				splitTurn: true,
-				prefix: [],
-			}),
+			event(
+				ctx,
+				[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
+				{ splitTurn: true, prefix: [] },
+			),
 			ctx,
 		);
 

@@ -227,7 +227,7 @@ it("names a transcript-driven rejection as transcript overflow, not as added int
 	expect(budgeted.transcriptOverflow).toBe(true);
 });
 
-it("keeps an evidence-driven rejection out of the transcript overflow class", async () => {
+it("shrinks added evidence instead of reporting a transcript overflow", async () => {
 	const source = user("x".repeat(600_000));
 	const retained = user("Keep this instruction.".repeat(4000));
 	const budgeted = await budgetOf(
@@ -236,7 +236,84 @@ it("keeps an evidence-driven rejection out of the transcript overflow class", as
 		200_000,
 	);
 	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.evidenceTrimmed).toBe(1);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("shrinks omitted intent evidence instead of rejecting when a trimmed request fits", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = [
+		user("oldest retained instruction ".repeat(4000)),
+		user("middle retained instruction ".repeat(4000)),
+		user("latest retained instruction ".repeat(400)),
+	];
+	const budgeted = await budgetOf(
+		[source, ...retained],
+		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
+		200_000,
+	);
+	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.renderedInstructions).toBeTypeOf("string");
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns.length).toBeLessThan(
+		retained.length,
+	);
+	expect(budgeted.evidenceTrimmed).toBeTypeOf("number");
+});
+
+it("drops the oldest evidence first when a smaller trim is enough", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = [
+		user("oldest retained instruction ".repeat(4000)),
+		user("latest retained instruction ".repeat(40)),
+	];
+	const budgeted = await budgetOf(
+		[source, ...retained],
+		{ ...preparation([source]), settings: { reserveTokens: 50_000 } },
+		200_000,
+	);
+	expect(budgeted.evidenceTrimmed).toBe(1);
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		retained[1].content.trim(),
+	]);
+});
+
+it("still rejects when the request cannot fit even with all added evidence dropped", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = user("Keep this instruction.".repeat(4000));
+	const budgeted = await prepareBudgetedCompactionFocus(
+		[source, retained],
+		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
+		{
+			model: {
+				id: "budget-test",
+				provider: "budget-test",
+				api: "openai-completions",
+				contextWindow: 199_000,
+				maxTokens: 199_000,
+			} as Parameters<typeof generateSummaryWithUsage>[1],
+			renderInstructions: () => "oversized base prompt ".repeat(20_000),
+		},
+	);
+	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.renderedInstructions).toBeUndefined();
 	expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+});
+
+it("still rejects when even the trimmed request cannot fit", async () => {
+	const source = user("x".repeat(600_000));
+	const retained = [user("a".repeat(100_000)), user("b".repeat(100_000))];
+	const budgeted = await budgetOf(
+		[source, ...retained],
+		{ ...preparation([source]), settings: { reserveTokens: 100_000 } },
+		200_000,
+	);
+	expect(budgeted.transcriptOverflow).toBe(true);
+	expect(budgeted.renderedInstructions).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.overflow).toBe(true);
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
 });
 
 it("rejects a small-model request when native prompt plus output exceeds context", async () => {
@@ -292,12 +369,15 @@ it("rejects a small-model request when native prompt plus output exceeds context
 it("honors a large configured output reserve when budgeting additional evidence", async () => {
 	const source = user("x".repeat(600_000));
 	const retained = user("Keep this instruction.".repeat(4000));
-	const focus = await extractCompactionFocus(
+	const budgeted = await budgetOf(
 		[source, retained],
 		{ ...preparation([source]), settings: { reserveTokens: 60_000 } },
 		200_000,
 	);
-	expect(focus.intentEvidence?.overflow).toBe(true);
+	// The configured 60k reserve leaves no room for the added evidence, so the
+	// evidence is trimmed rather than the cut being declared oversized.
+	expect(budgeted.transcriptOverflow).toBeUndefined();
+	expect(budgeted.evidenceTrimmed).toBe(1);
 });
 
 it("fits a small model using its actual capped output allowance", async () => {

@@ -23,6 +23,14 @@ export const SUMMARIZATION_CONTEXT_OVERFLOW_REASON =
 export const SUMMARIZATION_OUTPUT_CAP_REASON =
 	"summarization output budget was exhausted";
 
+/**
+ * Not a failure: Compact+ dropped some of the additional intent evidence it adds
+ * itself so the request could fit. Recorded so a live session can tell a trimmed
+ * compaction apart from a declined one.
+ */
+export const SUMMARIZATION_EVIDENCE_TRIMMED_REASON =
+	"intent evidence was trimmed to fit the summary request";
+
 /** `prompt (300932 tokens) + max tokens (1) exceeds the context (262144)` */
 const CONTEXT_OVERFLOW_PATTERNS = [
 	/prompt \(\d[\d,]* tokens\) \+ max tokens \(\d[\d,]*\) exceeds the context \(\d[\d,]*\)/i,

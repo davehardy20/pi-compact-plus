@@ -24,7 +24,10 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 
 import { runCustomCompaction } from "../src/compact.js";
 import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
-import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
+import {
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+} from "../src/summarization-overflow.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 import {
 	PI_OUTPUT_CAP_FAILURE,
@@ -168,6 +171,53 @@ describe("runCustomCompaction characterization", () => {
 		expect(sent[4]).toBe(capture[6]);
 		expect(sent[4]).toContain("This compaction includes a split turn");
 		expect(ctx.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledTimes(1);
+	});
+
+	it("trims omitted intent evidence instead of cancelling when the trimmed request fits", async () => {
+		const source = message(
+			"user",
+			`Task: repair routing.\n${"old context ".repeat(60_000)}`,
+		);
+		const retained = [
+			message("user", "oldest retained instruction ".repeat(4000)),
+			message("user", "latest retained instruction ".repeat(400)),
+		];
+		const ctx = context({
+			model: {
+				id: "test-model",
+				provider: "test",
+				api: "openai-completions",
+				contextWindow: 200_000,
+				maxTokens: 4096,
+			} as never,
+		});
+		const attempt = await runCustomCompaction(
+			{
+				isSplitTurn: false,
+				messagesToSummarize: [source],
+				turnPrefixMessages: [],
+				settings: {
+					enabled: true,
+					keepRecentTokens: 100,
+					reserveTokens: 16_384,
+				},
+			} as never,
+			"standard",
+			ctx,
+			compatibility(),
+			undefined,
+			{ projected: [source, ...retained] },
+		);
+
+		// The transcript fits. Only Compact+'s own additional evidence pushed the
+		// request over, so the attempt drops the oldest evidence and proceeds.
+		expect(attempt.cancel).toBeUndefined();
+		expect(attempt.result).toBeDefined();
+		expect(attempt.fallbackReason).toBe(SUMMARIZATION_EVIDENCE_TRIMMED_REASON);
+		expect(compactMock).toHaveBeenCalledTimes(1);
+		const sent = compactMock.mock.calls[0];
+		expect(sent[4]).toContain("latest retained instruction");
+		expect(sent[4]).not.toContain("oldest retained instruction");
 	});
 
 	it("declines an oversized native request without resolving auth or calling compact", async () => {

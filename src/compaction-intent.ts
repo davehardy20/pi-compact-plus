@@ -32,6 +32,8 @@ interface BudgetedIntent<T extends IntentPreparation> {
 	renderedInstructions?: string;
 	/** The cut itself cannot fit the window, with or without added intent evidence. */
 	transcriptOverflow?: true;
+	/** Omitted turns dropped from the front so the request could fit. */
+	evidenceTrimmed?: number;
 }
 
 function overflowFocus(focus: CurrentFocus): CurrentFocus {
@@ -121,57 +123,82 @@ export async function prepareBudgetedCompactionFocus<
 		if (evidenceLowerBound > model.contextWindow) return reject();
 		recentUserTurns.push(text);
 	}
-	const focus: CurrentFocus = {
+	const withEvidence = (turns: string[]): CurrentFocus => ({
 		...originalFocus,
 		intentEvidence: originalFocus.intentEvidence
 			? {
 					priorObjective: originalFocus.objective,
 					certainty: originalFocus.intentEvidence.certainty,
-					recentUserTurns,
+					recentUserTurns: turns,
 				}
 			: undefined,
-	};
-	let renderedInstructions: string | undefined;
-	try {
-		renderedInstructions = options.renderInstructions(focus);
-	} catch {
-		return reject();
-	}
-	if (
-		typeof renderedInstructions !== "string" ||
-		!renderedInstructions.trim()
-	) {
-		return reject();
-	}
-	const measurement = await measureSummaryRequestTokens({
-		messages: source,
-		model,
-		reserveTokens: reserve,
-		customInstructions: renderedInstructions,
-		previousSummary: preparation.previousSummary,
-		thinkingLevel: options.thinkingLevel,
 	});
+	const measure = (instructions?: string) =>
+		measureSummaryRequestTokens({
+			messages: source,
+			model,
+			reserveTokens: reserve,
+			...(instructions === undefined
+				? {}
+				: { customInstructions: instructions }),
+			previousSummary: preparation.previousSummary,
+			thinkingLevel: options.thinkingLevel,
+		});
+	const render = (turns: string[]): string | undefined => {
+		try {
+			const instructions = options.renderInstructions(withEvidence(turns));
+			return typeof instructions === "string" && instructions.trim()
+				? instructions
+				: undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const focus = withEvidence(recentUserTurns);
+	const renderedInstructions = render(recentUserTurns);
+	if (!renderedInstructions) return reject();
+	const measurement = await measure(renderedInstructions);
 	// No registry, credentials, transport, provider, or network call happens
 	// during the capture. An unmeasurable request fails closed: never hand an
 	// unchecked cut to a provider.
 	if (!measurement) return reject();
-	if (measurement.totalTokens > model.contextWindow) {
-		// Separate transcript-driven from evidence-driven rejection: re-measure the
-		// same cut carrying no custom instructions. If it still cannot fit, the
-		// transcript is the cause, not the evidence Compact+ chose to add.
-		const baseline = await measureSummaryRequestTokens({
-			messages: source,
-			model,
-			reserveTokens: reserve,
-			previousSummary: preparation.previousSummary,
-			thinkingLevel: options.thinkingLevel,
-		});
-		if (baseline && baseline.totalTokens > model.contextWindow) {
-			return reject(true);
-		}
-		return reject();
+	if (measurement.totalTokens <= model.contextWindow) {
+		return { focus, preparation: unified, renderedInstructions };
 	}
-	return { focus, preparation: unified, renderedInstructions };
+	// Separate transcript-driven from evidence-driven rejection: re-measure the
+	// same cut carrying no custom instructions. If it still cannot fit, the
+	// transcript is the cause, not the evidence Compact+ chose to add.
+	const baseline = await measure();
+	if (baseline && baseline.totalTokens > model.contextWindow) {
+		return reject(true);
+	}
+	// Evidence-driven: shrink what Compact+ added, oldest turns first, and
+	// re-measure. Discarding the whole compaction because Compact+'s own optional
+	// additions did not fit is worse than a shorter summary, so only a cut that
+	// cannot fit without them is terminal. Drops grow geometrically to bound the
+	// number of re-measurements on a long session.
+	const drops: number[] = [];
+	for (let dropped = 1; dropped < recentUserTurns.length; dropped *= 2) {
+		drops.push(dropped);
+	}
+	drops.push(recentUserTurns.length);
+	for (const dropped of drops) {
+		const kept = recentUserTurns.slice(dropped);
+		const instructions = render(kept);
+		if (!instructions) break;
+		const trimmed = await measure(instructions);
+		// Fail closed: an unmeasurable rendering is never sent to a provider.
+		if (!trimmed) break;
+		if (trimmed.totalTokens <= model.contextWindow) {
+			return {
+				focus: withEvidence(kept),
+				preparation: unified,
+				renderedInstructions: instructions,
+				evidenceTrimmed: dropped,
+			};
+		}
+	}
+	return reject();
 }
 
 /** Trigger-time hints cannot budget evidence until Pi has selected its cut. */
