@@ -32,6 +32,27 @@ export interface SummaryRequestMeasurement {
  * `contextWindow`, not Pi's `contextWindow - reserveTokens` trigger, which is
  * what keeps a false-positive cancel unlikely.
  */
+/**
+ * The output budget Pi reserves for a summarization request: `floor(0.8 * reserveTokens)`.
+ * Pi builds the split-turn prefix request through a private helper that reserves
+ * `floor(0.5 * reserveTokens)` instead, so callers model that budget explicitly.
+ */
+export function piReservedOutputTokens(reserveTokens: number): number {
+	return Math.floor(0.8 * reserveTokens);
+}
+
+/**
+ * Pi clamps every summarization request to the model's own output cap. A model with no
+ * output cap leaves the request unclamped. Shared so the measurement and the
+ * intent-evidence cap cannot drift apart.
+ */
+export function clampReservedOutput(
+	model: { maxTokens: number },
+	requested: number,
+): number {
+	return model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
+}
+
 export async function measureSummaryRequestTokens(options: {
 	messages: AgentMessage[];
 	model: SummaryModel | null | undefined;
@@ -115,11 +136,7 @@ export async function measureSummaryRequestTokens(options: {
 			Number.isSafeInteger(override) && (override ?? 0) >= 0
 				? (override as number)
 				: (reservedOutputTokens as number);
-		// Pi clamps every summarization request to the model's own output cap, so
-		// the measured total models the request Pi sends rather than the unclamped
-		// fraction a caller named.
-		const output =
-			model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
+		const output = clampReservedOutput(model, requested);
 		return {
 			transcriptTokens: transcript,
 			reservedOutputTokens: output,

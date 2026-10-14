@@ -31,9 +31,13 @@ export const SUMMARIZATION_OUTPUT_CAP_REASON =
 export const SUMMARIZATION_EVIDENCE_TRIMMED_REASON =
 	"intent evidence was trimmed to fit the summary request";
 
-/** Compact+'s own optional intent evidence is what did not fit, not the transcript. */
+/**
+ * Compact+'s own optional intent evidence never reached a measurable request: it could
+ * not be rendered or measured within the summary budget. Not a claim that the evidence
+ * was too large, and not the transcript's fault.
+ */
 export const SUMMARIZATION_INTENT_EVIDENCE_REASON =
-	"additional intent evidence exceeds the summary request budget";
+	"additional intent evidence could not be captured within the summary request budget";
 
 /**
  * Not a cancel: the estimate said the request could not fit, but provider-reported

@@ -583,6 +583,34 @@ it("keeps evidence that fits the clamped output budget the measurement actually 
 	expect(budgeted.evidenceTrimmed).toBeUndefined();
 });
 
+it("counts cap drops and trim-search drops together", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	// A transcript large enough that the admitted evidence no longer fits alongside it,
+	// plus a retained turn the cap never admits.
+	const cut = user(sized(150_000));
+	const admitted = user("Preserve the audit constraints.".repeat(8000));
+	const oversized = user(sized(260_000));
+
+	const budgeted = await budgetOf(
+		[cut, admitted, oversized],
+		preparation([cut]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([]);
+	// One turn never entered the evidence, one entered it and was trimmed by the search.
+	expect(budgeted.evidenceTrimmed).toBe(2);
+});
+
 it("fails closed when instruction rendering throws", async () => {
 	const prepared = preparation([user("Task: repair login.")]);
 	const budgeted = await prepareBudgetedCompactionFocus([], prepared, {

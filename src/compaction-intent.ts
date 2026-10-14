@@ -2,7 +2,9 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
 import {
+	clampReservedOutput,
 	measureSummaryRequestTokens,
+	piReservedOutputTokens,
 	type SummaryModel,
 	type SummaryThinking,
 } from "./summarization-request-budget.js";
@@ -126,7 +128,8 @@ export async function prepareBudgetedCompactionFocus<
 	// make room for an older one that would not otherwise fit. The authoritative measurement
 	// and the trim search below still decide the final fit.
 	const evidenceCapTokens =
-		model.contextWindow - Math.min(Math.floor(0.8 * reserve), model.maxTokens);
+		model.contextWindow -
+		clampReservedOutput(model, piReservedOutputTokens(reserve));
 	for (let index = eligibleTurns.length - 1; index >= 0; index--) {
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.

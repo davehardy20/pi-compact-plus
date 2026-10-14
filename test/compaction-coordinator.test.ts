@@ -282,7 +282,9 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		);
 
 		expect(result).not.toEqual({ cancel: true });
-		expect(state.lastFallbackReason).not.toContain("intent evidence exceeds");
+		expect(state.lastFallbackReason).not.toContain(
+			"additional intent evidence could not be captured",
+		);
 	});
 
 	it("defers evidence budgeting until Pi supplies the actual preparation", async () => {
@@ -348,7 +350,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		);
 	});
 
-	it("explains an evidence capture that cannot be measured at all", async () => {
+	it("explains evidence budgeting that the configuration cannot measure", async () => {
 		const { coordinator, state } = createCoordinator();
 		state.selectedMode = "standard";
 		const ctx = createMockCtx({
@@ -377,11 +379,11 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			ctx,
 		);
 
-		// Nothing was measured, so the warning says the evidence could not be captured rather
-		// than claiming the evidence was too large.
+		// The budget is unusable, so nothing was measured and the warning says the evidence
+		// could not be captured rather than claiming it was too large.
 		expect(result).toEqual({ cancel: true });
 		expect(state.lastFallbackReason).toBe(
-			"additional intent evidence exceeds the summary request budget",
+			"additional intent evidence could not be captured within the summary request budget",
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining(
@@ -390,6 +392,9 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			"warning",
 		);
 	});
+
+	// The other route to the same diagnostic, a capture that never resolved, is pinned at
+	// the measurement level in test/summarization-request-budget.test.ts.
 
 	it.each([
 		"queue",
