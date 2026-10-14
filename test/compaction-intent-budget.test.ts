@@ -36,6 +36,7 @@ async function budgetOf(
 	projected: AgentMessage[],
 	prepared: ReturnType<typeof preparation> & { previousSummary?: string },
 	contextWindow: number,
+	maxTokens = contextWindow,
 ) {
 	return prepareBudgetedCompactionFocus(projected, prepared, {
 		model: {
@@ -43,7 +44,7 @@ async function budgetOf(
 			provider: "budget-test",
 			api: "openai-completions",
 			contextWindow,
-			maxTokens: contextWindow,
+			maxTokens,
 		} as Parameters<typeof generateSummaryWithUsage>[1],
 		renderInstructions: (focus) =>
 			buildSummaryInstructions("standard", focus, {
@@ -596,26 +597,15 @@ it("caps evidence against the model output cap when the cap is the binding term"
 	const evidence = user(evidenceText);
 
 	// maxTokens 4096 is below floor(0.8 * 16_384), so the clamp is what binds: the budget is
-	// 200_000 - 4096 = 195_904, and 190_000 tokens of evidence fits it. Against the
-	// unclamped 13_107 the budget would be 186_893 and this turn would be dropped.
-	const prepared = preparation([source]);
-	const budgeted = await prepareBudgetedCompactionFocus(
+	// 200_000 - 4096 = 195_904, and the evidence fits it with 3_904 to spare. The sizing loop
+	// steps in 6_000-token increments (12-char unit x 2_000 repeats), so it exits at 192_000;
+	// the last step below the 190_000 target is 186_000. Against the unclamped 13_107 the
+	// budget would be 186_893 and this turn would be dropped.
+	const budgeted = await budgetOf(
 		[source, evidence],
-		prepared,
-		{
-			model: {
-				id: "budget-test",
-				provider: "budget-test",
-				api: "openai-completions",
-				contextWindow: 200_000,
-				maxTokens: 4096,
-			} as Parameters<typeof generateSummaryWithUsage>[1],
-			renderInstructions: (focus) =>
-				buildSummaryInstructions("standard", focus, {
-					isSplitTurn: prepared.isSplitTurn,
-					turnPrefixCount: prepared.turnPrefixMessages.length,
-				}),
-		},
+		preparation([source]),
+		200_000,
+		4096,
 	);
 	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
 	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
