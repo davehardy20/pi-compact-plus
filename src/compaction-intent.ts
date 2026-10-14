@@ -118,12 +118,15 @@ export async function prepareBudgetedCompactionFocus<
 	const recentUserTurns: string[] = [];
 	let evidenceLowerBound = 0;
 	// Evidence alone can never cost more than the window minus the reserved output, so the
-	// cap uses that necessary bound rather than the whole window. Accumulate newest first:
+	// cap uses that necessary bound rather than the whole window. The reserved output is
+	// clamped exactly as Pi clamps it before measuring, otherwise the cap would drop
+	// retained turns the authoritative measurement would have fit. Accumulate newest first:
 	// a turn that cannot fit the remaining budget is skipped, including a newer oversized
 	// one, and older turns that still fit are kept. The cap never evicts a newer turn to
 	// make room for an older one that would not otherwise fit. The authoritative measurement
 	// and the trim search below still decide the final fit.
-	const evidenceCapTokens = model.contextWindow - reserve;
+	const evidenceCapTokens =
+		model.contextWindow - Math.min(Math.floor(0.8 * reserve), model.maxTokens);
 	for (let index = eligibleTurns.length - 1; index >= 0; index--) {
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.
@@ -143,8 +146,9 @@ export async function prepareBudgetedCompactionFocus<
 	}
 	recentUserTurns.reverse();
 	// Turns the cap never admitted are still turns dropped from Compact+'s own evidence, so
-	// they are reported alongside the trim search's drops rather than silently shrinking the
-	// evidence behind the summary model's back.
+	// they are reported to the session alongside the trim search's drops rather than silently
+	// shrinking the evidence. The reporting is user-facing: the summary model only sees the
+	// evidence that survived.
 	const evidenceCapped = eligibleTurns.length - recentUserTurns.length;
 	const withEvidence = (turns: string[]): CurrentFocus => ({
 		...originalFocus,

@@ -555,6 +555,34 @@ it("keeps an older turn when the newest retained turn alone cannot fit", async (
 	expect(budgeted.evidenceTrimmed).toBe(1);
 });
 
+it("keeps evidence that fits the clamped output budget the measurement actually uses", async () => {
+	const unit = "old context ";
+	const sized = (target: number) => {
+		let text = "";
+		while (
+			estimateTokens({ role: "user", content: text, timestamp: 1 }) < target
+		) {
+			text += unit.repeat(2_000);
+		}
+		return text;
+	};
+	const source = user("Task: repair login.");
+	// reserveTokens is 16_384 here, and Pi clamps the reserved output to
+	// min(floor(0.8 * reserveTokens), maxTokens) = 13_107. Evidence between 186_893 and
+	// 183_616 tokens fits the clamped budget but not the unclamped one.
+	const evidence = user(sized(185_000));
+	const budgeted = await budgetOf(
+		[source, evidence],
+		preparation([source]),
+		200_000,
+	);
+	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+		evidence.content.trim(),
+	]);
+	expect(budgeted.evidenceTrimmed).toBeUndefined();
+});
+
 it("fails closed when instruction rendering throws", async () => {
 	const prepared = preparation([user("Task: repair login.")]);
 	const budgeted = await prepareBudgetedCompactionFocus([], prepared, {

@@ -348,6 +348,49 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		);
 	});
 
+	it("explains an evidence capture that cannot be measured at all", async () => {
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		const ctx = createMockCtx({
+			mode: "tui",
+			sessionFile: "/tmp/session.jsonl",
+			contextWindow: 64_000,
+		});
+		Object.defineProperty(ctx, "modelRegistry", {
+			value: { streamSimple: vi.fn() },
+		});
+		setProjectedUser(ctx, "Task: repair login.");
+		const result = await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+					settings: {
+						enabled: true,
+						keepRecentTokens: 100,
+						reserveTokens: 0,
+					},
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+
+		// Nothing was measured, so the warning says the evidence could not be captured rather
+		// than claiming the evidence was too large.
+		expect(result).toEqual({ cancel: true });
+		expect(state.lastFallbackReason).toBe(
+			"additional intent evidence exceeds the summary request budget",
+		);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"could not capture its additional intent evidence",
+			),
+			"warning",
+		);
+	});
+
 	it.each([
 		"queue",
 		"session",
