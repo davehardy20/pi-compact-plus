@@ -8,6 +8,17 @@ import {
 
 const { compactMock } = vi.hoisted(() => ({ compactMock: vi.fn() }));
 
+vi.mock("../src/persist.js", () => ({
+	loadTelemetryWithDiagnostics: vi.fn(async () => ({
+		telemetry: null,
+		issue: null,
+	})),
+	saveTelemetryWithDiagnostics: vi.fn(async () => ({
+		saved: true,
+		issue: null,
+	})),
+}));
+
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
@@ -19,7 +30,11 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return { ...actual, compact: compactMock };
 });
 
-import { CompactionCoordinator } from "../src/compaction-coordinator.js";
+import {
+	CompactionCoordinator,
+	guidanceDigest,
+} from "../src/compaction-coordinator.js";
+import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
@@ -398,6 +413,79 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			cancel: true,
 		});
 		expect(warnings()).toBe(1);
+	});
+
+	it("digests guidance content so equal-length guidance is not one cut", () => {
+		const a = "A".repeat(1_000_000);
+		const b = `${"A".repeat(499_998)}ZZ${"A".repeat(500_000)}`;
+		expect(a.length).toBe(b.length);
+		expect(a.slice(0, 32)).toBe(b.slice(0, 32));
+		expect(a.slice(-32)).toBe(b.slice(-32));
+		expect(guidanceDigest(a)).not.toBe(guidanceDigest(b));
+		expect(guidanceDigest(a)).toBe(guidanceDigest("A".repeat(1_000_000)));
+	});
+
+	it("cannot see image growth because Pi estimates image parts as zero", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const image = (data: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [{ type: "image", data, mimeType: "image/png" }],
+				timestamp: 1,
+			}) as unknown as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [image("aGVsbG8=")]),
+				ctx,
+			),
+		).toBeUndefined();
+
+		// Characterization, not an aspiration: Pi's estimateTokens returns 0 for an image
+		// part, so a 1,000,000-character base64 payload estimates as nothing and the guard
+		// cannot cancel it. The verdict key does count the data, so a stale verdict is not
+		// reused; the measurement itself is the blind spot.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [image("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toBeUndefined();
+	});
+
+	it("resets guard state when the registered session_start handler runs", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const resetSpy = vi.spyOn(coordinator, "resetOverflowState");
+		const handlers = new Map<
+			string,
+			(event: unknown, ctx: unknown) => unknown
+		>();
+		const pi = {
+			on: vi.fn((name: string, handler: unknown) => {
+				handlers.set(
+					name,
+					handler as (event: unknown, ctx: unknown) => unknown,
+				);
+			}),
+		} as never;
+
+		registerCompactPlusEventHandlers(pi, {
+			state,
+			toolOutputPruning: { onSessionStart: vi.fn() } as never,
+			compactionCoordinator: coordinator,
+			persistTelemetrySnapshot: vi.fn(),
+		});
+
+		const sessionStart = handlers.get("session_start");
+		expect(sessionStart).toBeDefined();
+		await sessionStart?.({}, ctx);
+		expect(resetSpy).toHaveBeenCalledTimes(1);
+		resetSpy.mockRestore();
 	});
 
 	it("re-measures when only a tool call's arguments grow", async () => {
