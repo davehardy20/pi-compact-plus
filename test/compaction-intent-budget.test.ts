@@ -7,7 +7,8 @@ import {
 	generateSummaryWithUsage,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { buildSummaryInstructions } from "../src/prompts.js";
 import { CONTINUATION_PROMPT } from "../src/types.js";
@@ -199,69 +200,78 @@ function runNativeCompact(
 	);
 }
 
-const fetchSpy = vi.spyOn(globalThis, "fetch");
+describe("native summarization request pins", () => {
+	let fetchSpy: MockInstance;
 
-afterEach(() => {
-	fetchSpy.mockClear();
-});
+	beforeEach(() => {
+		fetchSpy = vi.spyOn(globalThis, "fetch");
+	});
 
-it("pins both summarization fractions to Pi's own requests", async () => {
-	const prepared = nativeSplitTurnPreparation();
-	expect(prepared.isSplitTurn).toBe(true);
-	expect(prepared.messagesToSummarize.length).toBeGreaterThan(0);
-	expect(prepared.turnPrefixMessages.length).toBeGreaterThan(0);
+	afterEach(() => {
+		fetchSpy.mockRestore();
+	});
 
-	const requests: Array<{ maxTokens: number; isTurnPrefix: boolean }> = [];
-	await runNativeCompact(prepared, 200_000, (context, options) => {
-		requests.push({
-			maxTokens: options?.maxTokens ?? 0,
-			// Only Pi's TURN_PREFIX_SUMMARIZATION_PROMPT asks for this section.
-			isTurnPrefix: JSON.stringify(context.messages).includes(
-				"Context Needed to Continue",
-			),
+	it("pins both summarization fractions to Pi's own requests", async () => {
+		const prepared = nativeSplitTurnPreparation();
+		expect(prepared.isSplitTurn).toBe(true);
+		expect(prepared.messagesToSummarize.length).toBeGreaterThan(0);
+		expect(prepared.turnPrefixMessages.length).toBeGreaterThan(0);
+
+		const requests: Array<{ maxTokens: number; isTurnPrefix: boolean }> = [];
+		await runNativeCompact(prepared, 200_000, (context, options) => {
+			requests.push({
+				maxTokens: options?.maxTokens ?? 0,
+				// Only Pi's TURN_PREFIX_SUMMARIZATION_PROMPT asks for this section, and it is sent
+				// in the serialized prompt message rather than the system prompt.
+				isTurnPrefix: context.messages
+					.filter((message) => (message as { role?: string }).role === "user")
+					.some((message) =>
+						JSON.stringify(message).includes("Context Needed to Continue"),
+					),
+			});
+			return stubSummary("## Goal\nstub summary");
 		});
-		return stubSummary("## Goal\nstub summary");
+
+		expect(requests.length).toBe(2);
+		// Pi issues the history request before the turn-prefix request (compaction.js:693-702),
+		// so the order is pinned alongside the prompt marker instead of relying on it alone.
+		expect(requests.map((entry) => entry.isTurnPrefix)).toEqual([false, true]);
+		// Drift guard for the fractions documented in src/summarization-request-budget.ts:
+		// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
+		// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens
+		// 200_000 keeps the model cap from masking either fraction.
+		expect(requests[0]?.maxTokens).toBe(13_107);
+		expect(requests[1]?.maxTokens).toBe(8_192);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	expect(requests.length).toBe(2);
-	// Pi issues the history request before the turn-prefix request (compaction.js:693-702), so
-	// the order is pinned alongside the prompt marker instead of relying on it alone.
-	expect(requests.map((entry) => entry.isTurnPrefix)).toEqual([false, true]);
-	// Drift guard for the fractions documented in src/summarization-request-budget.ts:
-	// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
-	// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens 200_000
-	// keeps the model cap from masking either fraction.
-	expect(requests[0]?.maxTokens).toBe(13_107);
-	expect(requests[1]?.maxTokens).toBe(8_192);
-	expect(fetchSpy).not.toHaveBeenCalled();
-});
+	it("pins the model-cap clamp Pi applies to both requests", async () => {
+		const prepared = nativeSplitTurnPreparation();
+		const captured: number[] = [];
+		await runNativeCompact(prepared, 4096, (_context, options) => {
+			captured.push(options?.maxTokens ?? 0);
+			return stubSummary("## Goal\nstub summary");
+		});
 
-it("pins the model-cap clamp Pi applies to both requests", async () => {
-	const prepared = nativeSplitTurnPreparation();
-	const captured: number[] = [];
-	await runNativeCompact(prepared, 4096, (_context, options) => {
-		captured.push(options?.maxTokens ?? 0);
-		return stubSummary("## Goal\nstub summary");
+		// Pi clamps both requests to model.maxTokens: min(floor(0.8 * 16_384), 4096) and
+		// min(floor(0.5 * 16_384), 4096). clampReservedOutput must keep reproducing that.
+		expect(captured).toEqual([4096, 4096]);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	// Pi clamps both requests to model.maxTokens: min(floor(0.8 * 16_384), 4096) and
-	// min(floor(0.5 * 16_384), 4096). clampReservedOutput must keep reproducing that.
-	expect(captured).toEqual([4096, 4096]);
-	expect(fetchSpy).not.toHaveBeenCalled();
-});
+	it("pins the unclamped requests Pi sends when the model declares no output cap", async () => {
+		const prepared = nativeSplitTurnPreparation();
+		const captured: number[] = [];
+		await runNativeCompact(prepared, 0, (_context, options) => {
+			captured.push(options?.maxTokens ?? 0);
+			return stubSummary("## Goal\nstub summary");
+		});
 
-it("pins the unclamped requests Pi sends when the model declares no output cap", async () => {
-	const prepared = nativeSplitTurnPreparation();
-	const captured: number[] = [];
-	await runNativeCompact(prepared, 0, (_context, options) => {
-		captured.push(options?.maxTokens ?? 0);
-		return stubSummary("## Goal\nstub summary");
+		// Pi treats a non-positive model cap as no cap at all, so both fractions survive
+		// unclamped. clampReservedOutput mirrors that branch and must not silently clamp to zero.
+		expect(captured).toEqual([13_107, 8_192]);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
-
-	// Pi treats a non-positive model cap as no cap at all, so both fractions survive unclamped.
-	// clampReservedOutput mirrors that branch and must not silently clamp to zero.
-	expect(captured).toEqual([13_107, 8_192]);
-	expect(fetchSpy).not.toHaveBeenCalled();
 });
 
 it("keeps later identical requests instead of deduplicating them as a text set", async () => {
