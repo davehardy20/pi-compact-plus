@@ -239,6 +239,7 @@ compaction at `90%` / `260,000` tokens.
 | `COMPACT_PLUS_HARD_THRESHOLD_TOKENS` | 260000 | Hard compaction token threshold |
 | `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Auto-compaction cooldown in ms |
 | `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` | `false` | Kill switch: skip auto-compaction (manual works) |
+| `COMPACT_PLUS_GUARD_NATIVE_COMPACTION` | `true` | Cancel native compaction when its request cannot fit |
 | `COMPACT_PLUS_SETTINGS_PATH` | `~/.pi/agent/settings.json` | Optional JSON config path |
 | `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `false` | Enable experimental tool-output pruning |
 | `COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE` | `off` | Pruning mode (`off` or `agent-message`) |
@@ -275,6 +276,7 @@ Example `settings.json`:
   },
   "cooldownMs": 120000,
   "disableAutoCompaction": false,
+  "guardNativeCompaction": true,
   "experimentalToolOutputPruning": true,
   "toolOutputPruningMode": "agent-message",
   "toolOutputSummaryStrategy": "llm",
@@ -285,7 +287,8 @@ Example `settings.json`:
 Top-level keys are also supported: `thresholdMode`,
 `checkpointThresholdPercent`, `standardThresholdPercent`,
 `hardThresholdPercent`, `checkpointThresholdTokens`,
-`standardThresholdTokens`, `hardThresholdTokens`, and `cooldownMs`. Invalid,
+`standardThresholdTokens`, `hardThresholdTokens`, `cooldownMs`, and
+`guardNativeCompaction`. Invalid,
 missing, or overlapping percent thresholds fall back safely to the default
 `65 / 70 / 90` percent profile, and invalid or overlapping token thresholds fall
 back to the default `185,000 / 200,000 / 260,000` token profile. Token

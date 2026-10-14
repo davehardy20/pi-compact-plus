@@ -24,7 +24,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 
 import { runCustomCompaction } from "../src/compact.js";
 import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
+import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
+import {
+	PI_OUTPUT_CAP_FAILURE,
+	STRATA_CONTEXT_OVERFLOW,
+} from "./fixtures/summarization-errors.js";
 
 function message(role: string, text: string): AgentMessage {
 	return {
@@ -179,6 +184,24 @@ describe("runCustomCompaction characterization", () => {
 			"additional intent evidence exceeds the summary request budget",
 		);
 		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(compactMock).not.toHaveBeenCalled();
+	});
+
+	it("reports a transcript-driven budget rejection as a request overflow", async () => {
+		const ctx = context();
+		if (!ctx.model) throw new Error("Missing test model");
+		ctx.model = { ...ctx.model, contextWindow: 50_000, maxTokens: 4096 };
+		const attempt = await runCustomCompaction(
+			preparation({ messages: [message("user", "x".repeat(400_000))] }),
+			"standard",
+			ctx,
+			compatibility(),
+		);
+		// The cut itself cannot fit and no evidence was added, so the coordinator
+		// can still defer to native.
+		expect(attempt.requestOverflow).toBe(true);
+		expect(attempt.cancel).toBeUndefined();
+		expect(attempt.fallbackReason).toBe(SUMMARIZATION_CONTEXT_OVERFLOW_REASON);
 		expect(compactMock).not.toHaveBeenCalled();
 	});
 
@@ -1029,4 +1052,39 @@ describe("runCustomCompaction characterization", () => {
 			});
 		},
 	);
+
+	it("classifies a summarisation context overflow instead of flattening it", async () => {
+		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+
+		expect(attempt).toEqual({
+			result: undefined,
+			fallbackReason: "summarization request exceeded the model context window",
+			requestOverflow: true,
+		});
+		expect(attempt.fallbackReason).not.toContain("300932");
+		expect(attempt.fallbackReason).not.toContain("fit_max_tokens");
+	});
+
+	it("classifies an exhausted summarisation output budget as overflow", async () => {
+		compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+		const attempt = await runCustomCompaction(
+			preparation(),
+			"standard",
+			context(),
+			compatibility(),
+		);
+
+		expect(attempt.requestOverflow).toBe(true);
+		expect(attempt.fallbackReason).toBe(
+			"summarization output budget was exhausted",
+		);
+	});
 });

@@ -103,6 +103,11 @@ export function executeCompaction(
 	state.selectedMode = mode;
 	state.isCompacting = true;
 	const compactionEpoch = state.currentCompactionEpoch;
+	// The decline stamp is attempt-scoped. The compaction epoch only moves on a
+	// session transition, so a stamp left over from an earlier attempt must not
+	// silence this attempt's failure notice. The coordinator re-stamps it when it
+	// reports an overflow during this attempt.
+	state.lastOverflowReportedEpoch = null;
 	const hadUI = safeReadHasUI(ctx);
 
 	const instructions = buildSummaryInstructions(mode, focus);
@@ -145,6 +150,12 @@ export function executeCompaction(
 			state.echoInjected = false;
 			state.clearPendingCompaction();
 			options?.persist?.();
+			// The coordinator already warned about a decline in this same attempt, so
+			// a second "compaction failed" error would be duplicate and would name the
+			// wrong cause. The stamp is cleared at attempt start and only re-recorded by
+			// an overflow reported during it, so a stale reason cannot swallow a new
+			// failure, and a steady-state repeat of the same decline still suppresses.
+			if (state.lastOverflowReportedEpoch === compactionEpoch) return;
 			safeNotifyCompactionFailure(ctx, hadUI, error.message);
 		},
 	});

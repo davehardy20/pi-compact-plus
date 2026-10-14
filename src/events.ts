@@ -35,6 +35,7 @@ export function registerCompactPlusEventHandlers(
 		await waitForTelemetryPersistence?.();
 		const result = await loadTelemetryWithDiagnostics();
 		state.reset();
+		compactionCoordinator.resetOverflowState();
 		state.recordTelemetryPersistenceIssue(result.issue);
 		const persisted = result.telemetry;
 		if (persisted) {

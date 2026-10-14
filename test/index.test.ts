@@ -3685,6 +3685,7 @@ describe("Compact+ constants", () => {
 			standardThresholdTokens: 200_000,
 			hardThresholdTokens: 260_000,
 			cooldownMs: 120_000,
+			guardNativeCompaction: true,
 		});
 		expect(REGROWTH_TOKENS).toBe(1000);
 	});
@@ -3742,6 +3743,30 @@ describe("Compact+ constants", () => {
 			{ disableAutoCompaction: true },
 		);
 		expect(settings.disableAutoCompaction).toBe(false);
+	});
+
+	it("defaults guardNativeCompaction to true", () => {
+		const settings = resolveCompactPlusSettings({}, {});
+		expect(settings.guardNativeCompaction).toBe(true);
+		expect(DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS.guardNativeCompaction).toBe(
+			true,
+		);
+	});
+
+	it("disables guardNativeCompaction from env kill switch", () => {
+		const settings = resolveCompactPlusSettings(
+			{ COMPACT_PLUS_GUARD_NATIVE_COMPACTION: "false" },
+			{},
+		);
+		expect(settings.guardNativeCompaction).toBe(false);
+	});
+
+	it("disables guardNativeCompaction from settings file", () => {
+		const settings = resolveCompactPlusSettings(
+			{},
+			{ guardNativeCompaction: false },
+		);
+		expect(settings.guardNativeCompaction).toBe(false);
 	});
 
 	it("loads thresholds from a settings.json file path", () => {

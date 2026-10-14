@@ -26,6 +26,11 @@ import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
+} from "./summarization-overflow.js";
+import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
+import {
 	type CompactionMode,
 	type CompactionTelemetry,
 	type EffectiveUsage,
@@ -36,6 +41,15 @@ import {
 const INTENT_OVERFLOW_WARNING =
 	"Compact+ intent evidence exceeds the available safety budget; compaction cancelled to avoid losing retained user instructions. Save the current objective before attempting a different compaction path.";
 
+const SUMMARIZATION_OVERFLOW_WARNING =
+	"Compact+ cancelled compaction: the summarization request itself cannot fit the model context window. Native Pi compaction was skipped because it would send the same oversized transcript.";
+
+const SUMMARIZATION_OUTPUT_CAP_WARNING =
+	"Compact+ cancelled compaction: the summary reached its output token limit before it was complete. Native Pi compaction was skipped to avoid repeating the failed attempt.";
+
+const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
+	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
+
 type ManualCompactionMode = Extract<CompactionMode, "standard" | "hard">;
 type AutoTriggerSource = Extract<TriggerSource, "turn_end" | "message_end">;
 type ModelSelectEventLike = {
@@ -45,6 +59,7 @@ type SessionBeforeCompactResultLike = {
 	cancel?: boolean;
 	compaction?: CompactionResult;
 };
+type MeasuredCut = { event: SessionBeforeCompactEvent; key: string };
 
 export interface CompactionCoordinatorOptions {
 	state: CompactionState;
@@ -65,6 +80,14 @@ export class CompactionCoordinator {
 	) => EffectiveUsage | null;
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
 	private readonly disableAutoCompaction: boolean;
+	/** Measured verdict for the last cut. Written only by the measurement. */
+	private overflowVerdict: { key: string; reason: string | null } | null = null;
+	/** Cut already warned about, so an oversized session is warned once. */
+	private overflowNoticeKey: string | null = null;
+	/** Key measured for the event being guarded, so the notice path reuses it. */
+	private measuredEvent: MeasuredCut | null = null;
+	/** True only for the attempt a manual command started, which explains itself. */
+	private manualAttemptInFlight = false;
 
 	constructor({
 		state,
@@ -82,12 +105,208 @@ export class CompactionCoordinator {
 		this.disableAutoCompaction = disableAutoCompaction;
 	}
 
+	/** Guard state is session-scoped, so it resets with the session. */
+	resetOverflowState(): void {
+		this.overflowVerdict = null;
+		this.overflowNoticeKey = null;
+		this.measuredEvent = null;
+		this.manualAttemptInFlight = false;
+	}
+
 	private cancelAbortedCompaction(): { cancel: true } {
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
 		this.state.clearPendingCompaction();
 		this.state.lastFallbackReason = "compaction aborted";
+		return { cancel: true };
+	}
+
+	/**
+	 * Measure each request Pi would send and return the stable overflow reason when
+	 * one cannot fit. Pure: no state or UI effects, so each call site owns its
+	 * consequences. The verdict is cached per unchanged cut so a permanently
+	 * oversized session is not re-serialized every attempt.
+	 */
+	private async detectSummarizationRequestOverflow(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+	): Promise<string | null> {
+		const model = ctx.model;
+		const preparation = event.preparation;
+		const reserve = preparation?.settings?.reserveTokens;
+		if (
+			!model ||
+			this.thresholdSettings.guardNativeCompaction === false ||
+			!Number.isSafeInteger(reserve) ||
+			(reserve as number) <= 0
+		) {
+			return null;
+		}
+		// Fail-open fast path before serializing: the cut is a subset of the live
+		// session, so while Pi reports the whole session fitting inside
+		// `contextWindow - reserveTokens` the guard is skipped. That bound covers the
+		// transcript only, so it is not trusted when caller guidance adds tokens Pi
+		// will actually send. It can skip the guard, never add a cancel.
+		const guidance =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: "";
+		const usage = this.getEffectiveUsage(ctx);
+		if (
+			guidance.length === 0 &&
+			Number.isSafeInteger(usage?.tokens) &&
+			(usage?.tokens ?? 0) > 0 &&
+			(usage?.tokens ?? 0) + (reserve as number) <= model.contextWindow
+		) {
+			return null;
+		}
+		const key = this.summarizationCutKey(event, ctx);
+		this.measuredEvent = { event, key };
+		if (this.overflowVerdict?.key === key) return this.overflowVerdict.reason;
+		// Pi issues one request per preparation slice. On a split turn the prefix
+		// request carries no custom instructions or previous summary and reserves
+		// floor(0.5 * reserveTokens), matching Pi's budget for that request. Pi's
+		// prefix prompt template is not reproduced, so that measurement is approximate.
+		const requests: {
+			messages: AgentMessage[];
+			output?: number;
+			wrapper: boolean;
+		}[] = [];
+		const history = preparation.messagesToSummarize ?? [];
+		if (history.length > 0) requests.push({ messages: history, wrapper: true });
+		const prefix = preparation.turnPrefixMessages ?? [];
+		if (preparation.isSplitTurn && prefix.length > 0) {
+			requests.push({
+				messages: prefix,
+				output: Math.min(
+					Math.floor(0.5 * (reserve as number)),
+					model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+				),
+				wrapper: false,
+			});
+		}
+		const customInstructions =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: undefined;
+		const signal = event.signal ?? ctx.signal;
+		let reason: string | null = null;
+		for (const request of requests) {
+			const measurement = await measureSummaryRequestTokens({
+				messages: request.messages,
+				model,
+				reserveTokens: reserve,
+				reservedOutputTokens: request.output,
+				customInstructions: request.wrapper ? customInstructions : undefined,
+				previousSummary: request.wrapper
+					? preparation.previousSummary
+					: undefined,
+				signal,
+			});
+			// Fail open when a request cannot be measured: a missing measurement
+			// must not silently disable compaction altogether.
+			if (measurement && measurement.totalTokens > model.contextWindow) {
+				reason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				break;
+			}
+		}
+		this.overflowVerdict = { key, reason };
+		return reason;
+	}
+
+	/** Content discriminator: message counts alone let an in-place shrink reuse a
+	 * stale verdict. Cheap character totals only; never logged or persisted. */
+	private cutContentChars(
+		preparation: SessionBeforeCompactEvent["preparation"],
+	): number {
+		let chars = 0;
+		for (const list of [
+			preparation?.messagesToSummarize ?? [],
+			preparation?.turnPrefixMessages ?? [],
+		]) {
+			for (const message of list) {
+				const content = (message as { content?: unknown }).content;
+				if (typeof content === "string") {
+					chars += content.length;
+					continue;
+				}
+				if (!Array.isArray(content)) continue;
+				for (const part of content) {
+					// Counted structurally, not serialized, so a large tool call or image
+					// cannot make the key expensive.
+					const partLike = part as { text?: unknown; type?: unknown };
+					chars += 1;
+					if (typeof partLike.type === "string") chars += partLike.type.length;
+					if (typeof partLike.text === "string") chars += partLike.text.length;
+				}
+			}
+		}
+		return chars;
+	}
+
+	private summarizationCutKey(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+	): string {
+		const preparation = event.preparation;
+		const instructions =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: "";
+		// Length alone would treat two guidance strings of the same size as the same
+		// cut. Internal key: never logged or persisted.
+		return [
+			ctx.sessionManager.getSessionId(),
+			ctx.sessionManager.getLeafId(),
+			modelKey(ctx.model),
+			preparation?.settings?.reserveTokens ?? 0,
+			preparation?.messagesToSummarize?.length ?? 0,
+			preparation?.turnPrefixMessages?.length ?? 0,
+			this.cutContentChars(preparation),
+			preparation?.isSplitTurn ? "split" : "single",
+			instructions.length,
+			instructions.slice(0, 32),
+			instructions.slice(-32),
+		].join(":");
+	}
+
+	/** Record the decline, and warn at most once for an unchanged cut. */
+	private reportSummarizationOverflow(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+		reason: string,
+		warning: string,
+		manualAttempt: boolean,
+	): void {
+		this.state.lastFallbackReason = reason;
+		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
+		if (!ctx.hasUI) return;
+		const key =
+			this.measuredEvent?.event === event
+				? this.measuredEvent.key
+				: this.summarizationCutKey(event, ctx);
+		// A manual command always explains itself. Only automatic repeats of an
+		// unchanged cut are deduped.
+		if (!manualAttempt && this.overflowNoticeKey === key) return;
+		this.overflowNoticeKey = key;
+		ctx.ui.notify(warning, "warning");
+	}
+
+	private async guardNativeSummarizationRequest(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+		manualAttempt: boolean,
+	): Promise<SessionBeforeCompactResultLike | undefined> {
+		const reason = await this.detectSummarizationRequestOverflow(event, ctx);
+		if (!reason) return undefined;
+		this.reportSummarizationOverflow(
+			event,
+			ctx,
+			reason,
+			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+			manualAttempt,
+		);
 		return { cancel: true };
 	}
 
@@ -121,6 +340,7 @@ export class CompactionCoordinator {
 
 		ctx.ui.notify(`📦 Compact+ ${mode} compaction triggered manually.`, "info");
 
+		this.manualAttemptInFlight = true;
 		executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
 			persist: this.persistTelemetrySnapshot,
 		});
@@ -361,10 +581,17 @@ export class CompactionCoordinator {
 		nativeFallbackAvailable = true,
 		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
+		// Only the attempt a manual command started bypasses the notice dedupe.
+		const manualAttempt = this.manualAttemptInFlight;
+		this.manualAttemptInFlight = false;
 		const mode = this.state.selectedMode;
 
 		if (!mode) {
-			return undefined;
+			return await this.guardNativeSummarizationRequest(
+				event,
+				ctx,
+				manualAttempt,
+			);
 		}
 
 		const epoch = this.state.currentCompactionEpoch;
@@ -440,6 +667,22 @@ export class CompactionCoordinator {
 				);
 			}
 
+			// Deferring is still sending the same payload. Guard it too.
+			const deferredOverflow = await this.detectSummarizationRequestOverflow(
+				event,
+				ctx,
+			);
+			if (deferredOverflow) {
+				this.reportSummarizationOverflow(
+					event,
+					ctx,
+					deferredOverflow,
+					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+					manualAttempt,
+				);
+				return { cancel: true };
+			}
+
 			return undefined;
 		}
 
@@ -495,6 +738,50 @@ export class CompactionCoordinator {
 			);
 		}
 
+		if (attempt.requestOverflow) {
+			// Compact+ sends a superset of what Pi would send: its rendered
+			// instructions carry intent evidence Pi never sends. On a split turn it
+			// also merges slices Pi sends separately, so there the failure is only
+			// authoritative after re-measuring Pi's own requests. For a single slice
+			// the superset is treated as authoritative and the attempt is cancelled.
+			let nativeOverflow: string | null;
+			// Pi only sends separate requests when the split turn has a prefix. Compact+'
+			// own boundary preparation reports isSplitTurn with an empty prefix, so the
+			// gate must match the real split, not the flag alone.
+			const splitsPayload =
+				event.preparation?.isSplitTurn === true &&
+				(event.preparation?.turnPrefixMessages?.length ?? 0) > 0;
+			if (splitsPayload) {
+				nativeOverflow = await this.detectSummarizationRequestOverflow(
+					event,
+					ctx,
+				);
+			} else {
+				// The kill switch must restore native compaction even when Compact+
+				// confirmed an overflow of a payload that contains Pi's unchanged cut.
+				nativeOverflow =
+					this.thresholdSettings.guardNativeCompaction === false
+						? null
+						: attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON
+							? SUMMARIZATION_OUTPUT_CAP_REASON
+							: SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+			}
+			if (nativeOverflow) {
+				this.reportSummarizationOverflow(
+					event,
+					ctx,
+					nativeOverflow,
+					nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
+						? SUMMARIZATION_OUTPUT_CAP_WARNING
+						: SUMMARIZATION_OVERFLOW_WARNING,
+					manualAttempt,
+				);
+				return cancelCustom(nativeOverflow);
+			}
+			// Otherwise Pi's separate requests are estimated to fit: fall through to
+			// the native deferral below instead of discarding the compaction.
+		}
+
 		if (attempt.result) {
 			this.state.pendingCompaction = {
 				...telemetryBase,
@@ -548,6 +835,25 @@ export class CompactionCoordinator {
 					: "Compact+ turn-boundary summary unavailable; session unchanged. Native Pi compaction remains available.",
 				"warning",
 			);
+		}
+
+		// Provider wording is not a reliable overflow signal: measure the payload
+		// Pi is about to send before letting this deferral through. When the cut has
+		// not changed since the measurement above, this is a cache hit, not a second
+		// serialization.
+		const fallbackOverflow = await this.detectSummarizationRequestOverflow(
+			event,
+			ctx,
+		);
+		if (fallbackOverflow) {
+			this.reportSummarizationOverflow(
+				event,
+				ctx,
+				fallbackOverflow,
+				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+				manualAttempt,
+			);
+			return cancelCustom(fallbackOverflow);
 		}
 
 		return undefined;

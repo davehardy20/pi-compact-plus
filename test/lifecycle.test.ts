@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeCompaction } from "../src/lifecycle.js";
 import { CompactionState } from "../src/state.js";
+import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
 
 interface MockCtx {
 	hasUI: boolean;
@@ -351,6 +352,144 @@ function staleExtensionCtxError(): Error {
 }
 
 describe("executeCompaction stale extension context handling", () => {
+	it("suppresses the failure notice when this attempt reported an overflow", () => {
+		const state = new CompactionState();
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				// The coordinator recorded the decline during this attempt.
+				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
+				if (onError) onError(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("suppresses the failure notice when the same overflow is reported again", () => {
+		const state = new CompactionState();
+		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				// Steady state: the guard declines the same cut every attempt, so the
+				// stamp is re-recorded inside this attempt.
+				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+				state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
+				if (onError) onError(new Error("Compaction cancelled"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("delivers the notice when only an earlier attempt in the same session reported an overflow", () => {
+		const state = new CompactionState();
+		// Same epoch: it only moves on a session transition, and the stamp belongs
+		// to the earlier attempt, not this one.
+		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				// No overflow is reported during this attempt.
+				if (onError) onError(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("provider request failed"),
+			"error",
+		);
+	});
+
+	it("still reports a failure when only an older attempt reported an overflow", () => {
+		const state = new CompactionState();
+		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		state.lastOverflowReportedEpoch = state.currentCompactionEpoch - 1;
+		const ctx = createMockCtx();
+		const pi = createMockPi();
+
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
+			({ onError }: { onError?: (error: Error) => void }) => {
+				if (onError) onError(new Error("provider request failed"));
+			},
+		);
+
+		executeCompaction(
+			"hard",
+			{
+				objective: "test",
+				blockers: [],
+				decisions: [],
+				activeFiles: [],
+				dependencyChain: [],
+			},
+			state,
+			ctx as unknown as Parameters<typeof executeCompaction>[3],
+			pi as unknown as Parameters<typeof executeCompaction>[4],
+			{ sendContinuation: false },
+		);
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("provider request failed"),
+			"error",
+		);
+	});
+
 	it.each(["onComplete", "onError"] as const)(
 		"ignores %s from a previous session after state reset",
 		(callbackName) => {
