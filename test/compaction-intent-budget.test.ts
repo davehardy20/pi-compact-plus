@@ -1,12 +1,14 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	estimateTokens,
 	generateSummaryWithUsage,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareBudgetedCompactionFocus } from "../src/compaction-intent.js";
 import { buildSummaryInstructions } from "../src/prompts.js";
 import { CONTINUATION_PROMPT } from "../src/types.js";
@@ -106,6 +108,170 @@ it("native preparation includes users retained before a previous compaction entr
 	const focus = await extractCompactionFocus(projected, prepared, 200_000);
 	expect(focus.intentEvidence?.overflow).toBeUndefined();
 	expect(focus.intentEvidence?.recentUserTurns).toEqual([retained.content]);
+});
+
+function assistantText(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-completions",
+		provider: "budget-test",
+		model: "budget-test",
+		stopReason: "stop",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		timestamp: 1,
+	} as AssistantMessage;
+}
+
+function nativeSplitTurnPreparation() {
+	const session = SessionManager.inMemory();
+	const history = user(`Task: repair login.\n${"detail ".repeat(3_000)}`);
+	const redirect = user("Please investigate routing instead.");
+	session.appendMessage(history);
+	session.appendMessage(assistantText("working ".repeat(3_000)));
+	session.appendMessage(redirect);
+	session.appendMessage(assistantText("investigating ".repeat(3_000)));
+	const prepared = sdkCompaction.prepareCompaction(session.getBranch(), {
+		enabled: true,
+		reserveTokens: 16_384,
+		keepRecentTokens: 1,
+	}) as Parameters<typeof extractCompactionFocus>[1] | undefined;
+	if (!prepared) {
+		throw new Error("Native split-turn preparation was not generated");
+	}
+	return prepared;
+}
+
+function stubSummary(text: string) {
+	return {
+		result: async () => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			stopReason: "stop",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		}),
+	};
+}
+
+// Pi's compact(preparation, model, apiKey, headers, customInstructions, signal,
+// thinkingLevel, streamFn, ...): the capturing handler is passed in the streamFn slot, so no
+// provider transport is ever reached.
+function runNativeCompact(
+	prepared: unknown,
+	maxTokens: number,
+	onRequest: (
+		context: { messages: unknown[] },
+		options?: { maxTokens?: number },
+	) => unknown,
+) {
+	return sdkCompaction.compact(
+		prepared,
+		{
+			id: "budget-test",
+			provider: "budget-test",
+			api: "openai-completions",
+			contextWindow: 200_000,
+			maxTokens,
+		} as never,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		((
+			_model: unknown,
+			context: { messages: unknown[] },
+			options?: { maxTokens?: number },
+		) => onRequest(context, options)) as never,
+	);
+}
+
+describe("native summarization request pins", () => {
+	let fetchSpy: MockInstance;
+
+	beforeEach(() => {
+		fetchSpy = vi.spyOn(globalThis, "fetch");
+	});
+
+	afterEach(() => {
+		fetchSpy.mockRestore();
+	});
+
+	it("pins both summarization fractions to Pi's own requests", async () => {
+		const prepared = nativeSplitTurnPreparation();
+		expect(prepared.isSplitTurn).toBe(true);
+		expect(prepared.messagesToSummarize.length).toBeGreaterThan(0);
+		expect(prepared.turnPrefixMessages.length).toBeGreaterThan(0);
+
+		const requests: Array<{ maxTokens: number; isTurnPrefix: boolean }> = [];
+		await runNativeCompact(prepared, 200_000, (context, options) => {
+			requests.push({
+				maxTokens: options?.maxTokens ?? 0,
+				// Only Pi's TURN_PREFIX_SUMMARIZATION_PROMPT asks for this section, and it is sent
+				// in the serialized prompt message rather than the system prompt.
+				isTurnPrefix: context.messages
+					.filter((message) => (message as { role?: string }).role === "user")
+					.some((message) =>
+						JSON.stringify(message).includes("Context Needed to Continue"),
+					),
+			});
+			return stubSummary("## Goal\nstub summary");
+		});
+
+		expect(requests.length).toBe(2);
+		// Pi issues the history request before the turn-prefix request (compaction.js:693-702),
+		// so the order is pinned alongside the prompt marker instead of relying on it alone.
+		expect(requests.map((entry) => entry.isTurnPrefix)).toEqual([false, true]);
+		// Drift guard for the fractions documented in src/summarization-request-budget.ts:
+		// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
+		// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens
+		// 200_000 keeps the model cap from masking either fraction.
+		expect(requests[0]?.maxTokens).toBe(13_107);
+		expect(requests[1]?.maxTokens).toBe(8_192);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("pins the model-cap clamp Pi applies to both requests", async () => {
+		const prepared = nativeSplitTurnPreparation();
+		const captured: number[] = [];
+		await runNativeCompact(prepared, 4096, (_context, options) => {
+			captured.push(options?.maxTokens ?? 0);
+			return stubSummary("## Goal\nstub summary");
+		});
+
+		// Pi clamps both requests to model.maxTokens: min(floor(0.8 * 16_384), 4096) and
+		// min(floor(0.5 * 16_384), 4096). clampReservedOutput must keep reproducing that.
+		expect(captured).toEqual([4096, 4096]);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("pins the unclamped requests Pi sends when the model declares no output cap", async () => {
+		const prepared = nativeSplitTurnPreparation();
+		const captured: number[] = [];
+		await runNativeCompact(prepared, 0, (_context, options) => {
+			captured.push(options?.maxTokens ?? 0);
+			return stubSummary("## Goal\nstub summary");
+		});
+
+		// Pi treats a non-positive model cap as no cap at all, so both fractions survive
+		// unclamped. clampReservedOutput mirrors that branch and must not silently clamp to zero.
+		expect(captured).toEqual([13_107, 8_192]);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
 });
 
 it("keeps later identical requests instead of deduplicating them as a text set", async () => {
@@ -589,29 +755,31 @@ it("caps evidence against the model output cap when the cap is the binding term"
 	let evidenceText = "";
 	while (
 		estimateTokens({ role: "user", content: evidenceText, timestamp: 1 }) <
-		190_000
+		187_000
 	) {
-		evidenceText += unit.repeat(2_000);
+		evidenceText += unit.repeat(200);
 	}
 	const source = user("Task: repair login.");
 	const evidence = user(evidenceText);
 
-	// maxTokens 4096 is below floor(0.8 * 16_384), so the clamp is what binds: the budget is
-	// 200_000 - 4096 = 195_904, and the evidence fits it with 3_904 to spare. The sizing loop
-	// steps in 6_000-token increments (12-char unit x 2_000 repeats), so it exits at 192_000;
-	// the last step below the 190_000 target is 186_000. Against the unclamped 13_107 the
-	// budget would be 186_893 and this turn would be dropped.
-	const budgeted = await budgetOf(
-		[source, evidence],
-		preparation([source]),
-		200_000,
-		4096,
-	);
-	expect(budgeted.focus.intentEvidence?.overflow).toBeUndefined();
-	expect(budgeted.focus.intentEvidence?.recentUserTurns).toEqual([
+	// maxTokens 4096 is below floor(0.8 * 16_384), so the clamp is what binds: the evidence cap
+	// is 200_000 - 4096 = 195_904. The sizing loop steps in 600-token increments (12-char unit
+	// x 200 repeats), so it exits at 187_200 and leaves 8_704 of slack instead of the ~3.9k a
+	// coarser step left. Against the unclamped 13_107 the cap is 186_893, so the same turn is
+	// dropped; the paired call pins that instead of leaving it to this comment.
+	const prepared = preparation([source]);
+	const clamped = await budgetOf([source, evidence], prepared, 200_000, 4096);
+	expect(clamped.focus.intentEvidence?.overflow).toBeUndefined();
+	expect(clamped.focus.intentEvidence?.recentUserTurns).toEqual([
 		evidence.content.trim(),
 	]);
-	expect(budgeted.evidenceTrimmed).toBeUndefined();
+	expect(clamped.evidenceTrimmed).toBeUndefined();
+
+	// Same transcript with the model cap lifted, so floor(0.8 * 16_384) binds instead of the
+	// clamp. The turn no longer fits and is dropped.
+	const uncapped = await budgetOf([source, evidence], prepared, 200_000);
+	expect(uncapped.focus.intentEvidence?.recentUserTurns).toEqual([]);
+	expect(uncapped.evidenceTrimmed).toBe(1);
 });
 
 it("counts cap drops and trim-search drops together", async () => {
