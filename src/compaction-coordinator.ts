@@ -77,6 +77,7 @@ type StructuralWalk = { left: number; exhausted: boolean };
  * object with more keys or an array with more items always changes the key while the
  * budget lasts. */
 function structuralChars(value: unknown, walk: StructuralWalk): number {
+	if (walk.exhausted) return 0;
 	if (walk.left <= 0) {
 		// Growth past this point is invisible to the key, so the caller must not treat
 		// the partial total as a verdict it may reuse.
@@ -140,7 +141,8 @@ export class CompactionCoordinator {
 	/** Measured verdict for the last cut. Written only by the measurement. */
 	private overflowVerdict: OverflowVerdict | null = null;
 	/** Distinguishes key walks that ran out of budget, so a partial walk never matches
-	 * a later cut. Internal only: never logged or persisted. */
+	 * a later cut. Bounded by the number of compaction attempts in a session, and it
+	 * resets with the session. Internal only: never logged or persisted. */
 	private cutKeyNonce = 0;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
@@ -171,6 +173,7 @@ export class CompactionCoordinator {
 		this.overflowNoticeKey = null;
 		this.manualAttemptInFlight = false;
 		this.manualAttemptEpoch = -1;
+		this.cutKeyNonce = 0;
 	}
 
 	private cancelAbortedCompaction(): { cancel: true } {
@@ -363,6 +366,13 @@ export class CompactionCoordinator {
 		].join(":");
 	}
 
+	/** The notice dedupe must stay deterministic across attempts, so a key whose walk
+	 * ran out of budget is compared in its stable partial form. The verdict cache keeps
+	 * the nonce, because a partial total cannot identify a cut. */
+	private noticeKey(key: string): string {
+		return key.replace(/partial:\d+/, "partial");
+	}
+
 	/** Record the decline, and warn at most once for an unchanged cut. */
 	private reportSummarizationOverflow(
 		event: SessionBeforeCompactEvent,
@@ -375,7 +385,9 @@ export class CompactionCoordinator {
 		this.state.lastFallbackReason = reason;
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
-		const key = measuredKey ?? this.summarizationCutKey(event, ctx);
+		const key = this.noticeKey(
+			measuredKey ?? this.summarizationCutKey(event, ctx),
+		);
 		// A manual command always explains itself. Only automatic repeats of an
 		// unchanged cut are deduped.
 		if (!manualAttempt && this.overflowNoticeKey === key) return;
@@ -440,8 +452,8 @@ export class CompactionCoordinator {
 		try {
 			executeCompaction(mode, cmdFocus, this.state, ctx, this.pi, {
 				persist: this.persistTelemetrySnapshot,
-				// The bypass belongs to this attempt only, and only this attempt may clear
-				// it: a late settle from an attempt that no longer owns the bypass must not
+				// The bypass belongs to this attempt only, and only an attempt from this
+				// attempt's epoch may clear it: a late settle from an earlier epoch must not
 				// suppress a newer attempt's decline warning.
 				onSettled: () => {
 					if (this.manualAttemptEpoch === attemptEpoch) {

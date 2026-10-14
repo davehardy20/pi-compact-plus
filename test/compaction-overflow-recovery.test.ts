@@ -523,31 +523,70 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 				(call) => call[1] === "warning",
 			).length;
 
-		let settleOlderAttempt: (() => void) | undefined;
-		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(
+		const settles: Array<(() => void) | undefined> = [];
+		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
 			({ onComplete }: { onComplete?: () => void }) => {
-				settleOlderAttempt = onComplete;
+				settles.push(onComplete);
 			},
 		);
 
-		// An automatic decline already warned about this exact cut.
+		// Attempt A starts, and the session transitions before Pi ever settles it.
+		await coordinator.handleManualCommand("standard", ctx);
+		state.reset();
+
+		// An automatic decline in the new epoch already warned about this exact cut.
 		expect(await coordinator.onSessionBeforeCompact(oversized(), ctx)).toEqual({
 			cancel: true,
 		});
 		expect(warnings()).toBe(1);
 
-		// A manual attempt starts, then an older attempt settles after it.
+		// Attempt B starts in the new epoch, then A settles late.
 		await coordinator.handleManualCommand("standard", ctx);
-		state.invalidateCompactionCallbacks();
-		await coordinator.handleManualCommand("standard", ctx);
-		settleOlderAttempt?.();
+		settles[0]?.();
 
-		// The newer manual attempt still owns the bypass, so its decline explains itself
-		// instead of being deduped against the earlier automatic warning.
+		// B still owns the bypass, so its decline explains itself instead of being
+		// deduped against the earlier automatic warning.
 		expect(await coordinator.onSessionBeforeCompact(oversized(), ctx)).toEqual({
 			cancel: true,
 		});
 		expect(warnings()).toBe(2);
+	});
+
+	it("warns once for a budget-exhausting cut even though it is re-measured", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const args: Record<string, string> = {
+			...Object.fromEntries(
+				Array.from({ length: 12_000 }, (_unused, index) => [`k${index}`, "v"]),
+			),
+			growing: "x".repeat(1_000_000),
+		};
+		const call = (): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: args },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		// The verdict cache cannot reuse a partial total, so each attempt measures
+		// again. The notice dedupe uses the stable partial form, so the user still
+		// hears about the unchanged cut only once.
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
 	});
 
 	it("digests guidance content so equal-length guidance is not one cut", () => {
