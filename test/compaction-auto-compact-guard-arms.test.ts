@@ -32,6 +32,12 @@ function createMockCtx(options?: {
 	mode?: string;
 	sessionFile?: string | undefined;
 }): ExtensionEventContext {
+	// An explicitly passed `undefined` must stay undefined: it is the condition the
+	// ephemeral-headless-child guard names.
+	const sessionFile =
+		options && "sessionFile" in options
+			? options.sessionFile
+			: "/tmp/session.jsonl";
 	return {
 		mode: (options?.mode ?? "tui") as ExtensionEventContext["mode"],
 		hasUI: true,
@@ -52,7 +58,7 @@ function createMockCtx(options?: {
 			percent: 80,
 		})),
 		sessionManager: {
-			getSessionFile: vi.fn(() => options?.sessionFile ?? "/tmp/session.jsonl"),
+			getSessionFile: vi.fn(() => sessionFile),
 			getSessionId: vi.fn(() => "test-session"),
 			getLeafId: vi.fn(() => "test-leaf"),
 			getBranch: vi.fn(() => []),
@@ -127,6 +133,11 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
+		// Characterized as aggregate no-metrics behaviour: deleting the explicit
+		// `percent === null && tokens === null` guard leaves the outcome externally
+		// identical, because `getModeFromEffectiveUsage` then returns null and the
+		// following `!mode` guard declines for the same caller-visible reason. Only the
+		// aggregate contract is observable from outside the method.
 		expectDeclined(ctx, state);
 	});
 
@@ -207,9 +218,14 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
+		// Mutation-sensitive: deleting the guard would reach the accepted path and ask
+		// Pi to compact, so the absent request is the oracle, not the preset flag.
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 		expect(state.isCompacting).toBe(true);
+		expect(state.selectedMode).toBeNull();
+		expect(state.lastTriggerAuto).toBe(false);
+		expect(state.lastCompactTurnIndex).toBe(-1);
 	});
 
 	it("declines while the tool-output pruning flush is in progress", async () => {
@@ -236,7 +252,20 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 		const { coordinator, state } = createCoordinator({
 			disableAutoCompaction: true,
 		});
+		// Kept on a normal persisted session so the ephemeral-child guard cannot mask
+		// the kill switch.
+		const ctx = createMockCtx();
+		expect(ctx.sessionManager.getSessionFile()).toBe("/tmp/session.jsonl");
+
+		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
+
+		expectDeclined(ctx, state);
+	});
+
+	it("declines in an ephemeral headless child with no session file", async () => {
+		const { coordinator, state } = createCoordinator();
 		const ctx = createMockCtx({ mode: "json", sessionFile: undefined });
+		expect(ctx.sessionManager.getSessionFile()).toBeUndefined();
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
@@ -253,9 +282,22 @@ describe("CompactionCoordinator.maybeAutoCompact accepted path", () => {
 
 		expect(ctx.compact).toHaveBeenCalledOnce();
 		const notices = vi.mocked(ctx.ui.notify).mock.calls.map(([text]) => text);
-		expect(
-			notices.some((text) => text.includes("auto-compaction triggered")),
-		).toBe(true);
+		expect(notices).toHaveLength(1);
+		// The notice is today's only caller-visible verdict for an accepted auto trigger:
+		// it must name the measured usage, the mode chosen and the trigger source.
+		expect(notices[0]).toContain("Compact+ auto-compaction triggered at 80%");
+		expect(notices[0]).toContain("(160,000 / 200,000 tokens)");
+		expect(notices[0]).toContain("mode: standard");
+		expect(notices[0]).toContain("thresholdMode: percent");
+		expect(notices[0]).toContain("(turn_end)");
+		const request = vi.mocked(ctx.compact).mock.calls[0][0] as {
+			customInstructions?: string;
+		};
+		expect(typeof request.customInstructions).toBe("string");
+		expect(request.customInstructions?.trim().length).toBeGreaterThan(0);
+		expect(state.lastIssuedCompactionInstructions).toBe(
+			request.customInstructions,
+		);
 		expect(state.isCompacting).toBe(true);
 		expect(state.selectedMode).toBe("standard");
 		expect(state.lastTriggerAuto).toBe(true);
