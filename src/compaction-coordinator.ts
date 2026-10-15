@@ -204,10 +204,12 @@ export class CompactionCoordinator {
 	 * Rebuild the session verdict from a reason restored from telemetry at `session_start`.
 	 * The persisted reason is the only decision Compact+ keeps across a restart, so the
 	 * restored verdict is classified from it and `getLastVerdict()` cannot disagree with the
-	 * reason the status output shows.
+	 * reason the status output shows. No reason means no recorded decision: the verdict stays
+	 * null rather than claiming one.
 	 */
 	restoreVerdictFromPersistedReason(reason: string | null): void {
-		this.recordVerdictFromReason(reason ?? null);
+		if (reason === null) return;
+		this.recordVerdictFromReason(reason);
 	}
 
 	/**
@@ -547,43 +549,15 @@ export class CompactionCoordinator {
 	/**
 	 * The typed outcome of the most recent compaction decision made in this session, on any
 	 * path: Compact+'s own guard, a boundary attempt, or Pi's compaction that Compact+ settled.
-	 * Null until this session records one; a restored session keeps its prose reason in
-	 * `lastFallbackReason` and starts with no verdict.
+	 * Null until this session records one. A session restored from telemetry restores a
+	 * persisted reason as a verdict; a persisted session that recorded no reason starts with no
+	 * verdict, because inventing `accepted` would claim a decision the telemetry never made.
 	 */
 	getLastVerdict(): CompactionVerdict | null {
 		return this.state.lastVerdict;
 	}
 
-	/**
-	 * Run an entry point and report the verdict that was latest when its run finished.
-	 * Null means the run changed no verdict: it either stopped at a guard that writes no
-	 * reason, or handed the decision to Pi's compaction pipeline, which settles later and is
-	 * readable through `getLastVerdict()`. Compact+'s compaction is fire-and-forget and Pi
-	 * events can settle while a run awaits (a manual command waits for an idle session), so a
-	 * verdict recorded by another path during this call is reported as this call's result when
-	 * it is also the session's newest decision. Callers that need the decision for one specific
-	 * attempt read `getLastVerdict()` after that attempt settles.
-	 */
-	private async verdictFrom(
-		run: () => Promise<void> | void,
-	): Promise<CompactionVerdict | null> {
-		const before = this.state.lastVerdict;
-		await run();
-		return this.state.lastVerdict === before ? null : this.state.lastVerdict;
-	}
-
-	/**
-	 * Compact+-owned entry point: returns the verdict this command recorded, or null when the
-	 * compaction it started is still in flight.
-	 */
 	async handleManualCommand(
-		mode: ManualCompactionMode,
-		ctx: ExtensionEventContext,
-	): Promise<CompactionVerdict | null> {
-		return this.verdictFrom(() => this.runManualCommand(mode, ctx));
-	}
-
-	private async runManualCommand(
 		mode: ManualCompactionMode,
 		ctx: ExtensionEventContext,
 	): Promise<void> {
@@ -649,21 +623,7 @@ export class CompactionCoordinator {
 		return headless && !ctx.sessionManager.getSessionFile();
 	}
 
-	/**
-	 * Compact+-owned entry point: returns the verdict this trigger recorded, or null when it
-	 * stopped at a guard that records no reason or started a compaction that is still in flight.
-	 */
 	async maybeAutoCompact(
-		ctx: ExtensionEventContext,
-		triggerSource: AutoTriggerSource,
-		turnIndex?: number,
-	): Promise<CompactionVerdict | null> {
-		return this.verdictFrom(() =>
-			this.runAutoCompact(ctx, triggerSource, turnIndex),
-		);
-	}
-
-	private async runAutoCompact(
 		ctx: ExtensionEventContext,
 		triggerSource: AutoTriggerSource,
 		turnIndex?: number,
@@ -1294,7 +1254,7 @@ export class CompactionCoordinator {
 		// earlier in the same attempt into a contradictory kind; the reason stays as prose.
 		const trimmedTurns = pending.intentEvidenceTrimmedTurns;
 		this.recordVerdict(
-			trimmedTurns === undefined ? "completed" : "trimmed",
+			trimmedTurns === undefined ? "accepted" : "trimmed",
 			fallbackReason ?? null,
 			trimmedTurns === undefined
 				? undefined

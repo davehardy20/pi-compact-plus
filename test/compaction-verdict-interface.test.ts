@@ -42,8 +42,8 @@ import type { EffectiveUsage } from "../src/types.js";
  * `session_before_compact` and `{ entries } | undefined` for `turn_end`, asserted by
  * exact top-level keys so an extra Pi-visible field cannot slip in, and the verdict
  * travels only through `getLastVerdict()`. Second: the Compact+-owned entry points
- * return the newest verdict their run produced and null when the run changed none, so
- * an earlier decision is never reported as this call's result.
+ * record no verdict of their own at a guard that writes no reason, so an accessor read
+ * after such a call still reports the previous decision, never an invented one.
  */
 
 type ExtensionEventContext = Parameters<
@@ -237,29 +237,27 @@ describe("Pi-owned handlers keep their return shape", () => {
 	});
 });
 
-describe("Compact+-owned entry points return their own verdict", () => {
-	it("returns null when the trigger stopped at a guard that records no reason", async () => {
+describe("Compact+-owned entry points expose their decision through the accessor", () => {
+	it("records no verdict when the trigger stopped at a guard that writes no reason", async () => {
 		const ctx = createCtx();
 		const { coordinator } = createCoordinator({ usage: null });
 
-		const verdict = await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
+		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expect(verdict).toBeNull();
 		expect(coordinator.getLastVerdict()).toBeNull();
 	});
 
-	it("returns null when a manual command is refused before any decision", async () => {
+	it("records no verdict when a manual command is refused before any decision", async () => {
 		const ctx = createCtx();
 		const { coordinator, state } = createCoordinator();
 		state.isCompacting = true;
 
-		const verdict = await coordinator.handleManualCommand("standard", ctx);
+		await coordinator.handleManualCommand("standard", ctx);
 
-		expect(verdict).toBeNull();
 		expect(coordinator.getLastVerdict()).toBeNull();
 	});
 
-	it("does not report an earlier decision as this call's verdict", async () => {
+	it("leaves an earlier verdict untouched when a guard stops the trigger", async () => {
 		const ctx = createCtx();
 		const { coordinator, state } = createCoordinator();
 		state.selectedMode = "standard";
@@ -268,9 +266,8 @@ describe("Compact+-owned entry points return their own verdict", () => {
 		const recorded = coordinator.getLastVerdict() as CompactionVerdict;
 		expect(recorded.kind).toBe("cancelled");
 
-		const verdict = await coordinator.maybeAutoCompact(ctx, "turn_end", 9);
+		await coordinator.maybeAutoCompact(ctx, "turn_end", 9);
 
-		expect(verdict).toBeNull();
 		expect(coordinator.getLastVerdict()).toBe(recorded);
 	});
 });
@@ -310,7 +307,7 @@ describe("verdict lifetime", () => {
 });
 
 describe("verdict travels with the compaction it describes", () => {
-	it("records a completed compaction with no reason", async () => {
+	it("records an accepted compaction with no reason", async () => {
 		const ctx = createCtx();
 		const { coordinator, state } = createCoordinator();
 		state.selectedMode = "standard";
@@ -323,7 +320,7 @@ describe("verdict travels with the compaction it describes", () => {
 
 		expect(Object.keys(result ?? {})).toEqual(["compaction"]);
 		expect(coordinator.getLastVerdict()).toMatchObject({
-			kind: "completed",
+			kind: "accepted",
 			reason: null,
 		});
 	});
@@ -362,7 +359,7 @@ describe("Pi-owned boundary handler keeps its return shape", () => {
 
 		expect(Object.keys(result ?? {})).toEqual(["entries"]);
 		expect(coordinator.getLastVerdict()).toMatchObject({
-			kind: "completed",
+			kind: "accepted",
 			reason: null,
 		});
 	});
@@ -412,15 +409,12 @@ describe("restored telemetry cannot disagree with the verdict", () => {
 		});
 	});
 
-	it("derives a completed verdict when the persisted decision dropped nothing", () => {
+	it("records no verdict when the persisted telemetry recorded no reason", () => {
 		const { coordinator } = createCoordinator();
 
 		coordinator.restoreVerdictFromPersistedReason(null);
 
-		expect(coordinator.getLastVerdict()).toMatchObject({
-			kind: "completed",
-			reason: null,
-		});
+		expect(coordinator.getLastVerdict()).toBeNull();
 	});
 });
 
@@ -432,6 +426,11 @@ describe("live verdict kinds agree with the reason mapping", () => {
 			["custom compaction cancelled", "cancelled"],
 			["custom summarization unavailable", "deferred"],
 			["safe turn-boundary compaction unavailable", "declined"],
+			["compact returned undefined", "deferred"],
+			["auth unavailable", "deferred"],
+			["model unavailable", "deferred"],
+			["compact error: provider request failed", "deferred"],
+			["compaction summary invalid: summary is empty", "deferred"],
 			[NATIVE_FALLBACK_REASON, "deferred"],
 			[SUMMARIZATION_SUSPECT_ESTIMATE_REASON, "deferred"],
 		];

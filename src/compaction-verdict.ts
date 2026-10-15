@@ -25,26 +25,27 @@ import {
 } from "./summarization-overflow.js";
 
 /**
- * - `completed`: the compaction ran and Compact+ dropped nothing.
- * - `trimmed`: the compaction ran, but Compact+ dropped some of the additional
+ * - `accepted`: the request was accepted and a compaction was produced.
+ * - `trimmed`: a compaction was produced, but Compact+ dropped some of the additional
  *   intent evidence it adds itself. The transcript was not cut further.
  * - `deferred`: Compact+ did not produce its own compaction and stepped aside so Pi's
  *   compaction handles the request: its estimate was contradicted by provider-reported
  *   usage, the runtime could not give it a stream-aware route, or its own summarization
  *   was unavailable on a path where Pi still compacts.
- * - `declined`: Compact+ did not run its own compaction for this request. Pi may
- *   still compact natively.
- * - `cancelled`: Compact+ stopped an attempt it had already started.
+ * - `declined`: Compact+ refused this compaction request before its own attempt could
+ *   produce a result. Pi may still compact natively.
+ * - `cancelled`: Compact+ stopped an attempt it had already started: an abort, a
+ *   superseded context, or an attempt that failed mid-flight.
  */
 export type CompactionVerdictKind =
-	| "completed"
+	| "accepted"
 	| "trimmed"
 	| "deferred"
 	| "declined"
 	| "cancelled";
 
 export const COMPACTION_VERDICT_KINDS: readonly CompactionVerdictKind[] = [
-	"completed",
+	"accepted",
 	"trimmed",
 	"deferred",
 	"declined",
@@ -72,7 +73,9 @@ export interface CompactionVerdictEvidence {
 /**
  * Every reason Compact+ writes, mapped to the decision it describes. Keys are the
  * same constants the writers use, so a renamed reason breaks this table at compile
- * time instead of silently reclassifying a verdict.
+ * time instead of silently reclassifying a verdict. A reason that reaches Compact+
+ * on exactly one path is mapped to the kind that path records, so a verdict read
+ * back from telemetry classifies the same way as the live decision did.
  */
 const REASON_KINDS: ReadonlyMap<string, CompactionVerdictKind> = new Map([
 	["compaction aborted", "cancelled"],
@@ -80,10 +83,10 @@ const REASON_KINDS: ReadonlyMap<string, CompactionVerdictKind> = new Map([
 	["custom compaction cancelled", "cancelled"],
 	["custom summarization unavailable", "deferred"],
 	["safe turn-boundary compaction unavailable", "declined"],
-	["compact returned undefined", "declined"],
-	["auth unavailable", "declined"],
-	["model unavailable", "declined"],
-	["compact error: provider request failed", "declined"],
+	["compact returned undefined", "deferred"],
+	["auth unavailable", "deferred"],
+	["model unavailable", "deferred"],
+	["compact error: provider request failed", "deferred"],
 	[SUMMARIZATION_CONTEXT_OVERFLOW_REASON, "declined"],
 	[SUMMARIZATION_OUTPUT_CAP_REASON, "declined"],
 	[SUMMARIZATION_INTENT_EVIDENCE_REASON, "declined"],
@@ -96,23 +99,23 @@ type ReasonPrefixKind = readonly [string, CompactionVerdictKind];
 
 /** Reasons that carry a variable detail suffix. */
 const REASON_PREFIX_KINDS: ReadonlyArray<ReasonPrefixKind> = [
-	["compaction summary invalid:", "declined"],
+	["compaction summary invalid:", "deferred"],
 ];
 
 /**
  * Map a reason to its kind when the reason is all that is known: a restored telemetry
- * reason, a status line, or a log line. A reason Compact+ writes on more than one path
- * (the overflow and intent-evidence reasons appear both on a guard decline and on a
- * cancelled attempt) is classified here as the guard-path decision, and the coordinator
- * passes the path's own kind explicitly at those write sites. An unmapped non-null
- * reason is treated as `declined`: every reason Compact+ writes that is not a cancel, a
- * trim, or a deferral comes from a path that declined to run its own compaction. The raw
- * reason is always preserved on the verdict, so a mapping gap loses no information.
+ * reason, a status line, or a log line. Two reasons (the intent-evidence reason and the
+ * request-overflow reasons) reach Compact+ on more than one path, and are mapped here to
+ * the guard-path kind; the coordinator passes the path's own kind explicitly at those
+ * write sites. An unmapped non-null reason is treated as `declined`: every reason
+ * Compact+ writes that is not a cancel, a trim, or a deferral comes from a path that
+ * declined to run its own compaction. The raw reason is always preserved on the verdict,
+ * so a mapping gap loses no information.
  */
 export function compactionVerdictKindForReason(
 	reason: string | null,
 ): CompactionVerdictKind {
-	if (reason === null) return "completed";
+	if (reason === null) return "accepted";
 	const exact = REASON_KINDS.get(reason);
 	if (exact) return exact;
 	for (const [prefix, kind] of REASON_PREFIX_KINDS) {
@@ -157,24 +160,6 @@ export function compactionVerdictFromReason(
 	);
 }
 
-export function completedCompactionVerdict(
-	evidence?: CompactionVerdictEvidence,
-): CompactionVerdict {
-	return { kind: "completed", reason: null, ...withEvidence(evidence) };
-}
-
-/** A compaction that ran after Compact+ dropped some of its own optional evidence. */
-export function trimmedCompactionVerdict(
-	evidenceTrimmedTurns: number,
-	evidence?: CompactionVerdictEvidence,
-): CompactionVerdict {
-	return {
-		kind: "trimmed",
-		reason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
-		...withEvidence({ ...evidence, evidenceTrimmedTurns }),
-	};
-}
-
 /** Runtime guard for a verdict that crossed a boundary (telemetry, persisted state). */
 export function isCompactionVerdict(
 	value: unknown,
@@ -185,21 +170,35 @@ export function isCompactionVerdict(
 	if (kind === undefined || !COMPACTION_VERDICT_KINDS.includes(kind)) {
 		return false;
 	}
-	if (candidate.reason !== null && typeof candidate.reason !== "string") {
+	if (candidate.reason !== null) {
+		if (typeof candidate.reason !== "string" || candidate.reason === "") {
+			return false;
+		}
+	} else if (kind !== "accepted") {
+		// Only an accepted compaction can have dropped nothing.
 		return false;
 	}
-	if (
-		candidate.evidenceTrimmedTurns !== undefined &&
-		(typeof candidate.evidenceTrimmedTurns !== "number" ||
-			!Number.isSafeInteger(candidate.evidenceTrimmedTurns) ||
-			candidate.evidenceTrimmedTurns < 0)
-	) {
-		return false;
+	if (candidate.evidenceTrimmedTurns !== undefined) {
+		const turns = candidate.evidenceTrimmedTurns;
+		if (kind !== "trimmed") return false;
+		if (
+			typeof turns !== "number" ||
+			!Number.isSafeInteger(turns) ||
+			turns < 0
+		) {
+			return false;
+		}
 	}
 	for (const key of ["contextWindow", "usageTokens"] as const) {
 		const field = candidate[key];
 		if (field === undefined) continue;
-		if (typeof field !== "number" || !Number.isSafeInteger(field)) return false;
+		if (
+			typeof field !== "number" ||
+			!Number.isSafeInteger(field) ||
+			field < 0
+		) {
+			return false;
+		}
 	}
 	return true;
 }

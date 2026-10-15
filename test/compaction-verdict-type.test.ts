@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
 	COMPACTION_VERDICT_KINDS,
+	compactionVerdict,
 	compactionVerdictFromReason,
 	compactionVerdictKindForReason,
-	completedCompactionVerdict,
 	isCompactionVerdict,
-	trimmedCompactionVerdict,
 } from "../src/compaction-verdict.js";
 import {
 	NATIVE_FALLBACK_REASON,
@@ -23,7 +22,7 @@ import {
 describe("compaction verdict kinds", () => {
 	it("is the closed set of outcomes Compact+ can produce", () => {
 		expect(COMPACTION_VERDICT_KINDS).toEqual([
-			"completed",
+			"accepted",
 			"trimmed",
 			"deferred",
 			"declined",
@@ -40,10 +39,10 @@ describe("reason to kind mapping", () => {
 			["custom compaction cancelled", "cancelled"],
 			["custom summarization unavailable", "deferred"],
 			["safe turn-boundary compaction unavailable", "declined"],
-			["compact returned undefined", "declined"],
-			["auth unavailable", "declined"],
-			["model unavailable", "declined"],
-			["compact error: provider request failed", "declined"],
+			["compact returned undefined", "deferred"],
+			["auth unavailable", "deferred"],
+			["model unavailable", "deferred"],
+			["compact error: provider request failed", "deferred"],
 			[SUMMARIZATION_CONTEXT_OVERFLOW_REASON, "declined"],
 			[SUMMARIZATION_OUTPUT_CAP_REASON, "declined"],
 			[SUMMARIZATION_INTENT_EVIDENCE_REASON, "declined"],
@@ -58,11 +57,11 @@ describe("reason to kind mapping", () => {
 
 	it("classifies the variable-suffix summary validation reasons", () => {
 		const invalid = "compaction summary invalid: summary is empty";
-		expect(compactionVerdictKindForReason(invalid)).toBe("declined");
+		expect(compactionVerdictKindForReason(invalid)).toBe("deferred");
 	});
 
-	it("treats no reason as a completed compaction", () => {
-		expect(compactionVerdictKindForReason(null)).toBe("completed");
+	it("treats no reason as an accepted compaction", () => {
+		expect(compactionVerdictKindForReason(null)).toBe("accepted");
 	});
 
 	it("treats an unmapped reason as a decline and keeps the prose", () => {
@@ -72,8 +71,8 @@ describe("reason to kind mapping", () => {
 	});
 
 	it("keeps compatibility prose out of the decision kinds it does not describe", () => {
-		// The registry route is a routing note recorded as compatibilityReason, never as a
-		// decision, so it reaches the mapper only through the documented default.
+		// The registry route is a routing note recorded as compatibilityReason, never as
+		// a decision, so it reaches the mapper only through the documented default.
 		expect(REGISTRY_STREAM_REASON).not.toBe(NATIVE_FALLBACK_REASON);
 		expect(compactionVerdictKindForReason(REGISTRY_STREAM_REASON)).toBe(
 			"declined",
@@ -82,14 +81,32 @@ describe("reason to kind mapping", () => {
 			"deferred",
 		);
 	});
+
+	it("maps no reason to two kinds", () => {
+		const reasons = [
+			"compaction aborted",
+			"auth unavailable",
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+			NATIVE_FALLBACK_REASON,
+		];
+		for (const reason of reasons) {
+			const kinds = new Set([
+				compactionVerdictKindForReason(reason),
+				compactionVerdictKindForReason(reason),
+			]);
+			expect(kinds.size).toBe(1);
+		}
+	});
 });
 
 describe("verdict construction", () => {
 	it("carries the trimmed turn count and the trimmed reason together", () => {
-		const verdict = trimmedCompactionVerdict(3, {
-			contextWindow: 1000,
-			usageTokens: 900,
-		});
+		const verdict = compactionVerdict(
+			"trimmed",
+			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+			{ evidenceTrimmedTurns: 3, contextWindow: 1000, usageTokens: 900 },
+		);
 		expect(verdict).toEqual({
 			kind: "trimmed",
 			reason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
@@ -100,8 +117,8 @@ describe("verdict construction", () => {
 	});
 
 	it("omits evidence keys that were not measured", () => {
-		const verdict = completedCompactionVerdict({ usageTokens: 1200 });
-		expect(verdict.kind).toBe("completed");
+		const verdict = compactionVerdict("accepted", null, { usageTokens: 1200 });
+		expect(verdict.kind).toBe("accepted");
 		expect(verdict.reason).toBeNull();
 		expect("contextWindow" in verdict).toBe(false);
 		expect("evidenceTrimmedTurns" in verdict).toBe(false);
@@ -122,8 +139,14 @@ describe("verdict construction", () => {
 
 describe("verdict guard", () => {
 	it("accepts a well-formed verdict", () => {
-		expect(isCompactionVerdict(trimmedCompactionVerdict(1))).toBe(true);
-		expect(isCompactionVerdict(completedCompactionVerdict())).toBe(true);
+		expect(
+			isCompactionVerdict(
+				compactionVerdict("trimmed", SUMMARIZATION_EVIDENCE_TRIMMED_REASON, {
+					evidenceTrimmedTurns: 1,
+				}),
+			),
+		).toBe(true);
+		expect(isCompactionVerdict(compactionVerdict("accepted", null))).toBe(true);
 	});
 
 	it("rejects values that are not verdicts", () => {
@@ -132,12 +155,18 @@ describe("verdict guard", () => {
 			"declined",
 			{ kind: "refused", reason: null },
 			{ kind: "declined", reason: 7 },
+			{ kind: "declined", reason: "" },
+			// Only an accepted compaction may report that it dropped nothing.
+			{ kind: "deferred", reason: null },
 			{ kind: "trimmed", reason: null, evidenceTrimmedTurns: -1 },
 			{ kind: "trimmed", reason: null, evidenceTrimmedTurns: 1.5 },
+			// A trim count belongs to a trimmed verdict only.
+			{ kind: "accepted", reason: null, evidenceTrimmedTurns: 2 },
 			{ kind: "declined", reason: "x", contextWindow: "1000" },
+			{ kind: "accepted", reason: null, usageTokens: -1 },
 		];
 		for (const value of rejected) {
-			expect(isCompactionVerdict(value)).toBe(false);
+			expect(isCompactionVerdict(value), JSON.stringify(value)).toBe(false);
 		}
 	});
 });
