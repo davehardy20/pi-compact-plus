@@ -32,6 +32,10 @@ import type { EffectiveUsage } from "../src/types.js";
  * `cancel`, `compaction` or nothing. Each test pins one verdict through the
  * caller-visible effects first, and records the state field only as the interim
  * equivalence contract for the later verdict-interface work.
+ *
+ * Verdicts already pinned by a stronger existing suite (real SessionManager and real
+ * SDK measurement in test/compaction-overflow-recovery.test.ts) are not restated here
+ * with mocks: only the verdicts no existing suite reaches are characterized.
  */
 
 type ExtensionEventContext = Parameters<
