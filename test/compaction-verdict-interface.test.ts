@@ -29,8 +29,9 @@ import { NATIVE_FALLBACK_REASON } from "../src/compatibility.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_INTENT_EVIDENCE_REASON,
-	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
 
@@ -418,45 +419,190 @@ describe("restored telemetry cannot disagree with the verdict", () => {
 	});
 });
 
+type MappingRow = {
+	reason: string;
+	/** Arrange the mocks and state that make this the reason Compact+ writes. */
+	arm: (state: CompactionState, ctx: ExtensionEventContext) => void;
+	drive: (
+		coordinator: CompactionCoordinator,
+		ctx: ExtensionEventContext,
+	) => Promise<unknown>;
+};
+
+/**
+ * One row per reason Compact+ can write on exactly one path. Each row drives the real
+ * writer, then compares the kind the coordinator recorded with the kind the mapper predicts
+ * from the reason alone. The mapper is what a restored session reads, so a mismatch here is a
+ * divergence between what a live session decided and what the next session will believe.
+ */
+function singlePathRows(): MappingRow[] {
+	const customAttempt =
+		(attempt: Record<string, unknown>) => (state: CompactionState) => {
+			state.selectedMode = "standard";
+			runCustom.mockResolvedValue(attempt);
+		};
+	const viaBeforeCompact = async (
+		coordinator: CompactionCoordinator,
+		ctx: ExtensionEventContext,
+	) => beforeCompact(ctx, coordinator);
+
+	return [
+		{
+			reason: "custom compaction cancelled",
+			arm: customAttempt({ cancel: true }),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "compaction context changed",
+			arm: customAttempt({
+				cancel: true,
+				fallbackReason: "compaction context changed",
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "compaction aborted",
+			arm: (state) => {
+				state.selectedMode = "standard";
+				state.isCompacting = true;
+			},
+			drive: async (coordinator, ctx) => {
+				const controller = new AbortController();
+				controller.abort();
+				return coordinator.onSessionBeforeCompact(
+					{
+						preparation: preparation(),
+						branchEntries: [],
+						signal: controller.signal,
+					} as never,
+					ctx,
+				);
+			},
+		},
+		{
+			reason: "auth unavailable",
+			arm: customAttempt({
+				result: undefined,
+				fallbackReason: "auth unavailable",
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "compact returned undefined",
+			arm: customAttempt({
+				result: undefined,
+				fallbackReason: "compact returned undefined",
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "model unavailable",
+			arm: customAttempt({
+				result: undefined,
+				fallbackReason: "model unavailable",
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "compact error: provider request failed",
+			arm: customAttempt({
+				result: undefined,
+				fallbackReason: "compact error: provider request failed",
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "compaction summary invalid: summary is empty",
+			arm: customAttempt({
+				result: undefined,
+				fallbackReason: "compaction summary invalid: summary is empty",
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "custom summarization unavailable",
+			arm: customAttempt({ result: undefined }),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+			arm: customAttempt({
+				result: SUMMARY,
+				fallbackReason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+				evidenceTrimmedTurns: 2,
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: "safe turn-boundary compaction unavailable",
+			arm: (_state, ctx) => {
+				const manager = ctx.sessionManager as unknown as {
+					getBranch: ReturnType<typeof vi.fn>;
+				};
+				manager.getBranch.mockImplementation(() => {
+					throw new Error("session manager failed mid-attempt");
+				});
+			},
+			drive: async (coordinator, ctx) =>
+				coordinator.maybeAutoCompactAtBoundary(boundaryEvent(), ctx),
+		},
+		{
+			reason: NATIVE_FALLBACK_REASON,
+			arm: (state) => {
+				// A custom attempt is requested; the row's context has no stream-aware route, so
+				// the runtime defers before the attempt can produce a result.
+				state.selectedMode = "standard";
+			},
+			drive: viaBeforeCompact,
+		},
+	];
+}
+
 describe("live verdict kinds agree with the reason mapping", () => {
-	it("maps every single-path reason to the kind its writer records", () => {
-		const singlePath: Array<[string, string]> = [
-			["compaction aborted", "cancelled"],
-			["compaction context changed", "cancelled"],
-			["custom compaction cancelled", "cancelled"],
-			["custom summarization unavailable", "deferred"],
-			["safe turn-boundary compaction unavailable", "declined"],
-			["compact returned undefined", "deferred"],
-			["auth unavailable", "deferred"],
-			["model unavailable", "deferred"],
-			["compact error: provider request failed", "deferred"],
-			["compaction summary invalid: summary is empty", "deferred"],
-			[NATIVE_FALLBACK_REASON, "deferred"],
-			[SUMMARIZATION_SUSPECT_ESTIMATE_REASON, "deferred"],
-		];
-		for (const [reason, kind] of singlePath) {
-			expect(compactionVerdictKindForReason(reason), reason).toBe(kind);
+	it("records the kind the mapper predicts for every single-path reason", async () => {
+		for (const row of singlePathRows()) {
+			const nativeRoute = row.reason === NATIVE_FALLBACK_REASON;
+			const ctx = createCtx(nativeRoute ? { streamRoute: "none" } : undefined);
+			const { coordinator, state } = createCoordinator();
+			row.arm(state, ctx);
+			await row.drive(coordinator, ctx);
+
+			const live = coordinator.getLastVerdict();
+			expect(live, row.reason).not.toBeNull();
+			expect(live?.reason, row.reason).toBe(row.reason);
+			expect(live?.kind, row.reason).toBe(
+				compactionVerdictKindForReason(row.reason),
+			);
 		}
 	});
 
-	it("pins the documented override for a reason written on two paths", async () => {
-		// The mapper sees the guard path; the coordinator sees the cancelled attempt.
-		expect(
-			compactionVerdictKindForReason(SUMMARIZATION_INTENT_EVIDENCE_REASON),
-		).toBe("declined");
-		const ctx = createCtx();
-		const { coordinator, state } = createCoordinator();
-		state.selectedMode = "standard";
-		runCustom.mockResolvedValue({
-			cancel: true,
-			fallbackReason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
-		});
+	it("pins the divergence for a reason Compact+ reaches on two paths", async () => {
+		// Live: the attempt failed after it started, so the coordinator saw a cancelled
+		// attempt. Restored: only the prose survives, and the mapper classifies the guard
+		// path. Both sides are asserted so the consumer-switching slice cannot treat a
+		// restored verdict as the decision the live session actually made.
+		for (const reason of [
+			SUMMARIZATION_INTENT_EVIDENCE_REASON,
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		]) {
+			expect(compactionVerdictKindForReason(reason), reason).toBe("declined");
 
-		await beforeCompact(ctx, coordinator);
+			const ctx = createCtx();
+			const { coordinator, state } = createCoordinator();
+			state.selectedMode = "standard";
+			runCustom.mockResolvedValue({ cancel: true, fallbackReason: reason });
+			await beforeCompact(ctx, coordinator);
+			expect(coordinator.getLastVerdict(), reason).toMatchObject({
+				kind: "cancelled",
+				reason,
+			});
 
-		expect(coordinator.getLastVerdict()).toMatchObject({
-			kind: "cancelled",
-			reason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
-		});
+			const { coordinator: restored } = createCoordinator();
+			restored.restoreVerdictFromPersistedReason(reason);
+			expect(restored.getLastVerdict(), reason).toMatchObject({
+				kind: "declined",
+				reason,
+			});
+		}
 	});
 });

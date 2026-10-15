@@ -58,15 +58,12 @@ export interface CompactionVerdict {
 	reason: string | null;
 	/** Set only when Compact+ dropped its own optional intent evidence. */
 	evidenceTrimmedTurns?: number;
-	/** Model context window in effect when the decision was made. */
-	contextWindow?: number;
-	/** Provider-reported usage in effect when the decision was made. */
+	/** Provider-reported usage in effect when the decision was made, when it was measured. */
 	usageTokens?: number;
 }
 
 export interface CompactionVerdictEvidence {
 	evidenceTrimmedTurns?: number;
-	contextWindow?: number;
 	usageTokens?: number;
 }
 
@@ -104,13 +101,17 @@ const REASON_PREFIX_KINDS: ReadonlyArray<ReasonPrefixKind> = [
 
 /**
  * Map a reason to its kind when the reason is all that is known: a restored telemetry
- * reason, a status line, or a log line. Two reasons (the intent-evidence reason and the
- * request-overflow reasons) reach Compact+ on more than one path, and are mapped here to
- * the guard-path kind; the coordinator passes the path's own kind explicitly at those
- * write sites. An unmapped non-null reason is treated as `declined`: every reason
- * Compact+ writes that is not a cancel, a trim, or a deferral comes from a path that
- * declined to run its own compaction. The raw reason is always preserved on the verdict,
- * so a mapping gap loses no information.
+ * reason, a status line, or a log line. A reason that reaches Compact+ on exactly one path is
+ * mapped to the kind that path records, so a verdict read back from telemetry classifies the
+ * same way the live decision did. A reason that reaches Compact+ on two paths (the
+ * request-overflow and intent-evidence reasons: a guard decline, or an attempt that failed
+ * after it started) is mapped to the guard-path kind, so a restored verdict can differ from the
+ * kind the live attempt recorded; the coordinator passes the path's own kind explicitly at
+ * those write sites and the divergence is pinned by test. An unmapped non-null reason is
+ * treated as `declined`: every reason Compact+ writes that is not a cancel, a trim, or a
+ * deferral comes from a path that declined to run its own compaction, so a future cancel reason
+ * added without a table entry would be misclassified here rather than crash. The raw reason is
+ * always preserved on the verdict, so a mapping gap loses no information.
  */
 export function compactionVerdictKindForReason(
 	reason: string | null,
@@ -125,16 +126,16 @@ export function compactionVerdictKindForReason(
 }
 
 function withEvidence(
+	kind: CompactionVerdictKind,
 	evidence?: CompactionVerdictEvidence,
 ): Omit<CompactionVerdict, "kind" | "reason"> {
 	if (!evidence) return {};
 	return {
-		...(evidence.evidenceTrimmedTurns === undefined
+		// A trim count belongs to a trimmed verdict, so the constructor cannot build a verdict
+		// its own guard would reject.
+		...(evidence.evidenceTrimmedTurns === undefined || kind !== "trimmed"
 			? {}
 			: { evidenceTrimmedTurns: evidence.evidenceTrimmedTurns }),
-		...(evidence.contextWindow === undefined
-			? {}
-			: { contextWindow: evidence.contextWindow }),
 		...(evidence.usageTokens === undefined
 			? {}
 			: { usageTokens: evidence.usageTokens }),
@@ -146,7 +147,7 @@ export function compactionVerdict(
 	reason: string | null,
 	evidence?: CompactionVerdictEvidence,
 ): CompactionVerdict {
-	return { kind, reason, ...withEvidence(evidence) };
+	return { kind, reason, ...withEvidence(kind, evidence) };
 }
 
 export function compactionVerdictFromReason(
@@ -189,16 +190,14 @@ export function isCompactionVerdict(
 			return false;
 		}
 	}
-	for (const key of ["contextWindow", "usageTokens"] as const) {
-		const field = candidate[key];
-		if (field === undefined) continue;
-		if (
-			typeof field !== "number" ||
-			!Number.isSafeInteger(field) ||
-			field < 0
-		) {
-			return false;
-		}
+	const usageTokens = candidate.usageTokens;
+	if (
+		usageTokens !== undefined &&
+		(typeof usageTokens !== "number" ||
+			!Number.isSafeInteger(usageTokens) ||
+			usageTokens < 0)
+	) {
+		return false;
 	}
 	return true;
 }

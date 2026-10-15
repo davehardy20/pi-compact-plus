@@ -206,6 +206,12 @@ export class CompactionCoordinator {
 	 * restored verdict is classified from it and `getLastVerdict()` cannot disagree with the
 	 * reason the status output shows. No reason means no recorded decision: the verdict stays
 	 * null rather than claiming one.
+	 *
+	 * The kind is the mapper's, not the live attempt's. For a reason Compact+ reaches on two
+	 * paths (the request-overflow and intent-evidence reasons) the live kind was `cancelled` on
+	 * the failed-attempt path and this restore reports the guard-path kind, because the path is
+	 * not persisted. Persisting the kind would need a telemetry schema change, which this slice
+	 * deliberately does not make.
 	 */
 	restoreVerdictFromPersistedReason(reason: string | null): void {
 		if (reason === null) return;
@@ -1256,9 +1262,10 @@ export class CompactionCoordinator {
 		this.recordVerdict(
 			trimmedTurns === undefined ? "accepted" : "trimmed",
 			fallbackReason ?? null,
-			trimmedTurns === undefined
-				? undefined
-				: { evidenceTrimmedTurns: trimmedTurns },
+			{
+				evidenceTrimmedTurns: trimmedTurns,
+				usageTokens: pending.usageTokensAtTrigger,
+			},
 		);
 		this.state.lastCompactTime = this.state.lastCompaction.timestamp;
 		this.state.lastInjectedEcho =

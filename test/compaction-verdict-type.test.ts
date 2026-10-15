@@ -82,22 +82,8 @@ describe("reason to kind mapping", () => {
 		);
 	});
 
-	it("maps no reason to two kinds", () => {
-		const reasons = [
-			"compaction aborted",
-			"auth unavailable",
-			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
-			NATIVE_FALLBACK_REASON,
-		];
-		for (const reason of reasons) {
-			const kinds = new Set([
-				compactionVerdictKindForReason(reason),
-				compactionVerdictKindForReason(reason),
-			]);
-			expect(kinds.size).toBe(1);
-		}
-	});
+	// The property that a reason maps to the kind its writer records is proven against the
+	// real writers in test/compaction-verdict-interface.test.ts, not against this mapper twice.
 });
 
 describe("verdict construction", () => {
@@ -105,13 +91,12 @@ describe("verdict construction", () => {
 		const verdict = compactionVerdict(
 			"trimmed",
 			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
-			{ evidenceTrimmedTurns: 3, contextWindow: 1000, usageTokens: 900 },
+			{ evidenceTrimmedTurns: 3, usageTokens: 900 },
 		);
 		expect(verdict).toEqual({
 			kind: "trimmed",
 			reason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 			evidenceTrimmedTurns: 3,
-			contextWindow: 1000,
 			usageTokens: 900,
 		});
 	});
@@ -120,19 +105,25 @@ describe("verdict construction", () => {
 		const verdict = compactionVerdict("accepted", null, { usageTokens: 1200 });
 		expect(verdict.kind).toBe("accepted");
 		expect(verdict.reason).toBeNull();
-		expect("contextWindow" in verdict).toBe(false);
 		expect("evidenceTrimmedTurns" in verdict).toBe(false);
 		expect(verdict.usageTokens).toBe(1200);
+	});
+
+	it("drops evidence the kind cannot carry, so it cannot build a rejected verdict", () => {
+		const verdict = compactionVerdict("accepted", null, {
+			evidenceTrimmedTurns: 2,
+		});
+		expect("evidenceTrimmedTurns" in verdict).toBe(false);
+		expect(isCompactionVerdict(verdict)).toBe(true);
 	});
 
 	it("preserves the reason when built from a reason", () => {
 		const verdict = compactionVerdictFromReason(
 			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
-			{ contextWindow: 262144, usageTokens: 4096 },
+			{ usageTokens: 4096 },
 		);
 		expect(verdict.kind).toBe("deferred");
 		expect(verdict.reason).toBe(SUMMARIZATION_SUSPECT_ESTIMATE_REASON);
-		expect(verdict.contextWindow).toBe(262144);
 		expect(verdict.usageTokens).toBe(4096);
 	});
 });
@@ -162,7 +153,6 @@ describe("verdict guard", () => {
 			{ kind: "trimmed", reason: null, evidenceTrimmedTurns: 1.5 },
 			// A trim count belongs to a trimmed verdict only.
 			{ kind: "accepted", reason: null, evidenceTrimmedTurns: 2 },
-			{ kind: "declined", reason: "x", contextWindow: "1000" },
 			{ kind: "accepted", reason: null, usageTokens: -1 },
 		];
 		for (const value of rejected) {
