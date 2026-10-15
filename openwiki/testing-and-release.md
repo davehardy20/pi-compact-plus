@@ -19,6 +19,14 @@ npx vitest run test/tool-output-pruning/    # All pruning tests
 npx vitest run test/focus-echo              # All focus-echo tests (by pattern)
 ```
 
+## Mutation testing
+
+- `npm run mutation` runs Stryker (`@stryker-mutator/core` + `@stryker-mutator/vitest-runner`, both pinned) over `src/**/*.ts` using `stryker.config.json`.
+- It is a local gate, not part of `pr-checks-node.yml`: a full run mutates ~10k sites in ~16 min at `concurrency: 12`. Scope it while iterating with `npx stryker run --mutate src/<file>.ts`.
+- `thresholds.break` (62) is this repository's own floor from its own baseline (2026-10-01: 9,914 mutants, 63.15% headline, 65.80% of covered mutants, `Timeout` counts as detected). Re-measure before moving it.
+- `reports/mutation/mutation.json` is the machine-readable report (the `html` reporter embeds no JSON). Reports and scratch trees land in `reports/` and `.stryker-tmp/`, both gitignored.
+- `test/stryker-config.test.ts` validates the config against the installed Stryker schema, which catches renamed keys such as `breakAt` (Stryker 10 uses `thresholds.break`).
+
 ## Test file map
 
 | File | Tests | Coverage area |
