@@ -473,8 +473,26 @@ npm run typecheck
 npm run build
 npm test
 npm run test:coverage
+npm run mutation
 npm run package:check
 ```
+
+### Mutation testing
+
+`npm run mutation` runs Stryker with the Vitest runner over `src/**/*.ts`, as
+configured in `stryker.config.json`. It is a local gate rather than part of the PR
+checks job: a full run mutates about 10k sites and takes roughly 16 minutes on a 12-core
+machine (`concurrency: "100%"`), so scope it while iterating with
+`npx stryker run --mutate src/<file>.ts`.
+
+`coverageAnalysis` is `off`, so Stryker does not use coverage data to pick which test
+may kill a mutant; the Vitest runner still applies Vitest related mode (its default) to
+narrow each mutant's test run. `thresholds.break` is this repository's own regression
+floor and `Timeout` counts as detected. The measured numbers behind it live in
+`test/fixtures/mutation-baseline.json`, and `test/stryker-config.test.ts` fails if the
+floor rises above that recorded score. Re-run `npm run mutation` and update that file
+before moving the floor. Never copy a number from another repo. Reports and scratch
+trees land in `reports/` and `.stryker-tmp/`, both gitignored.
 
 ### Runtime regression matrix (F1–F11)
 
