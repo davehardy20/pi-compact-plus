@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { prepareBoundaryCompaction, runCustom } = vi.hoisted(() => ({
 	prepareBoundaryCompaction: vi.fn(),
@@ -198,11 +198,16 @@ function boundaryEntry(result: { entries?: unknown[] } | undefined):
 		| undefined;
 }
 
+beforeEach(() => {
+	// Arm the succeeding downstream attempt before every test, so each test stands on
+	// its own and the accepted arms do not depend on a previous test having run.
+	prepareBoundaryCompaction.mockReturnValue(boundaryPreparation());
+	runCustom.mockResolvedValue({ result: SUMMARY });
+});
+
 afterEach(() => {
 	prepareBoundaryCompaction.mockReset();
-	prepareBoundaryCompaction.mockReturnValue(boundaryPreparation());
 	runCustom.mockReset();
-	runCustom.mockResolvedValue({ result: SUMMARY });
 });
 
 describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms", () => {

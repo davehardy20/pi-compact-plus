@@ -41,6 +41,9 @@ function user(text: string): AgentMessage {
 
 type CaptureBehaviour = {
 	baseChars?: number;
+	/** The output budget the fake SDK reports for the captured request. Deliberately a
+	 * distinctive number so a test cannot accidentally pin Pi's own reserve fraction. */
+	capturedOutput?: number;
 	/** Call index that resolves normally instead of capturing. */
 	resolveNormallyAt?: number;
 	/** Call index that throws a foreign provider error. */
@@ -59,7 +62,7 @@ function armCapture(behaviour: CaptureBehaviour) {
 		async (
 			_messages: unknown,
 			modelArg: { maxTokens: number },
-			reserve: number,
+			_reserve: number,
 			_signalHolder: unknown,
 			_extra: unknown,
 			_signal: unknown,
@@ -79,10 +82,7 @@ function armCapture(behaviour: CaptureBehaviour) {
 			}
 			const transcriptChars =
 				(behaviour.baseChars ?? 2_000) + (customInstructions?.length ?? 0);
-			const output = Math.min(
-				Math.floor(0.8 * reserve),
-				modelArg.maxTokens ?? 0,
-			);
+			const output = behaviour.capturedOutput ?? 123;
 			const context = {
 				messages: [
 					{
@@ -183,9 +183,9 @@ describe("measureSummaryRequestTokens capture rejects", () => {
 
 		// The production guarantee is the arithmetic and the fallback to the captured
 		// output budget, not any particular estimator result for the synthetic context.
-		expect(measurement?.reservedOutputTokens).toBe(80);
+		expect(measurement?.reservedOutputTokens).toBe(123);
 		expect(measurement?.totalTokens).toBe(
-			(measurement?.transcriptTokens ?? 0) + 80,
+			(measurement?.transcriptTokens ?? 0) + 123,
 		);
 	});
 });
@@ -208,9 +208,10 @@ describe("prepareBudgetedCompactionFocus trim-probe guards", () => {
 	}
 
 	/**
-	 * Arithmetic for a 1,000-token window with a 100-token reserve (80 reserved output):
-	 * the transcript alone is 500 tokens and fits; each admitted evidence turn adds 150
-	 * tokens, so four turns overflow and a two-turn trim fits.
+	 * Arithmetic for a 1,000-token window: the transcript alone is 500 tokens and fits,
+	 * each admitted evidence turn adds about 130 tokens, so four turns overflow the
+	 * window and a two-turn trim fits. The captured output budget is the fixture's own
+	 * distinctive 123, never Pi's reserve fraction.
 	 */
 	function renderInstructions(focus: {
 		intentEvidence?: { recentUserTurns?: string[] };

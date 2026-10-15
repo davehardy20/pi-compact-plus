@@ -18,10 +18,6 @@ import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { NATIVE_FALLBACK_REASON } from "../src/compatibility.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
-import {
-	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
-} from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
 
 /**
@@ -33,9 +29,12 @@ import type { EffectiveUsage } from "../src/types.js";
  * caller-visible effects first, and records the state field only as the interim
  * equivalence contract for the later verdict-interface work.
  *
- * Verdicts already pinned by a stronger existing suite (real SessionManager and real
- * SDK measurement in test/compaction-overflow-recovery.test.ts) are not restated here
- * with mocks: only the verdicts no existing suite reaches are characterized.
+ * Scope is deliberately the five verdict reasons no other suite names at this
+ * interface: `custom compaction cancelled`, `custom summarization unavailable`,
+ * `compaction context changed`, `compaction aborted`, and the compatibility
+ * deferral reason. Overflow, output-cap and suspect-estimate verdicts are already
+ * pinned at greater depth, with a real SessionManager and real SDK measurement, by
+ * test/compaction-overflow-recovery.test.ts, and are not restated here with mocks.
  */
 
 type ExtensionEventContext = Parameters<
@@ -151,34 +150,6 @@ describe("CompactionCoordinator verdict contract: custom attempt outcomes", () =
 		expect(state.lastFallbackReason).toBe("custom compaction cancelled");
 	});
 
-	it("defers to native compaction and relabels the verdict when provider usage contradicts the estimate", async () => {
-		const ctx = createCtx({ contextWindow: 200_000 });
-		const { coordinator, state } = createCoordinator(ctx);
-		state.selectedMode = "standard";
-		runCustom.mockResolvedValue({
-			fallbackReason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-		});
-
-		const result = await coordinator.onSessionBeforeCompact(
-			{ preparation: preparation(), branchEntries: [] } as never,
-			ctx,
-		);
-
-		expect(result).toBeUndefined();
-		expect(
-			notices(ctx).some((text) =>
-				text.includes("falling back to default compaction"),
-			),
-		).toBe(true);
-		expect(state.lastFallbackReason).toBe(
-			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
-		);
-		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.pendingCompaction?.fallbackReason).toBe(
-			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
-		);
-	});
-
 	it("uses the generic unavailable reason when the attempt reports neither a result nor a reason", async () => {
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const { coordinator, state } = createCoordinator(ctx);
@@ -273,51 +244,5 @@ describe("CompactionCoordinator verdict contract: native deferral", () => {
 		expect(state.lastFallbackReason).toBe(NATIVE_FALLBACK_REASON);
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 		expect(state.isCompacting).toBe(false);
-	});
-
-	it("relabels the native deferral as a suspect estimate when provider headroom contradicts the measured overflow", async () => {
-		const ctx = createCtx({ contextWindow: 200_000, streamRoute: "none" });
-		const { coordinator, state } = createCoordinator(ctx, {
-			usage: {
-				percent: 50,
-				tokens: 100_000,
-				contextWindow: 200_000,
-				source: "native",
-			},
-		});
-		state.selectedMode = "standard";
-		// The guard only measures when guidance is present, and the discrepancy only
-		// speaks when the guidance is Compact+'s own issued prompt echoed back verbatim.
-		const issuedPrompt = `<current-focus>\nObjective: repair login.\n</current-focus>\n${"rule text ".repeat(500)}`;
-		state.lastIssuedCompactionInstructions = issuedPrompt;
-		runCustom.mockResolvedValue({});
-
-		const result = await coordinator.onSessionBeforeCompact(
-			{
-				preparation: {
-					...preparation(),
-					messagesToSummarize: [
-						{ role: "user", content: `Task: ${"x".repeat(1_000_000)}` },
-					],
-				},
-				customInstructions: issuedPrompt,
-				branchEntries: [],
-			} as never,
-			ctx,
-		);
-
-		expect(result).toBeUndefined();
-		expect(ctx.compact).not.toHaveBeenCalled();
-		expect(
-			notices(ctx).some((text) =>
-				text.includes("deferring to native Pi compaction"),
-			),
-		).toBe(true);
-		expect(state.lastFallbackReason).toBe(
-			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
-		);
-		expect(state.pendingCompaction?.fallbackReason).toBe(
-			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
-		);
 	});
 });
