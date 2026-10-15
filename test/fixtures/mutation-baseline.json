@@ -1,0 +1,16 @@
+{
+	"measuredAt": "2026-10-15T14:29:22Z",
+	"strykerVersion": "10.0.0",
+	"concurrency": "100%",
+	"coverageAnalysis": "off",
+	"totalMutants": 9914,
+	"killed": 6245,
+	"timeout": 16,
+	"survived": 3253,
+	"noCoverage": 399,
+	"runtimeErrors": 1,
+	"headlineScore": 63.16,
+	"coveredScore": 65.81,
+	"scoreNote": "headline = (killed + timeout) / (total - runtimeErrors), coveredScore excludes noCoverage and runtimeErrors. Stryker reported 63.16.",
+	"note": "Repo-wide run over src/**/*.ts with the committed config (14m53s). Timeout counts as detected. Regenerate with npm run mutation, then recompute from reports/mutation/mutation.json before changing thresholds.break."
+}

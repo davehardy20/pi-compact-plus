@@ -3,13 +3,13 @@
 	"mutate": ["src/**/*.ts"],
 	"tsconfigFile": "tsconfig.json",
 	"testRunner": "vitest",
-	"concurrency": 12,
+	"concurrency": "100%",
 	"timeoutMS": 30000,
 	"timeoutFactor": 2,
 	"ignorePatterns": ["/dist", "/coverage", "/.seeds", "/agent", "/openwiki"],
 	"thresholds": {
 		"high": 80,
-		"low": 60,
+		"low": 62,
 		"break": 62
 	},
 	"reporters": ["clear-text", "progress", "html", "json"],
