@@ -15,6 +15,13 @@ import { prepareBoundaryCompaction } from "./boundary-preparation.js";
 import { runCustomCompaction } from "./compact.js";
 import { extractTriggerFocus } from "./compaction-intent.js";
 import {
+	type CompactionVerdict,
+	type CompactionVerdictEvidence,
+	type CompactionVerdictKind,
+	compactionVerdict,
+	compactionVerdictKindForReason,
+} from "./compaction-verdict.js";
+import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
@@ -193,12 +200,39 @@ export class CompactionCoordinator {
 		this.cutKeyNonce = 0;
 	}
 
+	/**
+	 * The single writer of the session verdict. `lastFallbackReason` stays the prose view of
+	 * the same decision, so every existing consumer keeps reading the same string.
+	 */
+	private recordVerdict(
+		kind: CompactionVerdictKind,
+		reason: string | null,
+		evidence?: CompactionVerdictEvidence,
+	): CompactionVerdict {
+		const verdict = compactionVerdict(kind, reason, evidence);
+		this.state.lastVerdict = verdict;
+		this.state.lastFallbackReason = verdict.reason;
+		return verdict;
+	}
+
+	/** Record a decision whose kind follows from the reason Compact+ wrote. */
+	private recordVerdictFromReason(
+		reason: string | null,
+		evidence?: CompactionVerdictEvidence,
+	): CompactionVerdict {
+		return this.recordVerdict(
+			compactionVerdictKindForReason(reason),
+			reason,
+			evidence,
+		);
+	}
+
 	private cancelAbortedCompaction(): { cancel: true } {
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
 		this.state.clearPendingCompaction();
-		this.state.lastFallbackReason = "compaction aborted";
+		this.recordVerdict("cancelled", "compaction aborted");
 		return { cancel: true };
 	}
 
@@ -451,7 +485,7 @@ export class CompactionCoordinator {
 		manualAttempt: boolean,
 		measuredKey: string | null,
 	): void {
-		this.state.lastFallbackReason = reason;
+		this.recordVerdictFromReason(reason);
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
 		const key = this.noticeKey(
@@ -486,7 +520,7 @@ export class CompactionCoordinator {
 				this.state.lastIssuedCompactionInstructions,
 			)
 		) {
-			this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
+			this.recordVerdictFromReason(SUMMARIZATION_SUSPECT_ESTIMATE_REASON);
 			return undefined;
 		}
 		this.reportSummarizationOverflow(
@@ -500,7 +534,42 @@ export class CompactionCoordinator {
 		return { cancel: true };
 	}
 
+	/**
+	 * The typed outcome of the most recent compaction decision made in this session, on any
+	 * path: Compact+'s own guard, a boundary attempt, or Pi's compaction that Compact+ settled.
+	 * Null until this session records one; a restored session keeps its prose reason in
+	 * `lastFallbackReason` and starts with no verdict.
+	 */
+	getLastVerdict(): CompactionVerdict | null {
+		return this.state.lastVerdict;
+	}
+
+	/**
+	 * Run an entry point and report only the verdict that run recorded.
+	 * Null means the run recorded no decision of its own: it either stopped at a guard that
+	 * writes no reason, or handed the decision to Pi's compaction pipeline, which settles
+	 * later and is readable through `getLastVerdict()`.
+	 */
+	private async verdictFrom(
+		run: () => Promise<void> | void,
+	): Promise<CompactionVerdict | null> {
+		const before = this.state.lastVerdict;
+		await run();
+		return this.state.lastVerdict === before ? null : this.state.lastVerdict;
+	}
+
+	/**
+	 * Compact+-owned entry point: returns the verdict this command recorded, or null when the
+	 * compaction it started is still in flight.
+	 */
 	async handleManualCommand(
+		mode: ManualCompactionMode,
+		ctx: ExtensionEventContext,
+	): Promise<CompactionVerdict | null> {
+		return this.verdictFrom(() => this.runManualCommand(mode, ctx));
+	}
+
+	private async runManualCommand(
 		mode: ManualCompactionMode,
 		ctx: ExtensionEventContext,
 	): Promise<void> {
@@ -566,7 +635,21 @@ export class CompactionCoordinator {
 		return headless && !ctx.sessionManager.getSessionFile();
 	}
 
+	/**
+	 * Compact+-owned entry point: returns the verdict this trigger recorded, or null when it
+	 * stopped at a guard that records no reason or started a compaction that is still in flight.
+	 */
 	async maybeAutoCompact(
+		ctx: ExtensionEventContext,
+		triggerSource: AutoTriggerSource,
+		turnIndex?: number,
+	): Promise<CompactionVerdict | null> {
+		return this.verdictFrom(() =>
+			this.runAutoCompact(ctx, triggerSource, turnIndex),
+		);
+	}
+
+	private async runAutoCompact(
 		ctx: ExtensionEventContext,
 		triggerSource: AutoTriggerSource,
 		turnIndex?: number,
@@ -729,8 +812,9 @@ export class CompactionCoordinator {
 		} catch {
 			if (this.state.currentCompactionEpoch === epoch) {
 				this.state.clearPendingCompaction();
-				this.state.lastFallbackReason =
-					"safe turn-boundary compaction unavailable";
+				this.recordVerdictFromReason(
+					"safe turn-boundary compaction unavailable",
+				);
 			}
 			return undefined;
 		} finally {
@@ -895,9 +979,12 @@ export class CompactionCoordinator {
 					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
 					: (compatibility.reason ?? undefined),
 			};
-			this.state.lastFallbackReason = headroomDefers
-				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
-				: compatibility.reason;
+			this.recordVerdict(
+				"deferred",
+				headroomDefers
+					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+					: compatibility.reason,
+			);
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 
@@ -951,7 +1038,7 @@ export class CompactionCoordinator {
 			this.state.isCompacting = false;
 			this.state.lastTriggerAuto = false;
 			this.state.clearPendingCompaction();
-			this.state.lastFallbackReason = reason;
+			this.recordVerdict("cancelled", reason);
 			return { cancel: true };
 		};
 		// The lifecycle clears the issued prompt when the attempt settles, so the echo
@@ -1052,7 +1139,12 @@ export class CompactionCoordinator {
 				fallbackReason: attempt.fallbackReason ?? undefined,
 				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
-			this.state.lastFallbackReason = attempt.fallbackReason;
+			this.recordVerdictFromReason(
+				attempt.fallbackReason ?? null,
+				attempt.evidenceTrimmedTurns === undefined
+					? undefined
+					: { evidenceTrimmedTurns: attempt.evidenceTrimmedTurns },
+			);
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 			if (!isCurrent()) return cancelCustom("compaction context changed");
@@ -1083,17 +1175,17 @@ export class CompactionCoordinator {
 		// attempt reported it.
 		const overflowDecline =
 			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
-		this.state.lastFallbackReason =
+		const deferralReason =
 			headroomOverride && overflowDecline
 				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
 				: (attempt.fallbackReason ?? "custom summarization unavailable");
+		this.recordVerdict("deferred", deferralReason);
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",
 			fromExtension: false,
-			fallbackReason: this.state.lastFallbackReason,
-			compatibilityReason:
-				telemetryBase.compatibilityReason ?? this.state.lastFallbackReason,
+			fallbackReason: deferralReason,
+			compatibilityReason: telemetryBase.compatibilityReason ?? deferralReason,
 		};
 		// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
 		// caller treats the same deferral as no compaction this turn. Either way release
@@ -1183,7 +1275,12 @@ export class CompactionCoordinator {
 					? details.compatibilityReason
 					: (pending.compatibilityReason ?? null),
 		};
-		this.state.lastFallbackReason = fallbackReason ?? null;
+		this.recordVerdictFromReason(
+			fallbackReason ?? null,
+			pending.intentEvidenceTrimmedTurns === undefined
+				? undefined
+				: { evidenceTrimmedTurns: pending.intentEvidenceTrimmedTurns },
+		);
 		this.state.lastCompactTime = this.state.lastCompaction.timestamp;
 		this.state.lastInjectedEcho =
 			executionPath === "custom" &&

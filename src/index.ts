@@ -19,6 +19,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyMessages } from "./classify.js";
 import { registerCompactPlusCommands } from "./commands.js";
 import { CompactionCoordinator } from "./compaction-coordinator.js";
+import {
+	COMPACTION_VERDICT_KINDS,
+	type CompactionVerdict,
+	type CompactionVerdictEvidence,
+	type CompactionVerdictKind,
+	compactionVerdictFromReason,
+	compactionVerdictKindForReason,
+	isCompactionVerdict,
+} from "./compaction-verdict.js";
 import { registerCompactPlusEventHandlers } from "./events.js";
 import { createPackageMetadataResolver } from "./package-metadata.js";
 import { saveTelemetryWithDiagnostics } from "./persist.js";
@@ -32,9 +41,16 @@ import type { EffectiveUsage, SummaryInstructionOptions } from "./types.js";
 import { getEffectiveUsage } from "./usage.js";
 
 export {
+	COMPACTION_VERDICT_KINDS,
+	type CompactionVerdict,
+	type CompactionVerdictEvidence,
+	type CompactionVerdictKind,
 	classifyMessages,
+	compactionVerdictFromReason,
+	compactionVerdictKindForReason,
 	type EffectiveUsage,
 	extractCurrentFocus,
+	isCompactionVerdict,
 	type SummaryInstructionOptions,
 };
 
@@ -104,6 +120,7 @@ export const __test__ = {
 	getLastModelKey: () => state.lastModelKey,
 	getLastCompaction: () => state.lastCompaction,
 	getLastFallbackReason: () => state.lastFallbackReason,
+	getLastVerdict: () => state.lastVerdict,
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,
 	getToolOutputPruningState: () => state.toolOutputPruning,
