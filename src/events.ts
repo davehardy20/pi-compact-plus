@@ -42,7 +42,11 @@ export function registerCompactPlusEventHandlers(
 			state.lastCompactTime = persisted.lastCompactTime;
 			state.lastCompactTokens = persisted.lastCompactTokens;
 			state.lastCompaction = persisted.lastCompaction;
-			state.lastFallbackReason = persisted.lastFallbackReason;
+			// The coordinator is the only writer of the decision pair, so a restored reason
+			// cannot appear in status output with no verdict behind it.
+			compactionCoordinator.restoreVerdictFromPersistedReason(
+				persisted.lastFallbackReason,
+			);
 			state.lastInjectedEcho = persisted.lastInjectedEcho;
 			state.lastModelKey = persisted.lastModelKey;
 		}

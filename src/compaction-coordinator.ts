@@ -201,6 +201,16 @@ export class CompactionCoordinator {
 	}
 
 	/**
+	 * Rebuild the session verdict from a reason restored from telemetry at `session_start`.
+	 * The persisted reason is the only decision Compact+ keeps across a restart, so the
+	 * restored verdict is classified from it and `getLastVerdict()` cannot disagree with the
+	 * reason the status output shows.
+	 */
+	restoreVerdictFromPersistedReason(reason: string | null): void {
+		this.recordVerdictFromReason(reason ?? null);
+	}
+
+	/**
 	 * The single writer of the session verdict. `lastFallbackReason` stays the prose view of
 	 * the same decision, so every existing consumer keeps reading the same string.
 	 */
@@ -545,10 +555,14 @@ export class CompactionCoordinator {
 	}
 
 	/**
-	 * Run an entry point and report only the verdict that run recorded.
-	 * Null means the run recorded no decision of its own: it either stopped at a guard that
-	 * writes no reason, or handed the decision to Pi's compaction pipeline, which settles
-	 * later and is readable through `getLastVerdict()`.
+	 * Run an entry point and report the verdict that was latest when its run finished.
+	 * Null means the run changed no verdict: it either stopped at a guard that writes no
+	 * reason, or handed the decision to Pi's compaction pipeline, which settles later and is
+	 * readable through `getLastVerdict()`. Compact+'s compaction is fire-and-forget and Pi
+	 * events can settle while a run awaits (a manual command waits for an idle session), so a
+	 * verdict recorded by another path during this call is reported as this call's result when
+	 * it is also the session's newest decision. Callers that need the decision for one specific
+	 * attempt read `getLastVerdict()` after that attempt settles.
 	 */
 	private async verdictFrom(
 		run: () => Promise<void> | void,
@@ -1275,11 +1289,16 @@ export class CompactionCoordinator {
 					? details.compatibilityReason
 					: (pending.compatibilityReason ?? null),
 		};
-		this.recordVerdictFromReason(
+		// Pi committed a compaction entry, so the session's outcome is a compaction that
+		// happened. Classifying this from the reason alone would flip a deferral recorded
+		// earlier in the same attempt into a contradictory kind; the reason stays as prose.
+		const trimmedTurns = pending.intentEvidenceTrimmedTurns;
+		this.recordVerdict(
+			trimmedTurns === undefined ? "completed" : "trimmed",
 			fallbackReason ?? null,
-			pending.intentEvidenceTrimmedTurns === undefined
+			trimmedTurns === undefined
 				? undefined
-				: { evidenceTrimmedTurns: pending.intentEvidenceTrimmedTurns },
+				: { evidenceTrimmedTurns: trimmedTurns },
 		);
 		this.state.lastCompactTime = this.state.lastCompaction.timestamp;
 		this.state.lastInjectedEcho =

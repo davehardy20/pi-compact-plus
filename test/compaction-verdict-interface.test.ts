@@ -1,7 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { runCustom } = vi.hoisted(() => ({ runCustom: vi.fn() }));
+const { prepareBoundaryCompaction, runCustom } = vi.hoisted(() => ({
+	prepareBoundaryCompaction: vi.fn(),
+	runCustom: vi.fn(),
+}));
 
+vi.mock("../src/boundary-preparation.js", () => ({
+	prepareBoundaryCompaction,
+}));
 vi.mock("../src/compact.js", () => ({ runCustomCompaction: runCustom }));
 vi.mock("../src/persist.js", () => ({
 	loadTelemetryWithDiagnostics: vi.fn(async () => ({
@@ -15,10 +21,17 @@ vi.mock("../src/persist.js", () => ({
 }));
 
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
-import type { CompactionVerdict } from "../src/compaction-verdict.js";
+import {
+	type CompactionVerdict,
+	compactionVerdictKindForReason,
+} from "../src/compaction-verdict.js";
 import { NATIVE_FALLBACK_REASON } from "../src/compatibility.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
+import {
+	SUMMARIZATION_INTENT_EVIDENCE_REASON,
+	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+} from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
 
 /**
@@ -26,10 +39,11 @@ import type { EffectiveUsage } from "../src/types.js";
  *
  * Two guarantees are pinned here. First: what Pi sees is unchanged. The Pi-owned
  * handlers still return exactly `undefined | { cancel: true } | { compaction }` for
- * `session_before_compact` and `BoundaryResult | undefined` for `turn_end`, and the
- * verdict travels only through `getLastVerdict()`. Second: the Compact+-owned entry
- * points return the verdict that call recorded, and return null when it recorded
- * none, so a caller can never mistake an earlier decision for this one's.
+ * `session_before_compact` and `{ entries } | undefined` for `turn_end`, asserted by
+ * exact top-level keys so an extra Pi-visible field cannot slip in, and the verdict
+ * travels only through `getLastVerdict()`. Second: the Compact+-owned entry points
+ * return the newest verdict their run produced and null when the run changed none, so
+ * an earlier decision is never reported as this call's result.
  */
 
 type ExtensionEventContext = Parameters<
@@ -129,7 +143,42 @@ function beforeCompact(
 	);
 }
 
+function boundaryPreparation() {
+	return {
+		isSplitTurn: false,
+		messagesToSummarize: [
+			{ role: "user", content: "Task: repair login." },
+			{ role: "assistant", content: [] },
+		],
+		turnPrefixMessages: [],
+		settings: { enabled: true, keepRecentTokens: 100, reserveTokens: 4096 },
+	};
+}
+
+function boundaryEvent() {
+	return {
+		type: "turn_end",
+		turnIndex: 3,
+		outcome: "completed",
+		message: { role: "assistant", stopReason: "toolUse", content: [] },
+		entries: [],
+		context: {
+			contextEntries: [],
+			contextMessages: [{ role: "user", content: "Task: repair login." }],
+			pendingMessages: [],
+		},
+	} as never;
+}
+
+beforeEach(() => {
+	// Arm the succeeding downstream attempt before every test, so the accepted arms do
+	// not depend on a previous test having run.
+	prepareBoundaryCompaction.mockReturnValue(boundaryPreparation());
+	runCustom.mockResolvedValue({ result: SUMMARY });
+});
+
 afterEach(() => {
+	prepareBoundaryCompaction.mockReset();
 	runCustom.mockReset();
 });
 
@@ -248,11 +297,13 @@ describe("verdict lifetime", () => {
 	it("is cleared when the model changes", async () => {
 		const ctx = createCtx();
 		const { coordinator, state } = createCoordinator();
+		state.resetOnModelChange("model-a");
+		state.selectedMode = "standard";
 		runCustom.mockResolvedValue({ cancel: true });
 		await beforeCompact(ctx, coordinator);
-		state.selectedMode = "standard";
+		expect(coordinator.getLastVerdict()).not.toBeNull();
 
-		state.resetOnModelChange("other-model");
+		state.resetOnModelChange("model-b");
 
 		expect(coordinator.getLastVerdict()).toBeNull();
 	});
@@ -270,7 +321,7 @@ describe("verdict travels with the compaction it describes", () => {
 
 		const result = await beforeCompact(ctx, coordinator);
 
-		expect(result).toMatchObject({ compaction: expect.anything() });
+		expect(Object.keys(result ?? {})).toEqual(["compaction"]);
 		expect(coordinator.getLastVerdict()).toMatchObject({
 			kind: "completed",
 			reason: null,
@@ -290,11 +341,123 @@ describe("verdict travels with the compaction it describes", () => {
 
 		const result = await beforeCompact(ctx, coordinator);
 
-		expect(result).toMatchObject({ compaction: expect.anything() });
+		expect(Object.keys(result ?? {})).toEqual(["compaction"]);
 		expect(coordinator.getLastVerdict()).toMatchObject({
 			kind: "trimmed",
 			reason: "intent evidence was trimmed to fit the summary request",
 			evidenceTrimmedTurns: 3,
+		});
+	});
+});
+
+describe("Pi-owned boundary handler keeps its return shape", () => {
+	it("offers the same boundary entry and exposes the verdict separately", async () => {
+		const ctx = createCtx();
+		const { coordinator } = createCoordinator({ thresholdMode: "percent" });
+
+		const result = await coordinator.maybeAutoCompactAtBoundary(
+			boundaryEvent(),
+			ctx,
+		);
+
+		expect(Object.keys(result ?? {})).toEqual(["entries"]);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "completed",
+			reason: null,
+		});
+	});
+
+	it("returns no boundary result when preparation is unavailable", async () => {
+		const ctx = createCtx();
+		const { coordinator } = createCoordinator({ thresholdMode: "percent" });
+		prepareBoundaryCompaction.mockReturnValue(undefined);
+
+		const result = await coordinator.maybeAutoCompactAtBoundary(
+			boundaryEvent(),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(coordinator.getLastVerdict()).toBeNull();
+	});
+
+	it("returns no boundary result when a guard stops the trigger", async () => {
+		const ctx = createCtx();
+		const { coordinator } = createCoordinator({
+			thresholdMode: "percent",
+			usage: null,
+		});
+
+		const result = await coordinator.maybeAutoCompactAtBoundary(
+			boundaryEvent(),
+			ctx,
+		);
+
+		expect(result).toBeUndefined();
+		expect(prepareBoundaryCompaction).not.toHaveBeenCalled();
+		expect(coordinator.getLastVerdict()).toBeNull();
+	});
+});
+
+describe("restored telemetry cannot disagree with the verdict", () => {
+	it("derives a verdict from a persisted reason", () => {
+		const { coordinator, state } = createCoordinator();
+
+		coordinator.restoreVerdictFromPersistedReason(NATIVE_FALLBACK_REASON);
+
+		expect(state.lastFallbackReason).toBe(NATIVE_FALLBACK_REASON);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: NATIVE_FALLBACK_REASON,
+		});
+	});
+
+	it("derives a completed verdict when the persisted decision dropped nothing", () => {
+		const { coordinator } = createCoordinator();
+
+		coordinator.restoreVerdictFromPersistedReason(null);
+
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "completed",
+			reason: null,
+		});
+	});
+});
+
+describe("live verdict kinds agree with the reason mapping", () => {
+	it("maps every single-path reason to the kind its writer records", () => {
+		const singlePath: Array<[string, string]> = [
+			["compaction aborted", "cancelled"],
+			["compaction context changed", "cancelled"],
+			["custom compaction cancelled", "cancelled"],
+			["custom summarization unavailable", "deferred"],
+			["safe turn-boundary compaction unavailable", "declined"],
+			[NATIVE_FALLBACK_REASON, "deferred"],
+			[SUMMARIZATION_SUSPECT_ESTIMATE_REASON, "deferred"],
+		];
+		for (const [reason, kind] of singlePath) {
+			expect(compactionVerdictKindForReason(reason), reason).toBe(kind);
+		}
+	});
+
+	it("pins the documented override for a reason written on two paths", async () => {
+		// The mapper sees the guard path; the coordinator sees the cancelled attempt.
+		expect(
+			compactionVerdictKindForReason(SUMMARIZATION_INTENT_EVIDENCE_REASON),
+		).toBe("declined");
+		const ctx = createCtx();
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		runCustom.mockResolvedValue({
+			cancel: true,
+			fallbackReason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
+		});
+
+		await beforeCompact(ctx, coordinator);
+
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
 		});
 	});
 });

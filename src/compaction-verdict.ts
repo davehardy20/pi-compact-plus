@@ -15,6 +15,7 @@
  * introduced.
  */
 
+import { NATIVE_FALLBACK_REASON } from "./compatibility.js";
 import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
@@ -88,6 +89,7 @@ const REASON_KINDS: ReadonlyMap<string, CompactionVerdictKind> = new Map([
 	[SUMMARIZATION_INTENT_EVIDENCE_REASON, "declined"],
 	[SUMMARIZATION_EVIDENCE_TRIMMED_REASON, "trimmed"],
 	[SUMMARIZATION_SUSPECT_ESTIMATE_REASON, "deferred"],
+	[NATIVE_FALLBACK_REASON, "deferred"],
 ]);
 
 type ReasonPrefixKind = readonly [string, CompactionVerdictKind];
@@ -98,10 +100,14 @@ const REASON_PREFIX_KINDS: ReadonlyArray<ReasonPrefixKind> = [
 ];
 
 /**
- * Map a reason to its kind. An unmapped non-null reason is treated as `declined`:
- * every reason Compact+ writes that is not a cancel, a trim, or a deferral comes
- * from a path that declined to run its own compaction. The raw reason is always
- * preserved on the verdict, so a mapping gap loses no information.
+ * Map a reason to its kind when the reason is all that is known: a restored telemetry
+ * reason, a status line, or a log line. A reason Compact+ writes on more than one path
+ * (the overflow and intent-evidence reasons appear both on a guard decline and on a
+ * cancelled attempt) is classified here as the guard-path decision, and the coordinator
+ * passes the path's own kind explicitly at those write sites. An unmapped non-null
+ * reason is treated as `declined`: every reason Compact+ writes that is not a cancel, a
+ * trim, or a deferral comes from a path that declined to run its own compaction. The raw
+ * reason is always preserved on the verdict, so a mapping gap loses no information.
  */
 export function compactionVerdictKindForReason(
 	reason: string | null,

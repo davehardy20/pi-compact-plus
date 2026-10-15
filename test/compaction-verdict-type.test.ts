@@ -49,6 +49,7 @@ describe("reason to kind mapping", () => {
 			[SUMMARIZATION_INTENT_EVIDENCE_REASON, "declined"],
 			[SUMMARIZATION_EVIDENCE_TRIMMED_REASON, "trimmed"],
 			[SUMMARIZATION_SUSPECT_ESTIMATE_REASON, "deferred"],
+			[NATIVE_FALLBACK_REASON, "deferred"],
 		];
 		for (const [reason, kind] of expected) {
 			expect(compactionVerdictKindForReason(reason), reason).toBe(kind);
@@ -70,11 +71,15 @@ describe("reason to kind mapping", () => {
 		expect(verdict.reason).toBe("some future refusal");
 	});
 
-	it("keeps compatibility prose out of the decision kinds", () => {
-		// These describe which stream route ran, not whether Compact+ acted.
+	it("keeps compatibility prose out of the decision kinds it does not describe", () => {
+		// The registry route is a routing note recorded as compatibilityReason, never as a
+		// decision, so it reaches the mapper only through the documented default.
 		expect(REGISTRY_STREAM_REASON).not.toBe(NATIVE_FALLBACK_REASON);
 		expect(compactionVerdictKindForReason(REGISTRY_STREAM_REASON)).toBe(
 			"declined",
+		);
+		expect(compactionVerdictKindForReason(NATIVE_FALLBACK_REASON)).toBe(
+			"deferred",
 		);
 	});
 });
