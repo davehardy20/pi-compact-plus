@@ -292,7 +292,8 @@ export class CompactionCoordinator {
 	}
 
 	/** Caller guidance Pi will really append, normalized once for the fast path, the
-	 * measurement, and the verdict key. */
+	 * measurement, the verdict key, and the custom-path ownership strip. Non-string and empty
+	 * guidance normalize to "", which callers treat as no guidance at all. */
 	private callerGuidance(event: SessionBeforeCompactEvent): string {
 		return typeof event.customInstructions === "string"
 			? event.customInstructions
@@ -956,15 +957,19 @@ export class CompactionCoordinator {
 		}
 
 		const epoch = this.state.currentCompactionEpoch;
-		// Only the exact prompt this lifecycle issued is an SDK echo. Caller
-		// guidance, even generated-looking or modified text, is not ours to drop.
-		// The echo is transient, so capture it here: later overflow decisions in this
-		// attempt still need to know which prompt was ours.
+		// Only text this lifecycle issued is ours to remove, and it is removed as a prefix
+		// rather than as a whole string: a modified echo still starts with our prompt, and
+		// forwarding that whole prompt as caller guidance would spend the guidance allowance on
+		// our own boilerplate and truncate whatever the caller appended after it. Guidance we do
+		// not own — prepended, whitespace-modified, or merely similar — stays intact, which means
+		// a whitespace-modified echo is treated as caller-owned and may still be truncated by the
+		// bound.
 		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
+		const guidance = this.callerGuidance(event) || undefined;
 		const customInstructions =
-			event.customInstructions === issuedPrompt
-				? undefined
-				: event.customInstructions;
+			issuedPrompt !== null && guidance?.startsWith(issuedPrompt)
+				? guidance.slice(issuedPrompt.length).trim() || undefined
+				: guidance;
 		this.state.lastIssuedCompactionInstructions = null;
 		// Computed once for this attempt: bounded provider usage headroom that contradicts
 		// an over-window estimate. It decides whether a decline is justified, and it is the

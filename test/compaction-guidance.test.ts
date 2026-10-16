@@ -5,6 +5,7 @@ import { buildSummaryInstructions } from "../src/prompts.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import { STRUCTURED_SUMMARY_TITLE } from "../src/summary-schema.js";
+import type { CurrentFocus } from "../src/types.js";
 import { createMockCtx, createMockPi } from "./fixtures/extension.js";
 
 const { runCustom } = vi.hoisted(() => ({ runCustom: vi.fn() }));
@@ -19,7 +20,21 @@ const focus = {
 	dependencyChain: [],
 };
 
-function fixture() {
+// A reachable focus is longer than the 1600-character caller guidance allowance, so a
+// lifecycle-owned prefix can actually crowd out the text appended after it. Blockers sit at
+// the extractor's own bound: 5 items at the 300-character line cap. With empty blockers the
+// issued prompt is 1578 characters and the loss is not observable.
+const longFocus = {
+	...focus,
+	blockers: Array.from({ length: 5 }, (_, i) =>
+		`blocker ${i}: the login route times out behind the gateway retry loop`.padEnd(
+			300,
+			".",
+		),
+	),
+};
+
+function fixture(currentFocus: CurrentFocus = focus) {
 	const state = new CompactionState();
 	const ctx = createMockCtx({ contextWindow: 100_000 });
 	const pi = createMockPi();
@@ -32,7 +47,7 @@ function fixture() {
 	});
 	runCustom.mockResolvedValue({ fallbackReason: "fixture has no summary" });
 	const issue = (mode: "standard" | "hard" = "standard") => {
-		executeCompaction(mode, focus, state, ctx as never, pi as never);
+		executeCompaction(mode, currentFocus, state, ctx as never, pi as never);
 		return ctx.compact.mock.calls.at(-1)?.[0];
 	};
 	const forward = async (customInstructions: string) => {
@@ -48,6 +63,9 @@ function fixture() {
 			} as never,
 			ctx as never,
 		);
+		// Fail loudly if the custom path was never reached: a missing call otherwise looks
+		// exactly like "guidance was dropped".
+		expect(runCustom.mock.calls.length).toBeGreaterThan(0);
 		return runCustom.mock.calls.at(-1)?.[5].customInstructions;
 	};
 	return { state, issue, forward };
@@ -85,18 +103,92 @@ it.each(["standard", "hard"] as const)(
 	},
 );
 
-it.each(["append", "prepend", "whitespace"])(
-	"preserves caller %s changes",
+it("removes the lifecycle-owned prefix from appended caller guidance", async () => {
+	const f = fixture();
+	const issued = f.issue().customInstructions as string;
+	// Our prompt at the front is ours to drop; the caller's sentence behind it is not, and it
+	// is the only part that still fits the guidance allowance.
+	expect(await f.forward(`${issued}\nPreserve the retry diagnostic.`)).toBe(
+		"Preserve the retry diagnostic.",
+	);
+});
+
+it.each(["prepend", "whitespace"])(
+	"leaves caller %s changes intact",
 	async (kind) => {
 		const f = fixture();
 		const issued = f.issue().customInstructions as string;
 		const changed =
-			kind === "append"
-				? `${issued}\nPreserve the retry diagnostic.`
-				: kind === "prepend"
-					? `Preserve the retry diagnostic.\n${issued}`
-					: ` ${issued}`;
+			kind === "prepend"
+				? `Preserve the retry diagnostic.\n${issued}`
+				: ` ${issued}`;
 		expect(await f.forward(changed)).toBe(changed);
+	},
+);
+
+it("keeps an appended caller instruction when the issued prompt exceeds the guidance allowance", async () => {
+	const f = fixture(longFocus);
+	const issued = f.issue().customInstructions as string;
+	// Precondition: the lifecycle-owned prefix has to be long enough to crowd the suffix out
+	// of the 1600-character allowance, which a reachable focus is.
+	expect(issued.length).toBeGreaterThan(1600);
+
+	const forwarded = await f.forward(
+		`${issued}\nPreserve the retry diagnostic.`,
+	);
+	const rendered = buildSummaryInstructions("standard", longFocus, {
+		customInstructions: forwarded,
+		isSplitTurn: false,
+		turnPrefixCount: 0,
+	});
+
+	// The caller's own words are what the bound must protect. Forwarding our whole prompt as
+	// caller guidance spends the allowance on our boilerplate and drops this sentence.
+	expect(rendered).toContain("Preserve the retry diagnostic.");
+	expect(forwarded).toBe("Preserve the retry diagnostic.");
+});
+
+it("keeps an unowned base prompt and its caller suffix intact", async () => {
+	// A complete prompt supplied directly was never issued by this attempt, so nothing here is
+	// ours to strip even though it is byte-identical to what the lifecycle would have built.
+	const f = fixture();
+	// Arm the custom path without issuing a prompt in this attempt: ownership is one-shot, so
+	// nothing here is ours to strip.
+	f.state.selectedMode = "standard";
+	const supplied = `${buildSummaryInstructions("standard", focus, {
+		isSplitTurn: false,
+		turnPrefixCount: 0,
+	})}\nPreserve the retry diagnostic.`;
+	expect(await f.forward(supplied)).toBe(supplied);
+});
+
+it("truncates a whitespace-modified echo, the documented cost of treating it as caller-owned", async () => {
+	// Leading whitespace breaks the exact-prefix match, so the whole echo re-enters as caller
+	// guidance and the bound spends the allowance on our boilerplate instead of the suffix.
+	const f = fixture(longFocus);
+	const issued = f.issue().customInstructions as string;
+	const changed = ` ${issued}\nPreserve the retry diagnostic.`;
+	expect(issued.length).toBeGreaterThan(1600);
+
+	const forwarded = await f.forward(changed);
+	const rendered = buildSummaryInstructions("standard", longFocus, {
+		customInstructions: forwarded,
+		isSplitTurn: false,
+		turnPrefixCount: 0,
+	});
+	// Mechanism: the echo is forwarded whole, so the guidance block is present but the caller's
+	// sentence is the part that falls off the end.
+	expect(forwarded).toBe(changed);
+	expect(rendered).toContain("<compaction-guidance>");
+	expect(rendered).not.toContain("Preserve the retry diagnostic.");
+});
+
+it.each([42, ""])(
+	"ignores guidance %p that carries no instruction text",
+	async (value) => {
+		const f = fixture();
+		f.state.selectedMode = "standard";
+		expect(await f.forward(value as never)).toBeUndefined();
 	},
 );
 
