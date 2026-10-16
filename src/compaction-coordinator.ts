@@ -964,10 +964,7 @@ export class CompactionCoordinator {
 		// a whitespace-modified echo is treated as caller-owned and may still be truncated by the
 		// bound.
 		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
-		const guidance =
-			typeof event.customInstructions === "string"
-				? event.customInstructions
-				: undefined;
+		const guidance = this.callerGuidance(event) || undefined;
 		const customInstructions =
 			issuedPrompt !== null && guidance?.startsWith(issuedPrompt)
 				? guidance.slice(issuedPrompt.length).trim() || undefined

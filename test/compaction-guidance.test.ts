@@ -164,15 +164,26 @@ it("truncates a whitespace-modified echo, the documented cost of treating it as 
 	// guidance and the bound spends the allowance on our boilerplate instead of the suffix.
 	const f = fixture(longFocus);
 	const issued = f.issue().customInstructions as string;
-	const forwarded = await f.forward(
-		` ${issued}\nPreserve the retry diagnostic.`,
-	);
+	const changed = ` ${issued}\nPreserve the retry diagnostic.`;
+	expect(issued.length).toBeGreaterThan(1600);
+
+	const forwarded = await f.forward(changed);
 	const rendered = buildSummaryInstructions("standard", longFocus, {
 		customInstructions: forwarded,
 		isSplitTurn: false,
 		turnPrefixCount: 0,
 	});
+	// Mechanism: the echo is forwarded whole, so the guidance block is present but the caller's
+	// sentence is the part that falls off the end.
+	expect(forwarded).toBe(changed);
+	expect(rendered).toContain("<compaction-guidance>");
 	expect(rendered).not.toContain("Preserve the retry diagnostic.");
+});
+
+it("ignores guidance that is not a string", async () => {
+	const f = fixture();
+	f.state.selectedMode = "standard";
+	expect(await f.forward(42 as never)).toBeUndefined();
 });
 
 describe("instruction provenance is attempt-scoped", () => {
