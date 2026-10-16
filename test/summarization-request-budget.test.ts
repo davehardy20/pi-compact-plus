@@ -102,9 +102,12 @@ describe("measureSummaryRequestTokens", () => {
 			reserveTokens: 16_384,
 		});
 
-		// Pi renders the summarization conversation through serializeConversation, which keeps
-		// only text blocks, so a megabyte of image data is not part of the request being measured
-		// and must not move the guard's numbers.
+		// Pi renders the summarization conversation through serializeConversation, which drops
+		// image blocks (it keeps user and assistant text, thinking, tool calls, and truncated tool
+		// results), so a megabyte of image data is not part of the request being measured and must
+		// not move the guard's numbers.
+		expect(without).toBeDefined();
+		expect(withImage).toBeDefined();
 		expect(withImage?.transcriptTokens).toBe(without?.transcriptTokens);
 		expect(withImage?.totalTokens).toBe(without?.totalTokens);
 	});

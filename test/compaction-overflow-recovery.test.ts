@@ -1274,12 +1274,13 @@ ${"old context ".repeat(90_000)}`),
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
 		state.selectedMode = null;
-		// Pi renders the summarization conversation through serializeConversation, which keeps
-		// only type "text" blocks, so a megabyte of image data is not part of the request the
-		// guard has to fit. Usage is pushed past the session-fit fast path so the guard actually
-		// measures this cut: if measurement ever scored the image bytes, this cut would be
-		// declined and a summarization request the provider can serve would be cancelled.
-		const imageOnly = (data: string): AgentMessage =>
+		// Pi renders the summarization conversation through serializeConversation, which drops
+		// image blocks (it keeps user and assistant text, thinking, tool calls, and truncated
+		// tool results), so a megabyte of image data is not part of the request the guard has to
+		// fit. Usage is pushed past the session-fit fast path so the guard actually measures this
+		// cut: if measurement ever scored the image bytes, this cut would be declined and a
+		// summarization request the provider can serve would be cancelled.
+		const withImage = (data: string): AgentMessage =>
 			({
 				role: "assistant",
 				content: [
@@ -1288,10 +1289,16 @@ ${"old context ".repeat(90_000)}`),
 				],
 				timestamp: 1,
 			}) as unknown as AgentMessage;
+		const withText = (text: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [{ type: "text", text }],
+				timestamp: 2,
+			}) as unknown as AgentMessage;
 
 		expect(
 			await coordinator.onSessionBeforeCompact(
-				event(ctx, [imageOnly("x".repeat(1_000_000))]),
+				event(ctx, [withImage("x".repeat(1_000_000))]),
 				ctx,
 			),
 		).toBeUndefined();
@@ -1302,6 +1309,15 @@ ${"old context ".repeat(90_000)}`),
 				(call) => call[1] === "warning",
 			).length,
 		).toBe(0);
+
+		// The same fixture with those bytes as text is declined, so the pass above is a
+		// measurement that fitted, not the guard skipping the cut.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [withText("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
 	});
 
 	it("counts image payload in the cut key while measuring only text", async () => {
@@ -1324,9 +1340,9 @@ ${"old context ".repeat(90_000)}`),
 			}) as unknown as AgentMessage;
 
 		// Characterization of the measurement blind spot: Pi renders the summarization
-		// conversation through contentText, which keeps only type "text" blocks, so image bytes
-		// are never sent to the provider and estimateTokens scores an image part at zero. The
-		// overflow below is caused entirely by the text payload.
+		// conversation through serializeConversation, which drops image blocks, so estimateTokens
+		// (which would otherwise score each image at the fixed ESTIMATED_IMAGE_CHARS = 4800) never
+		// sees them. The overflow below is caused entirely by the text payload.
 		expect(
 			await coordinator.onSessionBeforeCompact(
 				event(ctx, [withImage("aGVsbG8=")]),
