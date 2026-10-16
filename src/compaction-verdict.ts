@@ -108,16 +108,17 @@ const REASON_PREFIX_KINDS: ReadonlyArray<ReasonPrefixKind> = [
  * Map a reason to its kind when the reason is all that is known: a restored telemetry
  * reason, a status line, or a log line. A reason Compact+ reaches on exactly one path is
  * mapped to the kind that path records, so a verdict read back from telemetry classifies the
- * same way the live decision did. `SUMMARIZATION_CONTEXT_OVERFLOW_REASON` is the one reason
- * Compact+ reaches on more than one path (a guard decline, a cancelled attempt, or a deferral
- * that still reports the overflow) and is mapped to the guard-decline kind, so a restored
- * verdict can differ from the kind the live attempt recorded; the coordinator passes each
- * path's own kind explicitly at its write sites and the divergence is pinned by test. An
- * unmapped non-null reason is treated as `declined`: every reason Compact+ writes that is not a
- * cancel, a trim, or a deferral comes from a path that declined to run its own compaction, so a
- * future cancel reason added without a table entry would be misclassified here rather than
- * crash. The raw reason is always preserved on the verdict, so a mapping gap loses no
- * information.
+ * same way the live decision did. Two reasons reach Compact+ on more than one path:
+ * `SUMMARIZATION_CONTEXT_OVERFLOW_REASON` (guard decline, cancelled attempt, or a deferral
+ * that still reports the overflow) and `SUMMARIZATION_OUTPUT_CAP_REASON` (cancelled attempt, or
+ * a deferral after the provider confirmed the failure). They are mapped to one of their live
+ * kinds - the guard-decline kind and the cancelled-attempt kind - so a restored verdict can
+ * differ from the kind the live decision recorded; the coordinator passes each path's own kind
+ * explicitly at its write sites and both divergences are pinned by test. An unmapped non-null
+ * reason is treated as `declined`: every reason Compact+ writes that is not a cancel, a trim, or
+ * a deferral comes from a path that declined to run its own compaction, so a future cancel
+ * reason added without a table entry would be misclassified here rather than crash. The raw
+ * reason is always preserved on the verdict, so a mapping gap loses no information.
  */
 export function compactionVerdictKindForReason(
 	reason: string | null,
@@ -177,12 +178,12 @@ export function isCompactionVerdict(
 	if (kind === undefined || !COMPACTION_VERDICT_KINDS.includes(kind)) {
 		return false;
 	}
-	if (candidate.reason !== null) {
-		if (typeof candidate.reason !== "string" || candidate.reason === "") {
-			return false;
-		}
-	} else if (kind !== "accepted") {
-		// Only an accepted compaction can have dropped nothing.
+	// A decision may legitimately carry no prose: an accepted compaction that dropped nothing,
+	// or a deferral whose runtime reported no compatibility reason.
+	if (
+		candidate.reason !== null &&
+		(typeof candidate.reason !== "string" || candidate.reason === "")
+	) {
 		return false;
 	}
 	if (candidate.evidenceTrimmedTurns !== undefined) {

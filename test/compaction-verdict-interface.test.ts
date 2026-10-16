@@ -99,6 +99,7 @@ function createCtx(options?: {
 function createCoordinator(options?: {
 	usage?: EffectiveUsage | null;
 	thresholdMode?: "effective_cap" | "percent";
+	guardNativeCompaction?: boolean;
 }) {
 	const state = new CompactionState();
 	const usage: EffectiveUsage | null =
@@ -109,6 +110,9 @@ function createCoordinator(options?: {
 		thresholdSettings: {
 			...DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
 			thresholdMode: options?.thresholdMode ?? "effective_cap",
+			guardNativeCompaction:
+				options?.guardNativeCompaction ??
+				DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS.guardNativeCompaction,
 		},
 		getEffectiveUsage: () => usage,
 		persistTelemetrySnapshot: vi.fn(),
@@ -444,16 +448,8 @@ function singlePathRows(): MappingRow[] {
 			drive: viaBeforeCompact,
 		},
 		{
-			// The output cap is a provider response failure: it reaches the coordinator only as
-			// a cancelled attempt, never as a guard decline.
-			reason: SUMMARIZATION_OUTPUT_CAP_REASON,
-			arm: customAttempt({
-				cancel: true,
-				fallbackReason: SUMMARIZATION_OUTPUT_CAP_REASON,
-			}),
-			drive: viaBeforeCompact,
-		},
-		{
+			// The intent-evidence overflow is a fail-closed cancel: the attempt cannot send what
+			// it rendered, and no other path writes this reason.
 			reason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
 			arm: customAttempt({
 				cancel: true,
@@ -585,7 +581,42 @@ describe("live verdict kinds agree with the reason mapping", () => {
 		}
 	});
 
-	it("pins the divergence for the reason Compact+ reaches on several paths", async () => {
+	it("pins the divergence for the output-cap reason too", async () => {
+		// The shape src/compact.ts returns when the provider confirms an exhausted output
+		// budget: no result, no cancel, requestOverflow and providerConfirmed set. With
+		// comfortable headroom for Pi's own payload the coordinator defers, so the live kind is
+		// `deferred` while the mapper, reading only the prose, says `cancelled`.
+		const reason = SUMMARIZATION_OUTPUT_CAP_REASON;
+		expect(compactionVerdictKindForReason(reason)).toBe("cancelled");
+
+		const ctx = createCtx();
+		const { coordinator, state } = createCoordinator({
+			// The kill switch is what makes an exhausted output budget a deferral instead of a
+			// cancel: Pi is allowed to try the same cut itself.
+			guardNativeCompaction: false,
+		});
+		state.selectedMode = "standard";
+		runCustom.mockResolvedValue({
+			result: undefined,
+			fallbackReason: reason,
+			requestOverflow: true,
+			providerConfirmed: true,
+		});
+		await beforeCompact(ctx, coordinator);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason,
+		});
+
+		const { coordinator: restored } = createCoordinator();
+		restored.restoreVerdictFromPersistedReason(reason);
+		expect(restored.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason,
+		});
+	});
+
+	it("pins the divergence for the context-overflow reason", async () => {
 		// Live: the attempt was cancelled after it started, so the coordinator recorded a
 		// cancelled attempt. Restored: only the prose survives, and the mapper classifies the
 		// guard decline. Both sides are asserted so the consumer-switching slice cannot treat a

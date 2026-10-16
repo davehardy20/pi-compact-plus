@@ -138,6 +138,9 @@ describe("verdict guard", () => {
 			),
 		).toBe(true);
 		expect(isCompactionVerdict(compactionVerdict("accepted", null))).toBe(true);
+		// A decision may carry no prose: a deferral whose runtime reported no compatibility
+		// reason is well-formed, not a malformed record.
+		expect(isCompactionVerdict({ kind: "deferred", reason: null })).toBe(true);
 	});
 
 	it("rejects values that are not verdicts", () => {
@@ -147,8 +150,6 @@ describe("verdict guard", () => {
 			{ kind: "refused", reason: null },
 			{ kind: "declined", reason: 7 },
 			{ kind: "declined", reason: "" },
-			// Only an accepted compaction may report that it dropped nothing.
-			{ kind: "deferred", reason: null },
 			{ kind: "trimmed", reason: null, evidenceTrimmedTurns: -1 },
 			{ kind: "trimmed", reason: null, evidenceTrimmedTurns: 1.5 },
 			// A trim count belongs to a trimmed verdict only.

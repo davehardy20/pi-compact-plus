@@ -207,11 +207,14 @@ export class CompactionCoordinator {
 	 * reason the status output shows. No reason means no recorded decision: the verdict stays
 	 * null rather than claiming one.
 	 *
-	 * The kind is the mapper's, not the live attempt's. For a reason Compact+ reaches on two
-	 * paths (the request-overflow and intent-evidence reasons) the live kind was `cancelled` on
-	 * the failed-attempt path and this restore reports the guard-path kind, because the path is
+	 * The kind is the mapper's, not the live decision's. Two reasons reach Compact+ on more than
+	 * one path: the context-overflow reason (guard decline, cancelled attempt, or a deferral that
+	 * still reports the overflow) and the output-cap reason (cancelled attempt, or a deferral after
+	 * the provider confirmed the failure). For those, this restore reports the mapper's kind, which
+	 * is one of the live kinds but not necessarily the one that decision had, because the path is
 	 * not persisted. Persisting the kind would need a telemetry schema change, which this slice
-	 * deliberately does not make.
+	 * deliberately does not make. The mapper docstring in src/compaction-verdict.ts names the same
+	 * set.
 	 */
 	restoreVerdictFromPersistedReason(reason: string | null): void {
 		if (reason === null) return;
@@ -566,7 +569,7 @@ export class CompactionCoordinator {
 	 * persisted reason as a verdict; a persisted session that recorded no reason starts with no
 	 * verdict, because inventing `accepted` would claim a decision the telemetry never made.
 	 */
-	getLastVerdict(): CompactionVerdict | null {
+	getLastVerdict(): Readonly<CompactionVerdict> | null {
 		return this.state.lastVerdict;
 	}
 
