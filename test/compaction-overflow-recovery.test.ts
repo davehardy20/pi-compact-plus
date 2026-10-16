@@ -1047,6 +1047,94 @@ ${"old context ".repeat(90_000)}`),
 		).toEqual({ cancel: true });
 	});
 
+	it("keys a deeply nested payload as partial instead of recursing into a stack overflow", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+		// Nested far past what the call stack tolerates. Depth is what has to stop the walk:
+		// without STRUCTURAL_DEPTH_BUDGET the traversal recurses until the stack fails, and
+		// the cut then has no key at all.
+		const nest = (leaf: unknown): unknown => {
+			let value = leaf;
+			for (let index = 0; index < 12_000; index++) value = { nested: value };
+			return value;
+		};
+		const call = (): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "text", text: "x".repeat(1_000_000) },
+					{ type: "toolCall", id: "c1", name: "read", arguments: nest("v") },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+
+		// The partial key is still stable, so the unchanged cut is warned about once even
+		// though its verdict is never reused. Without the depth cap the traversal throws,
+		// the cut loses its key, and this warns a second time.
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+	});
+
+	it("warns for an overflow whose cut it cannot key", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) =>
+					call[1] === "warning" &&
+					typeof call[0] === "string" &&
+					call[0].includes("cancelled"),
+			).length;
+		// Key building enumerates the payload and hits the throwing getter, so this cut has
+		// no key at all. The overflow itself comes from the provider's response, so the guard
+		// still reports it instead of letting the traversal failure escape.
+		const payload = {
+			get boom(): never {
+				throw new Error("payload getter throws on enumeration");
+			},
+		};
+		const call = (): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: payload },
+				],
+				timestamp: 1,
+			}) as unknown as AgentMessage;
+		const cut = event(ctx, [call()]);
+
+		compactMock.mockRejectedValue(new Error(PI_OUTPUT_CAP_FAILURE));
+		expect(await coordinator.onSessionBeforeCompact(cut, ctx)).toEqual({
+			cancel: true,
+		});
+		// A cut with no key has nothing to compare against, so it must not match the "no
+		// notice recorded yet" state and lose its first warning.
+		expect(warnings()).toBe(1);
+
+		state.selectedMode = "standard";
+		expect(await coordinator.onSessionBeforeCompact(cut, ctx)).toEqual({
+			cancel: true,
+		});
+		// Still unkeyable, so it explains itself again rather than deduping against a
+		// sentinel that means "nothing warned about yet".
+		expect(warnings()).toBe(2);
+	});
+
 	it("keeps a manual attempt's bypass when an older attempt settles late", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
