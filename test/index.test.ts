@@ -4742,6 +4742,7 @@ describe("Compact+ lifecycle order", () => {
 		expect(__test__.getLastVerdict()).toBeNull();
 		const issues = __test__.getTelemetryPersistenceIssues();
 		expect(issues).toHaveLength(1);
+		// The diagnostic names the file the rejected record was read from, so the drop is traceable.
 		expect(issues[0]).toMatchObject({
 			operation: "load",
 			code: "invalid-schema",
