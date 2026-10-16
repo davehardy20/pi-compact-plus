@@ -43,6 +43,7 @@ vi.mock("../src/persist.js", () => ({
 		saved: true,
 		issue: null,
 	})),
+	defaultTelemetryPath: () => "/tmp/compact-plus-telemetry.json",
 }));
 
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
@@ -4712,6 +4713,42 @@ describe("Compact+ lifecycle order", () => {
 			(call) => call[0].lastCompactTokens === 0,
 		);
 		expect(matchingCall).toBeDefined();
+	});
+
+	it("restores no verdict and records a diagnostic when the persisted reason fails the guard", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		const sessionStartHandler = pi.events.get("session_start")?.[0];
+		if (!sessionStartHandler) throw new Error("session_start handler missing");
+		// An empty reason is a shape the guard rejects: the mapper would have claimed a decision
+		// the telemetry never really recorded.
+		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			telemetry: {
+				version: 3,
+				lastCompactTime: 123,
+				lastCompactTokens: 456,
+				lastCompaction: null,
+				lastFallbackReason: "",
+				lastInjectedEcho: null,
+				lastModelKey: null,
+			},
+			issue: null,
+		});
+
+		await sessionStartHandler({}, ctx);
+
+		expect(__test__.getLastVerdict()).toBeNull();
+		const issues = __test__.getTelemetryPersistenceIssues();
+		expect(issues).toHaveLength(1);
+		expect(issues[0]).toMatchObject({
+			operation: "load",
+			code: "invalid-schema",
+			path: persist.defaultTelemetryPath(),
+			message:
+				"lastFallbackReason: persisted reason did not match a verdict shape",
+		});
 	});
 
 	it("persists the prose the recorded verdict carries", async () => {

@@ -352,16 +352,8 @@ function getCompactionFallback(
 	return informationalReason(compaction?.fallbackReason ?? null);
 }
 
-function getTopLevelFallback(
-	status: CompactPlusStatus,
-	compactionFallback: string | null,
-): string | null {
-	const topLevel = informationalReason(statusReason(status.lastVerdict));
-	return topLevel && topLevel !== compactionFallback ? topLevel : null;
-}
-
 /**
- * The prose a verdict carries. Status output renders the verdict's reason, so the session's
+ * The prose a verdict carries. Status output renders the verdict's reason once, so the session's
  * fallback line and the typed decision can never disagree.
  */
 function statusReason(
@@ -395,6 +387,7 @@ function hasFallback(
 function formatLastFocusEchoLines(
 	status: CompactPlusStatus,
 	compactionFallback: string | null,
+	verdictFallback: string | null,
 ): string[] {
 	if (status.lastInjectedEcho) {
 		return [
@@ -402,12 +395,7 @@ function formatLastFocusEchoLines(
 			...status.lastInjectedEcho.split("\n").map(formatEchoLine),
 		];
 	}
-	if (
-		hasFallback(
-			compactionFallback,
-			informationalReason(statusReason(status.lastVerdict)),
-		)
-	) {
+	if (hasFallback(compactionFallback, verdictFallback)) {
 		return [
 			"  Last focus echo: (none — last compaction fell back before a custom summary was injected)",
 		];
@@ -423,13 +411,19 @@ function formatLastFocusEchoLines(
 export function formatStatusLines(status: CompactPlusStatus): string[] {
 	const settings = resolveThresholdSettings(status.thresholdSettings);
 	const compactionFallback = getCompactionFallback(status.lastCompaction);
-	const topLevelFallback = getTopLevelFallback(status, compactionFallback);
+	// The verdict's prose is filtered once here and passed to every consumer of it, so the
+	// fallback line and the focus-echo line cannot disagree about what the decision said.
+	const verdictFallback = informationalReason(statusReason(status.lastVerdict));
+	const topLevelFallback =
+		verdictFallback && verdictFallback !== compactionFallback
+			? verdictFallback
+			: null;
 	return [
 		...formatStatusCoreLines(status, settings),
 		...formatNativeUsageDetail(status),
 		...formatTelemetryIssueLines(status.telemetryPersistenceIssues),
 		...formatLastCompactionLines(status.lastCompaction),
 		...formatTopLevelFallback(topLevelFallback),
-		...formatLastFocusEchoLines(status, compactionFallback),
+		...formatLastFocusEchoLines(status, compactionFallback, verdictFallback),
 	];
 }

@@ -116,7 +116,10 @@ export const __test__ = {
 	getLastCompactTokens: () => state.lastCompactTokens,
 	getLastModelKey: () => state.lastModelKey,
 	getLastCompaction: () => state.lastCompaction,
-	getLastVerdict: () => state.lastVerdict,
+	// Same frozen-copy guarantee as `coordinator.getLastVerdict()`: a test reading the extension
+	// surface cannot write through into session state.
+	getLastVerdict: () =>
+		state.lastVerdict ? Object.freeze({ ...state.lastVerdict }) : null,
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,
 	getToolOutputPruningState: () => state.toolOutputPruning,
