@@ -26,10 +26,6 @@ const PERSIST_DIR_MODE = 0o700;
 const PERSIST_FILE_MODE = 0o600;
 
 /** The default telemetry file path, for callers that must attribute a diagnostic to it. */
-export function defaultTelemetryPath(): string {
-	return PERSIST_FILE;
-}
-
 export interface TelemetryPersistenceOptions {
 	filePath?: string;
 	now?: () => Date;
@@ -38,6 +34,8 @@ export interface TelemetryPersistenceOptions {
 export interface LoadTelemetryResult {
 	telemetry: PersistedTelemetry | null;
 	issue: TelemetryPersistenceIssue | null;
+	/** The resolved path the load actually read, so a diagnostic names it directly. */
+	path: string;
 }
 
 export interface SaveTelemetryResult {
@@ -185,9 +183,21 @@ async function ensureDir(
 export async function loadTelemetryWithDiagnostics(
 	options: TelemetryPersistenceOptions = {},
 ): Promise<LoadTelemetryResult> {
-	const { filePath: persistFile, root, issue } = persistPath(options, "load");
-	const pathIssue = issue ?? (await inspectPath(persistFile, root, "load"));
-	if (pathIssue) return { telemetry: null, issue: pathIssue };
+	const { filePath, root, issue } = persistPath(options, "load");
+	const loaded = await loadTelemetryAt(filePath, root, issue, options);
+	// The resolved path travels with the result, so a caller recording a diagnostic names
+	// the file that was actually read instead of re-deriving a default.
+	return { ...loaded, path: filePath };
+}
+
+async function loadTelemetryAt(
+	persistFile: string,
+	root: string,
+	pathIssue: TelemetryPersistenceIssue | null,
+	options: TelemetryPersistenceOptions,
+): Promise<Omit<LoadTelemetryResult, "path">> {
+	const issue = pathIssue ?? (await inspectPath(persistFile, root, "load"));
+	if (issue) return { telemetry: null, issue };
 	try {
 		// O_NOFOLLOW protects the leaf at open time; ancestor swaps remain a
 		// pathname race on platforms without descriptor-relative traversal.

@@ -1136,37 +1136,55 @@ ${"old context ".repeat(90_000)}`),
 		expect(guidanceDigest(a)).toBe(guidanceDigest("A".repeat(1_000_000)));
 	});
 
-	it("cannot see image growth because Pi drops image parts from the request", async () => {
+	it("counts image payload in the cut key while measuring only text", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
 		state.selectedMode = null;
-		const image = (data: string): AgentMessage =>
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+		const withImage = (data: string): AgentMessage =>
 			({
 				role: "assistant",
-				content: [{ type: "image", data, mimeType: "image/png" }],
+				content: [
+					{ type: "text", text: "x".repeat(1_000_000) },
+					{ type: "image", data, mimeType: "image/png" },
+				],
 				timestamp: 1,
 			}) as unknown as AgentMessage;
 
+		// Characterization of the measurement blind spot: Pi renders the summarization
+		// conversation through contentText, which keeps only type "text" blocks, so image bytes
+		// are never sent to the provider and estimateTokens scores an image part at zero. The
+		// overflow below is caused entirely by the text payload.
 		expect(
 			await coordinator.onSessionBeforeCompact(
-				event(ctx, [image("aGVsbG8=")]),
+				event(ctx, [withImage("aGVsbG8=")]),
 				ctx,
 			),
-		).toBeUndefined();
+		).toEqual({ cancel: true });
 
-		// Characterization: Pi renders the summarization conversation through
-		// contentText, which keeps only type "text" blocks, so image bytes are never sent
-		// to the provider and estimateTokens scores an image part at zero. A 1,000,000
-		// character base64 payload therefore cannot make the request overflow, and the
-		// guard correctly leaves it alone. The key still counts the data, so a cut whose
-		// image changed is not judged by a stale verdict.
+		// The unchanged cut reuses the recorded verdict and its notice dedupes.
 		expect(
 			await coordinator.onSessionBeforeCompact(
-				event(ctx, [image("x".repeat(1_000_000))]),
+				event(ctx, [withImage("aGVsbG8=")]),
 				ctx,
 			),
-		).toBeUndefined();
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+
+		// Only the image payload changed. The measurement cannot see those bytes, but the cut
+		// key counts part data length, so this is a different cut: it must be measured fresh
+		// instead of judged by the stale verdict.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [withImage("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(2);
 	});
 
 	it("resets guard state when the registered session_start handler runs", async () => {
@@ -1336,6 +1354,40 @@ ${"old context ".repeat(90_000)}`),
 				(call) => call[1] === "warning",
 			),
 		).toHaveLength(1);
+	});
+
+	it("expires a manual bypass left armed by an attempt Pi never settled", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		// An automatic attempt warns once for the oversized cut and records the notice key.
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
+
+		// Pi never calls back on this manual attempt, so neither onSettled nor the
+		// synchronous-throw catch clears the bypass and manualAttemptInFlight stays armed.
+		compactMock.mockImplementation(() => new Promise(() => {}));
+		await coordinator.handleManualCommand("standard", ctx);
+
+		// A session transition fences the abandoned attempt's callbacks and moves the epoch,
+		// so the stale bypass no longer matches the attempt it is compared against.
+		state.invalidateCompactionCallbacks();
+		state.selectedMode = null;
+
+		// Same unchanged cut in the new session: it dedupes instead of explaining itself. If
+		// the stale bypass were still honoured, this would warn a second time.
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
 	});
 
 	it("resetOverflowState clears the notice dedupe for a new session", async () => {

@@ -352,16 +352,6 @@ function getCompactionFallback(
 	return informationalReason(compaction?.fallbackReason ?? null);
 }
 
-/**
- * The prose a verdict carries. Status output renders the verdict's reason once, so the session's
- * fallback line and the typed decision can never disagree.
- */
-function statusReason(
-	verdict: Readonly<CompactionVerdict> | null,
-): string | null {
-	return verdict?.reason ?? null;
-}
-
 /** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
  * reason is not a fallback. Every status consumer filters it the same way, and the trim is
  * reported on its own line from `intentEvidenceTrimmedTurns` instead. */
@@ -411,9 +401,13 @@ function formatLastFocusEchoLines(
 export function formatStatusLines(status: CompactPlusStatus): string[] {
 	const settings = resolveThresholdSettings(status.thresholdSettings);
 	const compactionFallback = getCompactionFallback(status.lastCompaction);
-	// The verdict's prose is filtered once here and passed to every consumer of it, so the
-	// fallback line and the focus-echo line cannot disagree about what the decision said.
-	const verdictFallback = informationalReason(statusReason(status.lastVerdict));
+	// The verdict carries the prose a status reader needs, filtered once here and passed to
+	// every consumer of it, so the session's fallback line and the focus-echo line cannot
+	// disagree about what the decision said. The verdict is the only source: there is no
+	// separate session reason field to keep in step.
+	const verdictFallback = informationalReason(
+		status.lastVerdict?.reason ?? null,
+	);
 	const topLevelFallback =
 		verdictFallback && verdictFallback !== compactionFallback
 			? verdictFallback

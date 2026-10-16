@@ -75,7 +75,7 @@ describe("Compact+ telemetry persistence", () => {
 
 		const result = await loadTelemetryWithDiagnostics({ filePath });
 
-		expect(result).toEqual({ telemetry: null, issue: null });
+		expect(result).toEqual({ telemetry: null, issue: null, path: filePath });
 	});
 
 	it("loads valid v1, v2, and v3 telemetry", async () => {
@@ -95,6 +95,9 @@ describe("Compact+ telemetry persistence", () => {
 
 			const result = await loadTelemetryWithDiagnostics({ filePath });
 
+			// The result names the file it read, so a caller recording a diagnostic does not
+			// have to re-derive a default path.
+			expect(result.path).toBe(filePath);
 			expect(result.issue).toBeNull();
 			expect(result.telemetry).toMatchObject({
 				version: 3,
