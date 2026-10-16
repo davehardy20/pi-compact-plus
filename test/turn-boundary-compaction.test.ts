@@ -427,7 +427,7 @@ it("rejects stale completion without touching replacement-session state", async 
 	const f = fixture();
 	f.stream.mockImplementation(() => {
 		f.state.reset();
-		f.state.lastFallbackReason = "replacement session";
+		f.state.lastVerdict = { kind: "deferred", reason: "replacement session" };
 		f.state.pendingBoundaryMarker = "replacement marker";
 		const stream = createAssistantMessageEventStream();
 		stream.end({
@@ -439,7 +439,7 @@ it("rejects stale completion without touching replacement-session state", async 
 	});
 	expect(await runBoundary(f)).toBeUndefined();
 	expect(f.state.pendingBoundaryMarker).toBe("replacement marker");
-	expect(f.state.lastFallbackReason).toBe("replacement session");
+	expect(f.state.lastVerdict?.reason).toBe("replacement session");
 });
 
 it("compacts again after a system-bearing prior compaction", async () => {

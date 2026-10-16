@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
+import type { CompactionVerdict } from "./compaction-verdict.js";
 import { registerCompactPlusStatusCommand } from "./extension-status.js";
 import type { PackageMetadataResolver } from "./package-metadata.js";
 import {
@@ -110,7 +111,7 @@ export function registerCompactPlusCommands(
 					isCompacting: state.isCompacting,
 					lastCompactTime: state.lastCompactTime,
 					lastCompaction: state.lastCompaction,
-					lastFallbackReason: state.lastFallbackReason,
+					lastVerdict: compactionCoordinator.getLastVerdict(),
 					lastInjectedEcho: state.lastInjectedEcho,
 					telemetryPersistenceIssues: state.telemetryPersistenceIssues,
 					settings: thresholdSettings,
@@ -158,7 +159,7 @@ export function buildStatusSnapshot(args: {
 	isCompacting: boolean;
 	lastCompactTime: number;
 	lastCompaction: CompactionTelemetry | null;
-	lastFallbackReason: string | null;
+	lastVerdict: Readonly<CompactionVerdict> | null;
 	lastInjectedEcho: string | null;
 	telemetryPersistenceIssues?: TelemetryPersistenceIssue[];
 	settings?: CompactPlusThresholdSettings;
@@ -195,7 +196,7 @@ export function buildStatusSnapshot(args: {
 		cooldownActive: cooldownRemainingMs > 0,
 		cooldownRemainingMs,
 		lastCompaction: args.lastCompaction,
-		lastFallbackReason: args.lastFallbackReason,
+		lastVerdict: args.lastVerdict,
 		lastInjectedEcho: args.lastInjectedEcho,
 		telemetryPersistenceIssues: args.telemetryPersistenceIssues ?? [],
 		thresholdSettings: settings,
@@ -351,12 +352,14 @@ function getCompactionFallback(
 	return informationalReason(compaction?.fallbackReason ?? null);
 }
 
-function getTopLevelFallback(
-	status: CompactPlusStatus,
-	compactionFallback: string | null,
+/**
+ * The prose a verdict carries. Status output renders the verdict's reason once, so the session's
+ * fallback line and the typed decision can never disagree.
+ */
+function statusReason(
+	verdict: Readonly<CompactionVerdict> | null,
 ): string | null {
-	const topLevel = informationalReason(status.lastFallbackReason);
-	return topLevel && topLevel !== compactionFallback ? topLevel : null;
+	return verdict?.reason ?? null;
 }
 
 /** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
@@ -384,6 +387,7 @@ function hasFallback(
 function formatLastFocusEchoLines(
 	status: CompactPlusStatus,
 	compactionFallback: string | null,
+	verdictFallback: string | null,
 ): string[] {
 	if (status.lastInjectedEcho) {
 		return [
@@ -391,12 +395,7 @@ function formatLastFocusEchoLines(
 			...status.lastInjectedEcho.split("\n").map(formatEchoLine),
 		];
 	}
-	if (
-		hasFallback(
-			compactionFallback,
-			informationalReason(status.lastFallbackReason),
-		)
-	) {
+	if (hasFallback(compactionFallback, verdictFallback)) {
 		return [
 			"  Last focus echo: (none — last compaction fell back before a custom summary was injected)",
 		];
@@ -412,13 +411,19 @@ function formatLastFocusEchoLines(
 export function formatStatusLines(status: CompactPlusStatus): string[] {
 	const settings = resolveThresholdSettings(status.thresholdSettings);
 	const compactionFallback = getCompactionFallback(status.lastCompaction);
-	const topLevelFallback = getTopLevelFallback(status, compactionFallback);
+	// The verdict's prose is filtered once here and passed to every consumer of it, so the
+	// fallback line and the focus-echo line cannot disagree about what the decision said.
+	const verdictFallback = informationalReason(statusReason(status.lastVerdict));
+	const topLevelFallback =
+		verdictFallback && verdictFallback !== compactionFallback
+			? verdictFallback
+			: null;
 	return [
 		...formatStatusCoreLines(status, settings),
 		...formatNativeUsageDetail(status),
 		...formatTelemetryIssueLines(status.telemetryPersistenceIssues),
 		...formatLastCompactionLines(status.lastCompaction),
 		...formatTopLevelFallback(topLevelFallback),
-		...formatLastFocusEchoLines(status, compactionFallback),
+		...formatLastFocusEchoLines(status, compactionFallback, verdictFallback),
 	];
 }

@@ -204,7 +204,9 @@ it("Pi 1.0.1: real SDK tool turn -> safe cut -> streamed summary -> echo -> cont
 		ctx,
 	);
 	expect(before).toBeUndefined();
-	expect(state.lastFallbackReason).toContain("No stream-aware provider route");
+	expect(coordinator.getLastVerdict()?.reason).toContain(
+		"No stream-aware provider route",
+	);
 	expect(routed).toHaveBeenCalledTimes(1); // only the explicit native SDK call above streamed
 	const onContext = pi.events.get("context")?.[0];
 	expect(onContext).toBeDefined();

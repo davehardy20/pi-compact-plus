@@ -10,10 +10,13 @@ vi.mock("../src/boundary-preparation.js", () => ({
 }));
 vi.mock("../src/compact.js", () => ({ runCustomCompaction: runCustom }));
 
+import { buildStatusSnapshot, formatStatusLines } from "../src/commands.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import {
 	type CompactionVerdict,
+	compactionVerdictFromReason,
 	compactionVerdictKindForReason,
+	isCompactionVerdict,
 } from "../src/compaction-verdict.js";
 import { NATIVE_FALLBACK_REASON } from "../src/compatibility.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
@@ -137,6 +140,19 @@ function beforeCompact(
 		{ preparation: preparation(), branchEntries: [] } as never,
 		ctx,
 	);
+}
+
+/**
+ * Mirrors the production restore boundary in `src/events.ts`: the persisted prose is mapped to
+ * a verdict, the shape is guarded, and only then does the coordinator record it. A persisted
+ * record with no reason restores nothing.
+ */
+function restorePersistedReason(
+	coordinator: CompactionCoordinator,
+	reason: string | null,
+) {
+	const verdict = reason === null ? null : compactionVerdictFromReason(reason);
+	if (isCompactionVerdict(verdict)) coordinator.restoreVerdict(verdict);
 }
 
 function boundaryPreparation() {
@@ -394,11 +410,10 @@ describe("Pi-owned boundary handler keeps its return shape", () => {
 
 describe("restored telemetry cannot disagree with the verdict", () => {
 	it("derives a verdict from a persisted reason", () => {
-		const { coordinator, state } = createCoordinator();
+		const { coordinator } = createCoordinator();
 
-		coordinator.restoreVerdictFromPersistedReason(NATIVE_FALLBACK_REASON);
+		restorePersistedReason(coordinator, NATIVE_FALLBACK_REASON);
 
-		expect(state.lastFallbackReason).toBe(NATIVE_FALLBACK_REASON);
 		expect(coordinator.getLastVerdict()).toMatchObject({
 			kind: "deferred",
 			reason: NATIVE_FALLBACK_REASON,
@@ -436,7 +451,7 @@ describe("restored telemetry cannot disagree with the verdict", () => {
 		});
 
 		const { coordinator: restored } = createCoordinator();
-		restored.restoreVerdictFromPersistedReason(NATIVE_FALLBACK_REASON);
+		restorePersistedReason(restored, NATIVE_FALLBACK_REASON);
 		expect(restored.getLastVerdict()).toMatchObject({
 			kind: "deferred",
 			reason: NATIVE_FALLBACK_REASON,
@@ -446,9 +461,85 @@ describe("restored telemetry cannot disagree with the verdict", () => {
 	it("records no verdict when the persisted telemetry recorded no reason", () => {
 		const { coordinator } = createCoordinator();
 
-		coordinator.restoreVerdictFromPersistedReason(null);
+		restorePersistedReason(coordinator, null);
 
 		expect(coordinator.getLastVerdict()).toBeNull();
+	});
+});
+
+describe("status output reads the verdict", () => {
+	function statusSnapshot(
+		coordinator: CompactionCoordinator,
+		state: CompactionState,
+	) {
+		return buildStatusSnapshot({
+			usage: HIGH_USAGE,
+			selectedMode: state.selectedMode,
+			isCompacting: false,
+			lastCompactTime: 0,
+			lastCompaction: null,
+			lastVerdict: coordinator.getLastVerdict(),
+			lastInjectedEcho: null,
+		});
+	}
+
+	it("renders the fallback line from the verdict the coordinator recorded", async () => {
+		const ctx = createCtx({ streamRoute: "none" });
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		await beforeCompact(ctx, coordinator);
+
+		const status = statusSnapshot(coordinator, state);
+		expect(formatStatusLines(status)).toContain(
+			`  Last fallback: ${NATIVE_FALLBACK_REASON}`,
+		);
+		// The snapshot carries the decision, not a prose copy, so no consumer can render a
+		// fallback string that no verdict recorded.
+		expect(Object.keys(status)).not.toContain("lastFallbackReason");
+	});
+
+	it("renders no fallback line when the session has recorded no verdict", () => {
+		const { coordinator, state } = createCoordinator();
+
+		expect(
+			formatStatusLines(statusSnapshot(coordinator, state)).join("\n"),
+		).not.toContain("Last fallback:");
+	});
+});
+
+describe("getLastVerdict returns a snapshot a consumer cannot write through", () => {
+	it("rejects mutation of the returned verdict instead of changing session state", async () => {
+		const ctx = createCtx();
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		runCustom.mockResolvedValue({
+			result: SUMMARY,
+			classifiedCounts: { totalMessages: 2 },
+		});
+		await beforeCompact(ctx, coordinator);
+
+		const snapshot = coordinator.getLastVerdict();
+		if (!snapshot) throw new Error("expected a verdict");
+
+		expect(Object.isFrozen(snapshot)).toBe(true);
+		expect(() => {
+			(snapshot as { kind: string }).kind = "cancelled";
+		}).toThrow(TypeError);
+		expect(coordinator.getLastVerdict()).toMatchObject({ kind: "accepted" });
+		expect(state.lastVerdict).toMatchObject({ kind: "accepted" });
+	});
+
+	it("returns a distinct object on every read", () => {
+		const { coordinator, state } = createCoordinator();
+		coordinator.restoreVerdict(
+			compactionVerdictFromReason(NATIVE_FALLBACK_REASON),
+		);
+
+		const first = coordinator.getLastVerdict();
+		const second = coordinator.getLastVerdict();
+		expect(first).not.toBe(second);
+		expect(first).toEqual(second);
+		expect(state.lastVerdict).not.toBe(first);
 	});
 });
 
@@ -647,7 +738,7 @@ describe("live verdict kinds agree with the reason mapping", () => {
 		});
 
 		const { coordinator: restored } = createCoordinator();
-		restored.restoreVerdictFromPersistedReason(reason);
+		restorePersistedReason(restored, reason);
 		expect(restored.getLastVerdict()).toMatchObject({
 			kind: "cancelled",
 			reason,
@@ -673,7 +764,7 @@ describe("live verdict kinds agree with the reason mapping", () => {
 		});
 
 		const { coordinator: restored } = createCoordinator();
-		restored.restoreVerdictFromPersistedReason(reason);
+		restorePersistedReason(restored, reason);
 		expect(restored.getLastVerdict()).toMatchObject({
 			kind: "declined",
 			reason,

@@ -58,7 +58,10 @@ const toolOutputPruning = new ToolOutputPruningCoordinator({
 const telemetryWriter = createTelemetryWriter({
 	snapshot: () => ({
 		lastCompaction: state.lastCompaction,
-		lastFallbackReason: state.lastFallbackReason,
+		// Persisted from the recorded verdict, so what a restored session reads back is the reason
+		// of the decision Compact+ actually made. The writer is constructed before the coordinator
+		// exists, so this reads the state field the coordinator owns rather than the accessor.
+		lastFallbackReason: state.lastVerdict?.reason ?? null,
 		lastInjectedEcho: state.lastInjectedEcho,
 		lastCompactTime: state.lastCompactTime,
 		lastCompactTokens: state.lastCompactTokens,
@@ -113,8 +116,10 @@ export const __test__ = {
 	getLastCompactTokens: () => state.lastCompactTokens,
 	getLastModelKey: () => state.lastModelKey,
 	getLastCompaction: () => state.lastCompaction,
-	getLastFallbackReason: () => state.lastFallbackReason,
-	getLastVerdict: () => state.lastVerdict,
+	// Same frozen-copy guarantee as `coordinator.getLastVerdict()`: a test reading the extension
+	// surface cannot write through into session state.
+	getLastVerdict: () =>
+		state.lastVerdict ? Object.freeze({ ...state.lastVerdict }) : null,
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,
 	getToolOutputPruningState: () => state.toolOutputPruning,

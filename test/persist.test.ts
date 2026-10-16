@@ -3,11 +3,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	compactionVerdictFromReason,
+	isCompactionVerdict,
+} from "../src/compaction-verdict.js";
+import {
 	loadTelemetryWithDiagnostics,
 	saveTelemetryWithDiagnostics,
 } from "../src/persist.js";
 
 const tempDirs: string[] = [];
+
+/** Mirrors the session_start restore boundary in `src/events.ts`: map, guard, then hand over. */
+function guardRestoredVerdict(reason: string | null) {
+	const verdict = reason === null ? null : compactionVerdictFromReason(reason);
+	return isCompactionVerdict(verdict) ? verdict : null;
+}
 
 function makeTempDir(): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compact-plus-persist-"));
@@ -1097,7 +1107,9 @@ describe("Persisted telemetry schema validation", () => {
 			isCompacting: false,
 			lastCompactTime: result.telemetry.lastCompactTime,
 			lastCompaction: result.telemetry.lastCompaction,
-			lastFallbackReason: result.telemetry.lastFallbackReason,
+			// The same boundary the extension runs at session_start: map the persisted prose,
+			// guard the shape, and only then hand it to a consumer.
+			lastVerdict: guardRestoredVerdict(result.telemetry.lastFallbackReason),
 			lastInjectedEcho: result.telemetry.lastInjectedEcho,
 			telemetryPersistenceIssues: result.issue ? [result.issue] : [],
 		});

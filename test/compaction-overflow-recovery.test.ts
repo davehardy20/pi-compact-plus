@@ -179,7 +179,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.selectedMode).toBeNull();
 		expect(state.isCompacting).toBe(false);
 		expect(state.pendingCompaction).toBeNull();
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -213,7 +213,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 		// Provider usage sits comfortably under the window, so the estimate that denied
 		// the request is recorded as a discrepancy rather than passed on as the reason.
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 		);
 
@@ -248,7 +248,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toBeUndefined();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 		);
 
@@ -281,7 +281,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(
 			await coordinator.onSessionBeforeCompact(guided, ctx),
 		).toBeUndefined();
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 		);
 		expect(coordinator.getLastVerdict()).toMatchObject({
@@ -307,7 +307,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(await coordinator.onSessionBeforeCompact(guided, ctx)).toEqual({
 			cancel: true,
 		});
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		// The native guard declining its own summarization is a decline, not a cancel: no
@@ -321,9 +321,13 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 	it("keeps the overflow reason when usage is already near the window", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
+		const persist = vi.fn(async () => {});
 		// Usage leaves no bounded headroom, so the estimate is not treated as a
 		// discrepancy and the real overflow reason is recorded instead.
-		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		const coordinator = createCoordinator(state, {
+			usageTokens: 190_000,
+			persistTelemetrySnapshot: persist,
+		});
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
@@ -336,9 +340,21 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toBeUndefined();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
+		// One decision writes one verdict: the pending record, the verdict and the persisted
+		// telemetry all carry the reason the deferral settled on, and nothing rewrites them
+		// afterwards.
+		expect(state.pendingCompaction?.fallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+			usageTokens: 190_000,
+		});
+		expect(persist).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports the overflow it defers on when the runtime has no stream route", async () => {
@@ -359,12 +375,16 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toEqual({ cancel: true });
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		expect(state.pendingCompaction?.fallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		expect(coordinator.getLastVerdict()).toMatchObject({
 			kind: "deferred",
 			reason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+			usageTokens: 190_000,
 		});
 	});
 
@@ -453,7 +473,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		// The count reaches telemetry, so status can distinguish a trimmed compaction from a
 		// clean one after the session reloads.
 		expect(state.pendingCompaction?.intentEvidenceTrimmedTurns).toBe(1);
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 		);
 
@@ -521,7 +541,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		expect(state.lastOverflowReportedEpoch).toBe(state.currentCompactionEpoch);
@@ -557,7 +577,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.pendingCompaction?.fallbackReason).toBe(
 			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
 		);
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
 		);
 		expect(persist).toHaveBeenCalledTimes(1);
@@ -594,7 +614,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.pendingCompaction?.compatibilityReason).toBe(
 			"No stream-aware provider route is available to the extension; Compact+ is falling back to native Pi compaction.",
 		);
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 		);
 		expect(persist).toHaveBeenCalledTimes(1);
@@ -615,7 +635,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toEqual({ cancel: true });
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -637,7 +657,9 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+		expect(coordinator.getLastVerdict()?.reason).toBe(
+			SUMMARIZATION_OUTPUT_CAP_REASON,
+		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("output token limit"),
 			"warning",
@@ -663,7 +685,9 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+		expect(coordinator.getLastVerdict()?.reason).toBe(
+			SUMMARIZATION_OUTPUT_CAP_REASON,
+		);
 	});
 
 	it("does not let usage headroom rewrite a provider-confirmed overflow", async () => {
@@ -685,7 +709,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		expect(result).toBeUndefined();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -711,7 +735,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -737,7 +761,7 @@ ${"old context ".repeat(90_000)}`),
 
 		expect(result).toBeUndefined();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(state.lastFallbackReason).not.toBe(
+		expect(coordinator.getLastVerdict()?.reason).not.toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -759,7 +783,7 @@ ${"old context ".repeat(90_000)}`),
 		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -781,7 +805,7 @@ ${"old context ".repeat(90_000)}`),
 
 		expect(result).toEqual({ cancel: true });
 		expect(state.pendingCompaction).toBeNull();
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -801,7 +825,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -823,7 +847,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.lastFallbackReason).toBeNull();
+		expect(coordinator.getLastVerdict()).toBeNull();
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
@@ -1222,7 +1246,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -1263,7 +1287,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -1411,7 +1435,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.lastFallbackReason).toBeNull();
+		expect(coordinator.getLastVerdict()).toBeNull();
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
@@ -1427,7 +1451,7 @@ ${"old context ".repeat(90_000)}`),
 		);
 
 		expect(result).toBeUndefined();
-		expect(state.lastFallbackReason).toBeNull();
+		expect(coordinator.getLastVerdict()).toBeNull();
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 });

@@ -17,7 +17,7 @@ const baseStatus = (
 	cooldownActive: false,
 	cooldownRemainingMs: 0,
 	lastCompaction: null,
-	lastFallbackReason: null,
+	lastVerdict: null,
 	lastInjectedEcho: null,
 	telemetryPersistenceIssues: [],
 	...overrides,
@@ -204,7 +204,7 @@ describe("formatStatusLines characterization", () => {
 					thinkingLevel: "minimal",
 					compatibilityReason: "session stream unavailable",
 				},
-				lastFallbackReason: "top-level fallback",
+				lastVerdict: { kind: "deferred", reason: "top-level fallback" },
 				lastInjectedEcho: "Objective: preserve output\nNext: refactor safely",
 			}),
 		);
@@ -248,7 +248,7 @@ describe("formatStatusLines characterization", () => {
 					thinkingLevel: null,
 					compatibilityReason: null,
 				},
-				lastFallbackReason: null,
+				lastVerdict: null,
 			}),
 		);
 
@@ -283,7 +283,10 @@ describe("formatStatusLines characterization", () => {
 					thinkingLevel: null,
 					compatibilityReason: null,
 				},
-				lastFallbackReason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+				lastVerdict: {
+					kind: "trimmed",
+					reason: SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+				},
 			}),
 		);
 
@@ -318,7 +321,7 @@ describe("formatStatusLines characterization", () => {
 					thinkingLevel: null,
 					compatibilityReason: fallbackReason,
 				},
-				lastFallbackReason: fallbackReason,
+				lastVerdict: { kind: "deferred", reason: fallbackReason },
 			}),
 		);
 
@@ -351,7 +354,9 @@ describe("formatStatusLines characterization", () => {
 			}),
 		);
 		const topLevelFallback = formatStatusLines(
-			baseStatus({ lastFallbackReason: "custom compaction failed" }),
+			baseStatus({
+				lastVerdict: { kind: "deferred", reason: "custom compaction failed" },
+			}),
 		);
 
 		expect(completedWithoutEcho.slice(16)).toEqual([

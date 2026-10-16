@@ -2,8 +2,15 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
+import {
+	compactionVerdictFromReason,
+	isCompactionVerdict,
+} from "./compaction-verdict.js";
 import { reorderForPositioning } from "./focus-echo/index.js";
-import { loadTelemetryWithDiagnostics } from "./persist.js";
+import {
+	defaultTelemetryPath,
+	loadTelemetryWithDiagnostics,
+} from "./persist.js";
 import { buildBranchInstructions } from "./prompts.js";
 import { createSessionBranchView } from "./session-branch-view.js";
 import { extractCurrentFocusFromBranch } from "./session-evidence.js";
@@ -42,11 +49,29 @@ export function registerCompactPlusEventHandlers(
 			state.lastCompactTime = persisted.lastCompactTime;
 			state.lastCompactTokens = persisted.lastCompactTokens;
 			state.lastCompaction = persisted.lastCompaction;
-			// The coordinator is the only writer of the decision pair, so a restored reason
-			// cannot appear in status output with no verdict behind it.
-			compactionCoordinator.restoreVerdictFromPersistedReason(
-				persisted.lastFallbackReason,
-			);
+			// The persisted prose is untrusted input at a boundary: map it to a verdict, guard
+			// the shape, then hand it to the coordinator, which stays the only writer. A record
+			// with no reason restores no verdict, because inventing `accepted` would claim a
+			// decision the telemetry never made.
+			const persistedReason = persisted.lastFallbackReason;
+			const restoredVerdict =
+				persistedReason === null
+					? null
+					: compactionVerdictFromReason(persistedReason);
+			if (isCompactionVerdict(restoredVerdict)) {
+				compactionCoordinator.restoreVerdict(restoredVerdict);
+			} else if (persistedReason !== null) {
+				// A persisted reason the guard cannot describe is dropped rather than guessed at,
+				// and the drop is recorded so it is visible in status output instead of silent.
+				state.recordTelemetryPersistenceIssue({
+					operation: "load",
+					code: "invalid-schema",
+					path: defaultTelemetryPath(),
+					message:
+						"lastFallbackReason: persisted reason did not match a verdict shape",
+					timestamp: Date.now(),
+				});
+			}
 			state.lastInjectedEcho = persisted.lastInjectedEcho;
 			state.lastModelKey = persisted.lastModelKey;
 		}

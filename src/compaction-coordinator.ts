@@ -220,15 +220,23 @@ export class CompactionCoordinator {
 	 * and Pi then settles a compaction, the live session's newest verdict is `accepted` while the
 	 * persisted prose restores as `deferred`. That is a limit of what telemetry keeps, not a
 	 * mapping gap.
+	 *
+	 * The caller owns the persistence boundary: it maps the persisted prose to a verdict and
+	 * guards it before handing it here, so this method records a decision rather than parsing
+	 * untrusted input.
 	 */
-	restoreVerdictFromPersistedReason(reason: string | null): void {
-		if (reason === null) return;
-		this.recordVerdictFromReason(reason);
+	restoreVerdict(verdict: Readonly<CompactionVerdict> | null): void {
+		if (!verdict) return;
+		this.recordVerdict(verdict.kind, verdict.reason, {
+			evidenceTrimmedTurns: verdict.evidenceTrimmedTurns,
+			usageTokens: verdict.usageTokens,
+		});
 	}
 
 	/**
-	 * The single writer of the session verdict. `lastFallbackReason` stays the prose view of
-	 * the same decision, so every existing consumer keeps reading the same string.
+	 * The single writer of the session verdict. It is the only place a compaction decision is
+	 * recorded, and no production reader consumes prose any more: the persisted telemetry prose
+	 * and the status fallback line are both derived from the recorded verdict.
 	 */
 	private recordVerdict(
 		kind: CompactionVerdictKind,
@@ -237,7 +245,6 @@ export class CompactionCoordinator {
 	): CompactionVerdict {
 		const verdict = compactionVerdict(kind, reason, evidence);
 		this.state.lastVerdict = verdict;
-		this.state.lastFallbackReason = verdict.reason;
 		return verdict;
 	}
 
@@ -253,12 +260,13 @@ export class CompactionCoordinator {
 		);
 	}
 
-	private cancelAbortedCompaction(): { cancel: true } {
+	/** An aborted attempt carries usage only when the caller had a measurement in scope. */
+	private cancelAbortedCompaction(usageTokens?: number): { cancel: true } {
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
 		this.state.clearPendingCompaction();
-		this.recordVerdict("cancelled", "compaction aborted");
+		this.recordVerdict("cancelled", "compaction aborted", { usageTokens });
 		return { cancel: true };
 	}
 
@@ -519,7 +527,11 @@ export class CompactionCoordinator {
 	}): void {
 		const { event, ctx, reason, warning, manualAttempt, measuredKey, kind } =
 			options;
-		if (kind !== null) this.recordVerdict(kind, reason);
+		if (kind !== null) {
+			this.recordVerdict(kind, reason, {
+				usageTokens: this.getEffectiveUsage(ctx)?.tokens ?? undefined,
+			});
+		}
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
 		const key = this.noticeKey(
@@ -554,7 +566,9 @@ export class CompactionCoordinator {
 				this.state.lastIssuedCompactionInstructions,
 			)
 		) {
-			this.recordVerdictFromReason(SUMMARIZATION_SUSPECT_ESTIMATE_REASON);
+			this.recordVerdictFromReason(SUMMARIZATION_SUSPECT_ESTIMATE_REASON, {
+				usageTokens: this.getEffectiveUsage(ctx)?.tokens ?? undefined,
+			});
 			return undefined;
 		}
 		this.reportSummarizationOverflow({
@@ -820,6 +834,7 @@ export class CompactionCoordinator {
 				this.state.clearPendingCompaction();
 				this.recordVerdictFromReason(
 					"safe turn-boundary compaction unavailable",
+					{ usageTokens: usage.tokens ?? undefined },
 				);
 			}
 			return undefined;
@@ -977,20 +992,22 @@ export class CompactionCoordinator {
 			// resolves to native fallback must not reproduce the failure this change exists to
 			// fix.
 			const headroomDefers = Boolean(deferred.reason) && usageDiscrepancy;
+			// Resolve the reason this decision settles on before anything is written, so the
+			// pending record, the verdict and the persisted telemetry all carry one answer
+			// instead of a provisional reason that a later report overwrites.
+			const overflowReason = headroomDefers ? null : deferred.reason;
+			const decisionReason = headroomDefers
+				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+				: (deferred.reason ?? compatibility.reason);
 			this.state.pendingCompaction = {
 				...telemetryBase,
 				executionPath: "native-fallback",
 				fromExtension: false,
-				fallbackReason: headroomDefers
-					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
-					: (compatibility.reason ?? undefined),
+				fallbackReason: decisionReason ?? undefined,
 			};
-			this.recordVerdict(
-				"deferred",
-				headroomDefers
-					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
-					: compatibility.reason,
-			);
+			this.recordVerdict("deferred", decisionReason, {
+				usageTokens: telemetryBase.usageTokensAtTrigger,
+			});
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 
@@ -1001,15 +1018,17 @@ export class CompactionCoordinator {
 				);
 			}
 
-			if (deferred.reason && !headroomDefers) {
+			if (overflowReason) {
+				// The verdict for this decision is already recorded with the reason it settled
+				// on, so the report only warns: `kind: null` keeps it from writing a second one.
 				this.reportSummarizationOverflow({
 					event,
 					ctx,
-					reason: deferred.reason,
+					reason: overflowReason,
 					warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
 					measuredKey: deferred.key,
-					kind: "deferred",
+					kind: null,
 				});
 				return { cancel: true };
 			}
@@ -1045,7 +1064,9 @@ export class CompactionCoordinator {
 			this.state.isCompacting = false;
 			this.state.lastTriggerAuto = false;
 			this.state.clearPendingCompaction();
-			this.recordVerdict("cancelled", reason);
+			this.recordVerdict("cancelled", reason, {
+				usageTokens: telemetryBase.usageTokensAtTrigger,
+			});
 			return { cancel: true };
 		};
 		// The lifecycle clears the issued prompt when the attempt settles, so the echo
@@ -1060,7 +1081,7 @@ export class CompactionCoordinator {
 		);
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {
-			return this.cancelAbortedCompaction();
+			return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
 		// A trimmed attempt is a success with a smaller payload, not a decline. Say so, and
@@ -1148,12 +1169,13 @@ export class CompactionCoordinator {
 				fallbackReason: attempt.fallbackReason ?? undefined,
 				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
-			this.recordVerdictFromReason(
-				attempt.fallbackReason ?? null,
-				attempt.evidenceTrimmedTurns === undefined
-					? undefined
-					: { evidenceTrimmedTurns: attempt.evidenceTrimmedTurns },
-			);
+			this.recordVerdictFromReason(attempt.fallbackReason ?? null, {
+				// `evidenceTrimmedTurns` is only carried by a `trimmed` verdict, and
+				// finalizeCompactionAttempt records that kind exactly when the attempt dropped
+				// evidence, so passing the count here and there is one coupled decision.
+				evidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
+				usageTokens: telemetryBase.usageTokensAtTrigger,
+			});
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 			if (!isCurrent()) return cancelCustom("compaction context changed");
@@ -1188,7 +1210,9 @@ export class CompactionCoordinator {
 			headroomOverride && overflowDecline
 				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
 				: (attempt.fallbackReason ?? "custom summarization unavailable");
-		this.recordVerdict("deferred", deferralReason);
+		this.recordVerdict("deferred", deferralReason, {
+			usageTokens: telemetryBase.usageTokensAtTrigger,
+		});
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",
