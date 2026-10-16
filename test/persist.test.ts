@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { compactionVerdictFromReason } from "../src/compaction-verdict.js";
 import {
 	loadTelemetryWithDiagnostics,
 	saveTelemetryWithDiagnostics,
@@ -1097,7 +1098,11 @@ describe("Persisted telemetry schema validation", () => {
 			isCompacting: false,
 			lastCompactTime: result.telemetry.lastCompactTime,
 			lastCompaction: result.telemetry.lastCompaction,
-			lastFallbackReason: result.telemetry.lastFallbackReason,
+			// Status reads the verdict, so the test crosses the same boundary the extension does
+			// when it restores telemetry.
+			lastVerdict: compactionVerdictFromReason(
+				result.telemetry.lastFallbackReason,
+			),
 			lastInjectedEcho: result.telemetry.lastInjectedEcho,
 			telemetryPersistenceIssues: result.issue ? [result.issue] : [],
 		});

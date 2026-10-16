@@ -63,7 +63,12 @@ export interface CompactionVerdict {
 	reason: string | null;
 	/** Set only when Compact+ dropped its own optional intent evidence. */
 	evidenceTrimmedTurns?: number;
-	/** Usage in effect when the decision was made (provider-reported or estimated), when measured. */
+	/**
+	 * Usage in effect when the decision was made (provider-reported or estimated). Recorded at
+	 * every write site that had a measurement in scope: the guard cascade, a boundary or session
+	 * attempt, and its cancel or deferral. `cancelAbortedCompaction()` has no context to measure,
+	 * so an aborted verdict carries no usage.
+	 */
 	usageTokens?: number;
 }
 

@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
+import type { CompactionVerdict } from "./compaction-verdict.js";
+
 export type CompactionExecutionPath = "custom" | "native-fallback";
 
 import {
@@ -59,7 +61,12 @@ export interface CompactPlusStatus {
 	cooldownActive: boolean;
 	cooldownRemainingMs: number;
 	lastCompaction: CompactionTelemetry | null;
-	lastFallbackReason: string | null;
+	/**
+	 * The typed outcome of Compact+'s most recent compaction decision, read from the coordinator
+	 * accessor rather than the prose side channel. Status prose is derived from `verdict.reason`,
+	 * so a decision with no verdict renders no fallback line.
+	 */
+	lastVerdict: Readonly<CompactionVerdict> | null;
 	lastInjectedEcho: string | null;
 	telemetryPersistenceIssues: TelemetryPersistenceIssue[];
 	thresholdSettings?: CompactPlusThresholdSettings;

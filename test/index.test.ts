@@ -3494,7 +3494,7 @@ Continue pi-compact-plus-d843 in /Users/dave/tools/pi-compact-plus by tightening
 				executionPath: "custom",
 				fromExtension: true,
 			},
-			lastFallbackReason: null,
+			lastVerdict: null,
 			lastInjectedEcho: null,
 			telemetryPersistenceIssues: [],
 		});
@@ -4139,7 +4139,7 @@ describe("Compact+ constants", () => {
 			isCompacting: false,
 			lastCompactTime: 0,
 			lastCompaction: null,
-			lastFallbackReason: null,
+			lastVerdict: null,
 			lastInjectedEcho: null,
 		});
 		const lines = formatStatusLines(status);

@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import type { CompactionCoordinator } from "./compaction-coordinator.js";
+import type { CompactionVerdict } from "./compaction-verdict.js";
 import { registerCompactPlusStatusCommand } from "./extension-status.js";
 import type { PackageMetadataResolver } from "./package-metadata.js";
 import {
@@ -110,7 +111,7 @@ export function registerCompactPlusCommands(
 					isCompacting: state.isCompacting,
 					lastCompactTime: state.lastCompactTime,
 					lastCompaction: state.lastCompaction,
-					lastFallbackReason: state.lastFallbackReason,
+					lastVerdict: compactionCoordinator.getLastVerdict(),
 					lastInjectedEcho: state.lastInjectedEcho,
 					telemetryPersistenceIssues: state.telemetryPersistenceIssues,
 					settings: thresholdSettings,
@@ -158,7 +159,7 @@ export function buildStatusSnapshot(args: {
 	isCompacting: boolean;
 	lastCompactTime: number;
 	lastCompaction: CompactionTelemetry | null;
-	lastFallbackReason: string | null;
+	lastVerdict: Readonly<CompactionVerdict> | null;
 	lastInjectedEcho: string | null;
 	telemetryPersistenceIssues?: TelemetryPersistenceIssue[];
 	settings?: CompactPlusThresholdSettings;
@@ -195,7 +196,7 @@ export function buildStatusSnapshot(args: {
 		cooldownActive: cooldownRemainingMs > 0,
 		cooldownRemainingMs,
 		lastCompaction: args.lastCompaction,
-		lastFallbackReason: args.lastFallbackReason,
+		lastVerdict: args.lastVerdict,
 		lastInjectedEcho: args.lastInjectedEcho,
 		telemetryPersistenceIssues: args.telemetryPersistenceIssues ?? [],
 		thresholdSettings: settings,
@@ -355,8 +356,18 @@ function getTopLevelFallback(
 	status: CompactPlusStatus,
 	compactionFallback: string | null,
 ): string | null {
-	const topLevel = informationalReason(status.lastFallbackReason);
+	const topLevel = informationalReason(statusReason(status.lastVerdict));
 	return topLevel && topLevel !== compactionFallback ? topLevel : null;
+}
+
+/**
+ * The prose a verdict carries. Status output renders the verdict's reason, so the session's
+ * fallback line and the typed decision can never disagree.
+ */
+function statusReason(
+	verdict: Readonly<CompactionVerdict> | null,
+): string | null {
+	return verdict?.reason ?? null;
 }
 
 /** A trimmed attempt is a compaction that succeeded with a smaller payload, so its
@@ -394,7 +405,7 @@ function formatLastFocusEchoLines(
 	if (
 		hasFallback(
 			compactionFallback,
-			informationalReason(status.lastFallbackReason),
+			informationalReason(statusReason(status.lastVerdict)),
 		)
 	) {
 		return [

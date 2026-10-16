@@ -321,9 +321,13 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 	it("keeps the overflow reason when usage is already near the window", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
+		const persist = vi.fn(async () => {});
 		// Usage leaves no bounded headroom, so the estimate is not treated as a
 		// discrepancy and the real overflow reason is recorded instead.
-		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		const coordinator = createCoordinator(state, {
+			usageTokens: 190_000,
+			persistTelemetrySnapshot: persist,
+		});
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
 
@@ -339,6 +343,17 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
+		// One decision writes one verdict: the pending record, the verdict and the persisted
+		// telemetry all carry the reason the deferral settled on, and nothing rewrites them
+		// afterwards.
+		expect(state.pendingCompaction?.fallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		});
+		expect(persist).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports the overflow it defers on when the runtime has no stream route", async () => {
@@ -360,6 +375,9 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(result).toEqual({ cancel: true });
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		expect(state.pendingCompaction?.fallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 		expect(coordinator.getLastVerdict()).toMatchObject({

@@ -58,7 +58,9 @@ const toolOutputPruning = new ToolOutputPruningCoordinator({
 const telemetryWriter = createTelemetryWriter({
 	snapshot: () => ({
 		lastCompaction: state.lastCompaction,
-		lastFallbackReason: state.lastFallbackReason,
+		// Persisted from the verdict, not from the prose mirror, so what a restored session
+		// reads back is the reason of the decision Compact+ actually made.
+		lastFallbackReason: state.lastVerdict?.reason ?? null,
 		lastInjectedEcho: state.lastInjectedEcho,
 		lastCompactTime: state.lastCompactTime,
 		lastCompactTokens: state.lastCompactTokens,
