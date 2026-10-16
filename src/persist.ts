@@ -25,6 +25,11 @@ const PERSIST_FILE = join(PERSIST_DIR, "compact-plus-telemetry.json");
 const PERSIST_DIR_MODE = 0o700;
 const PERSIST_FILE_MODE = 0o600;
 
+/** The default telemetry file path, for callers that must attribute a diagnostic to it. */
+export function defaultTelemetryPath(): string {
+	return PERSIST_FILE;
+}
+
 export interface TelemetryPersistenceOptions {
 	filePath?: string;
 	now?: () => Date;

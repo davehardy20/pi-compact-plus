@@ -58,8 +58,9 @@ const toolOutputPruning = new ToolOutputPruningCoordinator({
 const telemetryWriter = createTelemetryWriter({
 	snapshot: () => ({
 		lastCompaction: state.lastCompaction,
-		// Persisted from the verdict, not from the prose mirror, so what a restored session
-		// reads back is the reason of the decision Compact+ actually made.
+		// Persisted from the recorded verdict, so what a restored session reads back is the reason
+		// of the decision Compact+ actually made. The writer is constructed before the coordinator
+		// exists, so this reads the state field the coordinator owns rather than the accessor.
 		lastFallbackReason: state.lastVerdict?.reason ?? null,
 		lastInjectedEcho: state.lastInjectedEcho,
 		lastCompactTime: state.lastCompactTime,
