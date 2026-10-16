@@ -1269,6 +1269,38 @@ ${"old context ".repeat(90_000)}`),
 		expect(guidanceDigest(a)).toBe(guidanceDigest("A".repeat(1_000_000)));
 	});
 
+	it("does not cancel a cut that is oversized only in image bytes", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		state.selectedMode = null;
+		// Pi renders the summarization conversation through contentText, which keeps only type
+		// "text" blocks, so a megabyte of image data is not part of the request the guard has
+		// to fit. If measurement ever started scoring image parts, this cut would be declined
+		// and a summarization request that the provider can actually serve would be cancelled.
+		const imageOnly = (data: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "text", text: "small task" },
+					{ type: "image", data, mimeType: "image/png" },
+				],
+				timestamp: 1,
+			}) as unknown as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [imageOnly("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toBeUndefined();
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length,
+		).toBe(0);
+	});
+
 	it("counts image payload in the cut key while measuring only text", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
