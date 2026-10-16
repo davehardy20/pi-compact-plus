@@ -21,16 +21,15 @@ const focus = {
 };
 
 // A reachable focus is longer than the 1600-character caller guidance allowance, so a
-// lifecycle-owned prefix can actually crowd out the text appended after it. Blockers use the
-// same per-item cap and count the production extractor applies (5 items, 300 characters
-// each). With empty blockers the issued prompt is 1578 characters and the loss is not
-// observable.
+// lifecycle-owned prefix can actually crowd out the text appended after it. Blockers sit at
+// the extractor's own bound: 5 items at the 300-character line cap. With empty blockers the
+// issued prompt is 1578 characters and the loss is not observable.
 const longFocus = {
 	...focus,
 	blockers: Array.from({ length: 5 }, (_, i) =>
-		`blocker ${i}: the login route times out behind the gateway retry loop`.slice(
-			0,
+		`blocker ${i}: the login route times out behind the gateway retry loop`.padEnd(
 			300,
+			".",
 		),
 	),
 };
@@ -158,6 +157,22 @@ it("keeps an unowned base prompt and its caller suffix intact", async () => {
 		turnPrefixCount: 0,
 	})}\nPreserve the retry diagnostic.`;
 	expect(await f.forward(supplied)).toBe(supplied);
+});
+
+it("truncates a whitespace-modified echo, the documented cost of treating it as caller-owned", async () => {
+	// Leading whitespace breaks the exact-prefix match, so the whole echo re-enters as caller
+	// guidance and the bound spends the allowance on our boilerplate instead of the suffix.
+	const f = fixture(longFocus);
+	const issued = f.issue().customInstructions as string;
+	const forwarded = await f.forward(
+		` ${issued}\nPreserve the retry diagnostic.`,
+	);
+	const rendered = buildSummaryInstructions("standard", longFocus, {
+		customInstructions: forwarded,
+		isSplitTurn: false,
+		turnPrefixCount: 0,
+	});
+	expect(rendered).not.toContain("Preserve the retry diagnostic.");
 });
 
 describe("instruction provenance is attempt-scoped", () => {

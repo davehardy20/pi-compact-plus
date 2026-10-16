@@ -964,12 +964,14 @@ export class CompactionCoordinator {
 		// a whitespace-modified echo is treated as caller-owned and may still be truncated by the
 		// bound.
 		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
+		const guidance =
+			typeof event.customInstructions === "string"
+				? event.customInstructions
+				: undefined;
 		const customInstructions =
-			issuedPrompt !== null &&
-			event.customInstructions?.startsWith(issuedPrompt)
-				? event.customInstructions.slice(issuedPrompt.length).trim() ||
-					undefined
-				: event.customInstructions;
+			issuedPrompt !== null && guidance?.startsWith(issuedPrompt)
+				? guidance.slice(issuedPrompt.length).trim() || undefined
+				: guidance;
 		this.state.lastIssuedCompactionInstructions = null;
 		// Computed once for this attempt: bounded provider usage headroom that contradicts
 		// an over-window estimate. It decides whether a decline is justified, and it is the
