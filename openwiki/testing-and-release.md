@@ -22,9 +22,9 @@ npx vitest run test/focus-echo              # All focus-echo tests (by pattern)
 ## Mutation testing
 
 - `npm run mutation` runs Stryker (`@stryker-mutator/core` + `@stryker-mutator/vitest-runner`, both pinned) over `src/**/*.ts` using `stryker.config.json`.
-- It is a local gate, not part of `pr-checks-node.yml`: a full run mutates ~10k sites in ~16 min on a 12-core machine (`concurrency: "100%"`). Scope it while iterating with `npx stryker run --mutate src/<file>.ts`.
+- It is a local gate, not part of `pr-checks-node.yml`: a full run mutates ~10k sites in 14m53s on a 12-core machine (`concurrency: "100%"`), the run recorded in `test/fixtures/mutation-baseline.json`. Scope it while iterating with `npx stryker run --mutate src/<file>.ts`.
 - `thresholds.break` (62) is this repository's own floor and `Timeout` counts as detected. The measured baseline it was derived from is tracked in `test/fixtures/mutation-baseline.json`; re-measure and update that file before moving the floor.
-- `reports/mutation/mutation.json` is the machine-readable report (the `html` reporter embeds no JSON). Reports and scratch trees land in `reports/` and `.stryker-tmp/`, both gitignored.
+- `reports/mutation/mutation.json` is the machine-readable report (the `html` reporter embeds no JSON). Stryker's own default reporter paths are used, so no `htmlReporter`/`jsonReporter` override is needed. Reports and scratch trees land in `reports/` and `.stryker-tmp/`, both gitignored, and `vitest.config.ts` excludes `.stryker-tmp` so sandbox copies never run as test suites.
 - `test/stryker-config.test.ts` validates the config against the installed Stryker schemas at every nesting level, which catches renamed keys such as `breakAt` (Stryker 10 uses `thresholds.break`), and fails if the floor rises above the recorded baseline.
 
 ## Test file map

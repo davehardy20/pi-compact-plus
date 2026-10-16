@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { configDefaults } from "vitest/config";
 
 type Json = Record<string, unknown>;
 type SchemaNode = {
@@ -7,6 +8,7 @@ type SchemaNode = {
 	type?: string | string[];
 	properties?: Record<string, SchemaNode>;
 	definitions?: Record<string, SchemaNode>;
+	$defs?: Record<string, SchemaNode>;
 	additionalProperties?: boolean | SchemaNode;
 	oneOf?: SchemaNode[];
 	anyOf?: SchemaNode[];
@@ -46,20 +48,35 @@ function mergedSchema(): SchemaNode {
 	const core = readSchema(coreSchemaPath, "Stryker core schema");
 	const runner = readSchema(vitestSchemaPath, "Stryker vitest runner schema");
 
+	// Both `definitions` (draft-07) and `$defs` (2019-09) may appear in a Stryker schema,
+	// and each package may carry its own. Merging only the core `definitions` would silently
+	// drop a runner-local or `$defs` reference target if a schema moves to the newer keyword.
 	return {
 		properties: { ...(core.properties ?? {}), ...(runner.properties ?? {}) },
-		definitions: core.definitions ?? {},
+		definitions: { ...(core.definitions ?? {}), ...(runner.definitions ?? {}) },
+		$defs: { ...(core.$defs ?? {}), ...(runner.$defs ?? {}) },
 	};
 }
 
-function resolveRef(node: SchemaNode, root: SchemaNode, depth = 0): SchemaNode {
-	if (!node.$ref || depth > 10) return node;
-	const segments = node.$ref.replace(/^#\//, "").split("/");
+/**
+ * Resolves a local JSON-Schema reference, failing closed: an unresolvable `$ref` is
+ * reported as an issue instead of collapsing to an empty node that validates anything.
+ */
+function resolveRef(
+	node: SchemaNode,
+	root: SchemaNode,
+	depth = 0,
+): { node: SchemaNode; unresolvedRef: string | null } {
+	if (!node.$ref) return { node, unresolvedRef: null };
+	const ref = node.$ref;
+	if (depth > 10)
+		return { node: {}, unresolvedRef: `${ref} (reference chain too deep)` };
 	let target: unknown = root;
-	for (const segment of segments) {
+	for (const segment of ref.replace(/^#\//, "").split("/")) {
 		target = (target as Record<string, unknown>)?.[segment];
+		if (target === undefined) return { node: {}, unresolvedRef: ref };
 	}
-	return resolveRef((target ?? {}) as SchemaNode, root, depth + 1);
+	return resolveRef(target as SchemaNode, root, depth + 1);
 }
 
 function declaredTypes(node: SchemaNode): string[] {
@@ -83,7 +100,11 @@ function schemaIssues(
 	root: SchemaNode,
 	path: string,
 ): string[] {
-	const node = resolveRef(rawNode, root, 0);
+	const resolved = resolveRef(rawNode, root, 0);
+	if (resolved.unresolvedRef) {
+		return [`${path}: unresolvable $ref ${resolved.unresolvedRef}`];
+	}
+	const node = resolved.node;
 	const issues: string[] = [];
 	const branches = node.oneOf ?? node.anyOf;
 
@@ -246,6 +267,10 @@ describe("stryker mutation config", () => {
 
 		expect(devDeps["@stryker-mutator/core"]).toMatch(exactPin);
 		expect(devDeps["@stryker-mutator/vitest-runner"]).toMatch(exactPin);
+		// The schemas read below live in @stryker-mutator/api, which is otherwise only a
+		// transitive dependency. A CI-gating test must not depend on an undeclared package's
+		// internal layout, so the package carrying those schemas is declared at the same pin.
+		expect(devDeps["@stryker-mutator/api"]).toMatch(exactPin);
 		expect(scripts.mutation).toBe("stryker run");
 	});
 
@@ -256,5 +281,94 @@ describe("stryker mutation config", () => {
 
 		expect(lines).toContain("reports/");
 		expect(lines).toContain(".stryker-tmp/");
+	});
+
+	it("keeps Stryker sandbox copies out of the resolved Vitest config", async () => {
+		// Asserted on the resolved config rather than on config source text: an `exclude` that
+		// replaces Vitest's defaults would pass a text check while silently dropping `**/.git/**`.
+		const { default: vitestConfig } = await import("../vitest.config.js");
+		const testExclude =
+			(vitestConfig?.test as { exclude?: string[] })?.exclude ?? [];
+		const coverageExclude =
+			(vitestConfig?.test as { coverage?: { exclude?: string[] } })?.coverage
+				?.exclude ?? [];
+
+		for (const pattern of configDefaults.exclude) {
+			expect(testExclude).toContain(pattern);
+		}
+		expect(testExclude).toContain("**/.stryker-tmp/**");
+		expect(coverageExclude).toContain("**/.stryker-tmp/**");
+	});
+
+	it("keeps the recorded baseline consistent with Stryker's own scoring terms", async () => {
+		// The floor is checked against headlineScore, so the fixture must not be able to drift
+		// from its own mutant counts. Scored from Stryker's terms instead of totalMutants: the
+		// score denominator is the mutants that were actually run and reported, so a future
+		// regeneration that produces compileErrors, ignored or pending mutants cannot make this
+		// guard fail for the wrong reason.
+		const baseline = readJson(baselinePath) as Record<string, number>;
+		const count = (key: string) => baseline[key] ?? 0;
+		const categories = [
+			"killed",
+			"timeout",
+			"survived",
+			"noCoverage",
+			"runtimeErrors",
+			"compileErrors",
+			"ignoreListed",
+			"pending",
+		];
+		const detected = count("killed") + count("timeout");
+		const scored = detected + count("survived") + count("noCoverage");
+
+		expect(categories.reduce((total, key) => total + count(key), 0)).toBe(
+			baseline.totalMutants,
+		);
+		expect((100 * detected) / scored).toBeCloseTo(baseline.headlineScore, 2);
+		expect((100 * detected) / (detected + count("survived"))).toBeCloseTo(
+			baseline.coveredScore,
+			2,
+		);
+
+		// Provenance, not just arithmetic: the recorded numbers must belong to the tool and
+		// config this repository actually pins.
+		const pkg = readJson(new URL("../package.json", import.meta.url));
+		const devDeps = pkg.devDependencies as Record<string, string>;
+		const config = readJson(configPath);
+
+		expect(String(baseline.strykerVersion)).toBe(
+			devDeps["@stryker-mutator/core"],
+		);
+		expect(String(baseline.concurrency)).toBe(String(config.concurrency));
+		expect(String(baseline.coverageAnalysis)).toBe(
+			String(config.coverageAnalysis),
+		);
+	});
+
+	it("reports an unresolvable $ref instead of validating nothing", () => {
+		// A dangling reference used to collapse to an empty node, which accepts any value:
+		// a schema the validator cannot read must fail closed, not pass silently.
+		const root: SchemaNode = {
+			properties: { concurrency: { $ref: "#/definitions/NotDefined" } },
+			definitions: { other: { type: "number" } },
+		};
+
+		expect(schemaIssues({ concurrency: 4 }, root, root, "")).toEqual([
+			"concurrency: unresolvable $ref #/definitions/NotDefined",
+		]);
+	});
+
+	it("resolves $defs reference targets", () => {
+		// Stryker's own schemas use `definitions` today, but the validator must not lose a
+		// reference target if a schema switches to the newer `$defs` keyword.
+		const root: SchemaNode = {
+			properties: { concurrency: { $ref: "#/$defs/Percent" } },
+			$defs: { Percent: { type: "integer", minimum: 0, maximum: 100 } },
+		};
+
+		expect(schemaIssues({ concurrency: 50 }, root, root, "")).toEqual([]);
+		expect(schemaIssues({ concurrency: 110 }, root, root, "")).toEqual([
+			"concurrency: must be <= 100",
+		]);
 	});
 });

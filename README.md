@@ -481,9 +481,9 @@ npm run package:check
 
 `npm run mutation` runs Stryker with the Vitest runner over `src/**/*.ts`, as
 configured in `stryker.config.json`. It is a local gate rather than part of the PR
-checks job: a full run mutates about 10k sites and takes roughly 16 minutes on a 12-core
-machine (`concurrency: "100%"`), so scope it while iterating with
-`npx stryker run --mutate src/<file>.ts`.
+checks job: a full run mutates about 10k sites and took 14m53s on a 12-core machine
+(`concurrency: "100%"`), the run recorded in `test/fixtures/mutation-baseline.json`, so
+scope it while iterating with `npx stryker run --mutate src/<file>.ts`.
 
 `coverageAnalysis` is `off`, so Stryker does not use coverage data to pick which test
 may kill a mutant; the Vitest runner still applies Vitest related mode (its default) to

@@ -12,7 +12,5 @@
 		"low": 62,
 		"break": 62
 	},
-	"reporters": ["clear-text", "progress", "html", "json"],
-	"htmlReporter": { "fileName": "reports/mutation/mutation.html" },
-	"jsonReporter": { "fileName": "reports/mutation/mutation.json" }
+	"reporters": ["clear-text", "progress", "html", "json"]
 }
