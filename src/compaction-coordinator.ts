@@ -499,19 +499,21 @@ export class CompactionCoordinator {
 
 	/**
 	 * Warn at most once for an unchanged cut, and record the decision the report belongs to.
-	 * `kind` is the caller's own decision: `null` means the caller writes the verdict itself
-	 * (the cancel paths do), so exactly one verdict is written per decision instead of a
-	 * transient kind that the decision never had.
+	 * `kind` is the caller's own decision: `null` means the caller writes the verdict itself (the
+	 * cancel paths call `cancelCustom` right after), so exactly one verdict is written per
+	 * decision instead of a transient kind that the decision never had.
 	 */
-	private reportSummarizationOverflow(
-		event: SessionBeforeCompactEvent,
-		ctx: ExtensionEventContext,
-		reason: string,
-		warning: string,
-		manualAttempt: boolean,
-		measuredKey: string | null,
-		kind: CompactionVerdictKind | null,
-	): void {
+	private reportSummarizationOverflow(options: {
+		event: SessionBeforeCompactEvent;
+		ctx: ExtensionEventContext;
+		reason: string;
+		warning: string;
+		manualAttempt: boolean;
+		measuredKey: string | null;
+		kind: CompactionVerdictKind | null;
+	}): void {
+		const { event, ctx, reason, warning, manualAttempt, measuredKey, kind } =
+			options;
 		if (kind !== null) this.recordVerdict(kind, reason);
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
@@ -550,15 +552,15 @@ export class CompactionCoordinator {
 			this.recordVerdictFromReason(SUMMARIZATION_SUSPECT_ESTIMATE_REASON);
 			return undefined;
 		}
-		this.reportSummarizationOverflow(
+		this.reportSummarizationOverflow({
 			event,
 			ctx,
 			reason,
-			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+			warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 			manualAttempt,
-			key,
-			"declined",
-		);
+			measuredKey: key,
+			kind: "declined",
+		});
 		return { cancel: true };
 	}
 
@@ -568,6 +570,11 @@ export class CompactionCoordinator {
 	 * Null until this session records one. A session restored from telemetry restores a
 	 * persisted reason as a verdict; a persisted session that recorded no reason starts with no
 	 * verdict, because inventing `accepted` would claim a decision the telemetry never made.
+	 *
+	 * It can also be older than the newest compaction: a Pi-native compaction Compact+ did not
+	 * settle records nothing, so the previous verdict stays in place. A consumer that needs the
+	 * outcome of a specific compaction reads it after that compaction settles, not simply after
+	 * an entry point returns.
 	 */
 	getLastVerdict(): Readonly<CompactionVerdict> | null {
 		return this.state.lastVerdict;
@@ -986,15 +993,15 @@ export class CompactionCoordinator {
 			}
 
 			if (deferred.reason && !headroomDefers) {
-				this.reportSummarizationOverflow(
+				this.reportSummarizationOverflow({
 					event,
 					ctx,
-					deferred.reason,
-					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+					reason: deferred.reason,
+					warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
-					deferred.key,
-					"deferred",
-				);
+					measuredKey: deferred.key,
+					kind: "deferred",
+				});
 				return { cancel: true };
 			}
 			// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
@@ -1107,17 +1114,18 @@ export class CompactionCoordinator {
 				if (nativeOverflow && headroomOverride) nativeOverflow = null;
 			}
 			if (nativeOverflow) {
-				this.reportSummarizationOverflow(
+				this.reportSummarizationOverflow({
 					event,
 					ctx,
-					nativeOverflow,
-					nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
-						? SUMMARIZATION_OUTPUT_CAP_WARNING
-						: SUMMARIZATION_OVERFLOW_WARNING,
+					reason: nativeOverflow,
+					warning:
+						nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
+							? SUMMARIZATION_OUTPUT_CAP_WARNING
+							: SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
-					nativeOverflowKey,
-					null,
-				);
+					measuredKey: nativeOverflowKey,
+					kind: null,
+				});
 				return cancelCustom(nativeOverflow);
 			}
 			// Otherwise Pi's separate requests are estimated to fit: fall through to
@@ -1208,15 +1216,15 @@ export class CompactionCoordinator {
 		// to an estimate-driven context overflow.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
 		if (fallback.reason && !headroomOverride) {
-			this.reportSummarizationOverflow(
+			this.reportSummarizationOverflow({
 				event,
 				ctx,
-				fallback.reason,
-				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+				reason: fallback.reason,
+				warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 				manualAttempt,
-				fallback.key,
-				null,
-			);
+				measuredKey: fallback.key,
+				kind: null,
+			});
 			return cancelCustom(fallback.reason);
 		}
 

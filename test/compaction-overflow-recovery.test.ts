@@ -284,6 +284,10 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 		);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+		});
 	});
 
 	it("keeps the native-guard decline when the guidance is not Compact+'s own", async () => {
@@ -306,6 +310,12 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
+		// The native guard declining its own summarization is a decline, not a cancel: no
+		// Compact+ attempt was running when the decision was made.
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "declined",
+			reason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		});
 	});
 
 	it("keeps the overflow reason when usage is already near the window", async () => {
@@ -329,6 +339,33 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastFallbackReason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
+	});
+
+	it("reports the overflow it defers on when the runtime has no stream route", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		// Usage leaves no bounded headroom, so the measurement is passed on as the reason
+		// rather than relabelled as a discrepancy.
+		const coordinator = createCoordinator(state, { usageTokens: 190_000 });
+		state.selectedMode = "standard";
+		// No Pi stream function and no registry streamSimple: the runtime resolves to native
+		// fallback, and the deferral still has to say why the cut cannot fit.
+		const base = event(ctx, [
+			user(`Task: repair login.\n${"old context ".repeat(90_000)}`),
+		]) as Record<string, unknown>;
+		const noStream = { ...base, streamFn: undefined } as never;
+
+		const result = await coordinator.onSessionBeforeCompact(noStream, ctx);
+
+		expect(result).toEqual({ cancel: true });
+		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(state.lastFallbackReason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		});
 	});
 
 	it("names every trimmed turn when more than one had to go", async () => {
