@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { configDefaults } from "vitest/config";
 
 type Json = Record<string, unknown>;
 type SchemaNode = {
@@ -47,9 +48,9 @@ function mergedSchema(): SchemaNode {
 	const core = readSchema(coreSchemaPath, "Stryker core schema");
 	const runner = readSchema(vitestSchemaPath, "Stryker vitest runner schema");
 
-	// Both `definitions` (draft-07) and `$defs` (2019-09) appear in Stryker's schemas,
-	// and each package may carry its own. Merging only the core `definitions` silently
-	// drops a runner-local reference target.
+	// Both `definitions` (draft-07) and `$defs` (2019-09) may appear in a Stryker schema,
+	// and each package may carry its own. Merging only the core `definitions` would silently
+	// drop a runner-local or `$defs` reference target if a schema moves to the newer keyword.
 	return {
 		properties: { ...(core.properties ?? {}), ...(runner.properties ?? {}) },
 		definitions: { ...(core.definitions ?? {}), ...(runner.definitions ?? {}) },
@@ -282,40 +283,66 @@ describe("stryker mutation config", () => {
 		expect(lines).toContain(".stryker-tmp/");
 	});
 
-	it("keeps Stryker sandbox copies out of Vitest runs", () => {
-		// Stryker copies the project into .stryker-tmp/sandbox-*/. Vitest's default exclude
-		// does not cover it, so a positional path filter also matched every sandbox copy.
-		const vitestConfig = readFileSync(
-			new URL("../vitest.config.ts", import.meta.url),
-			"utf8",
-		);
+	it("keeps Stryker sandbox copies out of the resolved Vitest config", async () => {
+		// Asserted on the resolved config rather than on config source text: an `exclude` that
+		// replaces Vitest's defaults would pass a text check while silently dropping `**/.git/**`.
+		const { default: vitestConfig } = await import("../vitest.config.js");
+		const testExclude =
+			(vitestConfig?.test as { exclude?: string[] })?.exclude ?? [];
+		const coverageExclude =
+			(vitestConfig?.test as { coverage?: { exclude?: string[] } })?.coverage
+				?.exclude ?? [];
 
-		expect(vitestConfig).toContain("**/.stryker-tmp/**");
+		for (const pattern of configDefaults.exclude) {
+			expect(testExclude).toContain(pattern);
+		}
+		expect(testExclude).toContain("**/.stryker-tmp/**");
+		expect(coverageExclude).toContain("**/.stryker-tmp/**");
 	});
 
-	it("keeps the recorded baseline fixture arithmetically self-consistent", () => {
-		// The floor is checked against headlineScore, so a hand-edited fixture must not be
-		// able to drift from its own mutant counts without failing here.
+	it("keeps the recorded baseline consistent with Stryker's own scoring terms", async () => {
+		// The floor is checked against headlineScore, so the fixture must not be able to drift
+		// from its own mutant counts. Scored from Stryker's terms instead of totalMutants: the
+		// score denominator is the mutants that were actually run and reported, so a future
+		// regeneration that produces compileErrors, ignored or pending mutants cannot make this
+		// guard fail for the wrong reason.
 		const baseline = readJson(baselinePath) as Record<string, number>;
-		const counts = [
+		const count = (key: string) => baseline[key] ?? 0;
+		const categories = [
 			"killed",
 			"timeout",
 			"survived",
 			"noCoverage",
 			"runtimeErrors",
-		] as const;
-		const detected = baseline.killed + baseline.timeout;
+			"compileErrors",
+			"ignoreListed",
+			"pending",
+		];
+		const detected = count("killed") + count("timeout");
+		const scored = detected + count("survived") + count("noCoverage");
 
-		expect(counts.reduce((total, key) => total + baseline[key], 0)).toBe(
+		expect(categories.reduce((total, key) => total + count(key), 0)).toBe(
 			baseline.totalMutants,
 		);
-		expect(
-			(100 * detected) / (baseline.totalMutants - baseline.runtimeErrors),
-		).toBeCloseTo(baseline.headlineScore, 2);
-		expect(
-			(100 * detected) /
-				(baseline.totalMutants - baseline.noCoverage - baseline.runtimeErrors),
-		).toBeCloseTo(baseline.coveredScore, 2);
+		expect((100 * detected) / scored).toBeCloseTo(baseline.headlineScore, 2);
+		expect((100 * detected) / (detected + count("survived"))).toBeCloseTo(
+			baseline.coveredScore,
+			2,
+		);
+
+		// Provenance, not just arithmetic: the recorded numbers must belong to the tool and
+		// config this repository actually pins.
+		const pkg = readJson(new URL("../package.json", import.meta.url));
+		const devDeps = pkg.devDependencies as Record<string, string>;
+		const config = readJson(configPath);
+
+		expect(String(baseline.strykerVersion)).toBe(
+			devDeps["@stryker-mutator/core"],
+		);
+		expect(String(baseline.concurrency)).toBe(String(config.concurrency));
+		expect(String(baseline.coverageAnalysis)).toBe(
+			String(config.coverageAnalysis),
+		);
 	});
 
 	it("reports an unresolvable $ref instead of validating nothing", () => {
