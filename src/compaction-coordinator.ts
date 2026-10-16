@@ -956,14 +956,17 @@ export class CompactionCoordinator {
 		}
 
 		const epoch = this.state.currentCompactionEpoch;
-		// Only the exact prompt this lifecycle issued is an SDK echo. Caller
-		// guidance, even generated-looking or modified text, is not ours to drop.
-		// The echo is transient, so capture it here: later overflow decisions in this
-		// attempt still need to know which prompt was ours.
+		// Only text this lifecycle issued is ours to remove, and it is removed as a prefix
+		// rather than as a whole string: a modified echo still starts with our prompt, and
+		// forwarding that whole prompt as caller guidance would spend the guidance allowance on
+		// our own boilerplate and truncate whatever the caller appended after it. Guidance we do
+		// not own — prepended, whitespace-modified, or merely similar — stays intact.
 		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
 		const customInstructions =
-			event.customInstructions === issuedPrompt
-				? undefined
+			issuedPrompt !== null &&
+			event.customInstructions?.startsWith(issuedPrompt)
+				? event.customInstructions.slice(issuedPrompt.length).trim() ||
+					undefined
 				: event.customInstructions;
 		this.state.lastIssuedCompactionInstructions = null;
 		// Computed once for this attempt: bounded provider usage headroom that contradicts
