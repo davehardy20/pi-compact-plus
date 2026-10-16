@@ -7,10 +7,7 @@ import {
 	isCompactionVerdict,
 } from "./compaction-verdict.js";
 import { reorderForPositioning } from "./focus-echo/index.js";
-import {
-	defaultTelemetryPath,
-	loadTelemetryWithDiagnostics,
-} from "./persist.js";
+import { loadTelemetryWithDiagnostics } from "./persist.js";
 import { buildBranchInstructions } from "./prompts.js";
 import { createSessionBranchView } from "./session-branch-view.js";
 import { extractCurrentFocusFromBranch } from "./session-evidence.js";
@@ -66,7 +63,7 @@ export function registerCompactPlusEventHandlers(
 				state.recordTelemetryPersistenceIssue({
 					operation: "load",
 					code: "invalid-schema",
-					path: defaultTelemetryPath(),
+					path: result.path,
 					message:
 						"lastFallbackReason: persisted reason did not match a verdict shape",
 					timestamp: Date.now(),

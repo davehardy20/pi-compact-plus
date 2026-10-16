@@ -38,12 +38,12 @@ vi.mock("../src/persist.js", () => ({
 	loadTelemetryWithDiagnostics: vi.fn(async () => ({
 		telemetry: null,
 		issue: null,
+		path: "/tmp/compact-plus-telemetry.json",
 	})),
 	saveTelemetryWithDiagnostics: vi.fn(async () => ({
 		saved: true,
 		issue: null,
 	})),
-	defaultTelemetryPath: () => "/tmp/compact-plus-telemetry.json",
 }));
 
 vi.mock("@earendil-works/pi-agent-core", () => ({}));
@@ -1062,6 +1062,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 				lastModelKey: null;
 			};
 			issue: null;
+			path: string;
 		}) => void;
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockImplementationOnce(
 			async () =>
@@ -1094,6 +1095,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 				lastModelKey: null,
 			},
 			issue: null,
+			path: "/tmp/compact-plus-telemetry.json",
 		});
 		await newSession;
 		expect(__test__.getLastCompactTime()).toBe(123);
@@ -1124,6 +1126,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		const sessionStartHandler = pi.events.get("session_start")?.[0];
 		if (!sessionStartHandler) throw new Error("session_start handler missing");
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				version: 3,
 				lastCompactTime: 123,
@@ -1953,6 +1956,7 @@ describe("@davehardy20/pi-compact-plus", () => {
 		__test__.resetState();
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: null,
 			issue: {
 				operation: "load",
@@ -4432,6 +4436,7 @@ describe("Compact+ lifecycle order", () => {
 		};
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				lastCompaction: persistedCompaction,
 				lastFallbackReason: null,
@@ -4490,6 +4495,7 @@ describe("Compact+ lifecycle order", () => {
 		};
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				lastCompaction: persistedCompaction,
 				lastFallbackReason: null,
@@ -4542,6 +4548,7 @@ describe("Compact+ lifecycle order", () => {
 		};
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				lastCompaction: persistedCompaction,
 				lastFallbackReason: null,
@@ -4599,6 +4606,7 @@ describe("Compact+ lifecycle order", () => {
 		};
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				lastCompaction: persistedCompaction,
 				lastFallbackReason: null,
@@ -4645,6 +4653,7 @@ describe("Compact+ lifecycle order", () => {
 		__test__.resetState();
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				lastCompaction: null,
 				lastFallbackReason: null,
@@ -4725,6 +4734,7 @@ describe("Compact+ lifecycle order", () => {
 		// An empty reason is a shape the guard rejects: the mapper would have claimed a decision
 		// the telemetry never really recorded.
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				version: 3,
 				lastCompactTime: 123,
@@ -4742,11 +4752,11 @@ describe("Compact+ lifecycle order", () => {
 		expect(__test__.getLastVerdict()).toBeNull();
 		const issues = __test__.getTelemetryPersistenceIssues();
 		expect(issues).toHaveLength(1);
-		// The diagnostic names the file the rejected record was read from, so the drop is traceable.
+		// The diagnostic names the file the load actually read, so the drop is traceable.
 		expect(issues[0]).toMatchObject({
 			operation: "load",
 			code: "invalid-schema",
-			path: persist.defaultTelemetryPath(),
+			path: "/tmp/compact-plus-telemetry.json",
 			message:
 				"lastFallbackReason: persisted reason did not match a verdict shape",
 		});
@@ -4888,6 +4898,7 @@ describe("Compact+ lifecycle order", () => {
 		if (!sessionStartHandler) throw new Error("handler not registered");
 
 		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			path: "/tmp/compact-plus-telemetry.json",
 			telemetry: {
 				lastCompaction: null,
 				lastFallbackReason: null,

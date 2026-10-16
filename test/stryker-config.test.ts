@@ -51,6 +51,8 @@ function mergedSchema(): SchemaNode {
 	// Both `definitions` (draft-07) and `$defs` (2019-09) may appear in a Stryker schema,
 	// and each package may carry its own. Merging only the core `definitions` would silently
 	// drop a runner-local or `$defs` reference target if a schema moves to the newer keyword.
+	// Core and runner names share one namespace, so a runner definition can shadow a
+	// same-named core definition; the runner spread wins because it is applied last.
 	return {
 		properties: { ...(core.properties ?? {}), ...(runner.properties ?? {}) },
 		definitions: { ...(core.definitions ?? {}), ...(runner.definitions ?? {}) },
@@ -61,6 +63,12 @@ function mergedSchema(): SchemaNode {
 /**
  * Resolves a local JSON-Schema reference, failing closed: an unresolvable `$ref` is
  * reported as an issue instead of collapsing to an empty node that validates anything.
+ *
+ * Supported grammar is deliberately narrow, matching what the pinned Stryker schemas use:
+ * pointer-only references rooted at `#` (for example `#/definitions/concurrency`), with
+ * plain `/` segments. `~0`/`~1` escape decoding and a bare `#` self-reference are not
+ * supported, so a schema that starts using them fails closed with an unresolved-ref issue
+ * rather than silently validating nothing.
  */
 function resolveRef(
 	node: SchemaNode,
@@ -339,6 +347,11 @@ describe("stryker mutation config", () => {
 		expect(String(baseline.strykerVersion)).toBe(
 			devDeps["@stryker-mutator/core"],
 		);
+		// Provenance, not just arithmetic: the recorded numbers must belong to the tool and
+		// config this repository actually pins. Concurrency is pinned too, because it changes
+		// how often a mutant is cut off by the timeout instead of surviving: tuning
+		// stryker.config.json therefore requires a fresh `npm run mutation` and a regenerated
+		// fixture, and this assertion is what makes that requirement visible.
 		expect(String(baseline.concurrency)).toBe(String(config.concurrency));
 		expect(String(baseline.coverageAnalysis)).toBe(
 			String(config.coverageAnalysis),

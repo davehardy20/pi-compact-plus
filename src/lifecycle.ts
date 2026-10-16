@@ -120,12 +120,8 @@ export function executeCompaction(
 		onComplete: (result) => {
 			options?.onSettled?.();
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
-			state.isCompacting = false;
-			state.selectedMode = null;
-			state.lastTriggerAuto = false;
-			state.lastIssuedCompactionInstructions = null;
+			settleAttempt(state, { clearPending: false, resetTokens: false });
 			state.lastCompactTime = state.lastCompaction?.timestamp ?? Date.now();
-			state.echoInjected = false;
 			const postUsage = safeGetContextUsage(ctx);
 			const tokens = postUsage?.tokens;
 			const estimate = result?.estimatedTokensAfter;
@@ -148,12 +144,7 @@ export function executeCompaction(
 		onError: (error) => {
 			options?.onSettled?.();
 			if (state.currentCompactionEpoch !== compactionEpoch) return;
-			state.isCompacting = false;
-			state.selectedMode = null;
-			state.lastTriggerAuto = false;
-			state.lastCompactTokens = 0;
-			state.echoInjected = false;
-			state.clearPendingCompaction();
+			settleAttempt(state, { clearPending: true, resetTokens: true });
 			options?.persist?.();
 			// The coordinator already warned about a decline in this same attempt, so
 			// a second "compaction failed" error would be duplicate and would name the
@@ -172,14 +163,40 @@ export function executeCompaction(
 		ctx.compact(request);
 	} catch (error) {
 		options?.onSettled?.();
-		state.isCompacting = false;
-		state.selectedMode = null;
-		state.lastTriggerAuto = false;
-		state.lastIssuedCompactionInstructions = null;
-		state.lastCompactTokens = 0;
-		state.echoInjected = false;
-		state.clearPendingCompaction();
+		// No epoch guard here: a synchronous throw means no callback can ever arrive for
+		// this attempt, so there is no late settlement to distinguish it from.
+		settleAttempt(state, { clearPending: true, resetTokens: true });
 		options?.persist?.();
 		throw error;
 	}
+}
+
+/**
+ * Clear the mutable state an in-flight compaction attempt owns. All three settlement
+ * paths (Pi's onComplete, Pi's onError, and a synchronous throw from ctx.compact) must
+ * do it, otherwise state.isCompacting stays true and every later attempt is refused as
+ * "already in progress" for the rest of the session.
+ *
+ * `clearPending` is false only for a completed attempt: state.pendingCompaction is the
+ * record onSessionCompact publishes as that compaction's telemetry, and the session
+ * compact event follows onComplete. A failed or thrown attempt produces no such event,
+ * so it clears the pending record, which also drops the issued instructions.
+ */
+function settleAttempt(
+	state: CompactionState,
+	{
+		clearPending,
+		resetTokens,
+	}: { clearPending: boolean; resetTokens: boolean },
+): void {
+	state.isCompacting = false;
+	state.selectedMode = null;
+	state.lastTriggerAuto = false;
+	state.echoInjected = false;
+	if (clearPending) {
+		state.clearPendingCompaction();
+	} else {
+		state.lastIssuedCompactionInstructions = null;
+	}
+	if (resetTokens) state.lastCompactTokens = 0;
 }

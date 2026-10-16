@@ -77,15 +77,25 @@ type SessionBeforeCompactResultLike = {
 	cancel?: boolean;
 	compaction?: CompactionResult;
 };
-/** Verdict for one measured cut. `key` is null when the guard stopped before it
- * needed to build one. Internal only: never logged or persisted. */
-type OverflowVerdict = { reason: string | null; key: string | null };
+/** Verdict for one measured cut. `key` is null when the guard stopped before it needed
+ * to build one. `partial` marks a cut whose payload walk ran out of budget: its key is
+ * stable enough to dedupe notices but never to carry a verdict. Internal only: never
+ * logged or persisted. */
+type OverflowVerdict = {
+	reason: string | null;
+	key: string | null;
+	partial: boolean;
+};
 
-/** Cap on container nodes walked per payload so a pathological tool call cannot make
- * key building unbounded. String lengths are O(1), so sibling payload is always counted
- * until this node cap is reached. Reaching the cap is reported: a partial walk is not a
- * complete key and must not be cached as one. */
+/** Cap on container nodes walked per tool-call payload, so a pathological tool call
+ * cannot make key building unbounded. String lengths are O(1), so sibling payload is
+ * always counted until this node cap is reached. Reaching the cap is reported: a partial
+ * walk is not a complete key and must not be cached as one. */
 const STRUCTURAL_NODE_BUDGET = 10_000;
+/** Cap on nesting depth per tool-call payload. Deep nesting is bounded by the stack
+ * before it is bounded by the node budget, so depth is capped separately and reported
+ * the same way: deeper than this the payload is unmeasurable, not measured as smaller. */
+const STRUCTURAL_DEPTH_BUDGET = 512;
 /**
  * How far under the model window provider-reported usage must sit before an
  * over-window estimate stops being sufficient authority to decline compaction. Named
@@ -100,8 +110,19 @@ type StructuralWalk = { left: number; exhausted: boolean };
 /** Length proxy for a non-text payload. Only node traversal is bounded, so growing an
  * object with more keys or an array with more items always changes the key while the
  * budget lasts. */
-function structuralChars(value: unknown, walk: StructuralWalk): number {
+function structuralChars(
+	value: unknown,
+	walk: StructuralWalk,
+	depth = 0,
+): number {
 	if (walk.exhausted) return 0;
+	if (depth >= STRUCTURAL_DEPTH_BUDGET) {
+		// Recursing to the JS stack limit would throw out of an event handler instead
+		// of reporting an unmeasurable payload, so depth stops first and the caller
+		// must not reuse the partial total.
+		walk.exhausted = true;
+		return 0;
+	}
 	if (walk.left <= 0) {
 		// Growth past this point is invisible to the key, so the caller must not treat
 		// the partial total as a verdict it may reuse.
@@ -113,23 +134,28 @@ function structuralChars(value: unknown, walk: StructuralWalk): number {
 	if (typeof value === "number" || typeof value === "boolean") return 8;
 	if (Array.isArray(value)) {
 		let total = 2;
-		for (const item of value) total += structuralChars(item, walk);
+		for (const item of value) total += structuralChars(item, walk, depth + 1);
 		return total;
 	}
 	if (value && typeof value === "object") {
 		let total = 2;
 		for (const [key, item] of Object.entries(value)) {
-			total += key.length + structuralChars(item, walk);
+			total += key.length + structuralChars(item, walk, depth + 1);
 		}
 		return total;
 	}
 	return 1;
 }
 
-/** Content discriminator for guidance text. Fully covered up to three windows of
+/**
+ * Content discriminator for guidance text. Fully covered up to three windows of
  * DIGEST_WINDOW characters (~768 in total: head, centred middle, tail). Beyond that it
  * is a discriminator, not a guarantee: a difference outside all three windows can still
- * share a key. */
+ * share a key.
+ *
+ * @internal Exported for tests only; production callers reach it through
+ * {@link CompactionCoordinator.summarizationCutKey}.
+ */
 export function guidanceDigest(text: string): number {
 	const middle = Math.max(0, Math.floor(text.length / 2) - DIGEST_WINDOW / 2);
 	const tail = Math.max(0, text.length - DIGEST_WINDOW);
@@ -164,10 +190,6 @@ export class CompactionCoordinator {
 	private readonly disableAutoCompaction: boolean;
 	/** Measured verdict for the last cut. Written only by the measurement. */
 	private overflowVerdict: OverflowVerdict | null = null;
-	/** Distinguishes key walks that ran out of budget, so a partial walk never matches
-	 * a later cut. Bounded by the number of compaction attempts in a session, and it
-	 * resets with the session. Internal only: never logged or persisted. */
-	private cutKeyNonce = 0;
 	/** Cut already warned about, so an oversized session is warned once. */
 	private overflowNoticeKey: string | null = null;
 	/** True only for the attempt a manual command started, which explains itself. */
@@ -197,7 +219,6 @@ export class CompactionCoordinator {
 		this.overflowNoticeKey = null;
 		this.manualAttemptInFlight = false;
 		this.manualAttemptEpoch = -1;
-		this.cutKeyNonce = 0;
 	}
 
 	/**
@@ -298,7 +319,7 @@ export class CompactionCoordinator {
 			!Number.isSafeInteger(reserve) ||
 			(reserve as number) <= 0
 		) {
-			return { reason: null, key: null };
+			return { reason: null, key: null, partial: false };
 		}
 		// Fail-open fast path before serializing: the cut is a subset of the live
 		// session, so while Pi reports the whole session fitting inside
@@ -315,11 +336,23 @@ export class CompactionCoordinator {
 			(usage?.tokens ?? 0) > 0 &&
 			(usage?.tokens ?? 0) + (reserve as number) <= model.contextWindow
 		) {
-			return { reason: null, key: null };
+			return { reason: null, key: null, partial: false };
 		}
-		const key = this.summarizationCutKey(event, ctx);
-		if (this.overflowVerdict?.key === key) {
-			return { reason: this.overflowVerdict.reason, key };
+		const cut = this.summarizationCutKey(event, ctx);
+		// No key means the payload could not be traversed at all. The cut is still measured,
+		// but it is treated as partial: never cached, never reused, and the traversal failure
+		// itself never escapes the event handler.
+		const key = cut?.key ?? null;
+		const partial = cut?.partial ?? true;
+		// A partial walk saw only part of the payload, so its total may not be the same
+		// payload another cut has: neither a partial verdict is reused, nor is a fully
+		// measured cut judged by one.
+		if (
+			!partial &&
+			!this.overflowVerdict?.partial &&
+			this.overflowVerdict?.key === key
+		) {
+			return { reason: this.overflowVerdict.reason, key, partial: false };
 		}
 		// Pi issues one request per preparation slice. On a split turn the prefix
 		// request carries no custom instructions or previous summary and reserves
@@ -365,8 +398,8 @@ export class CompactionCoordinator {
 				break;
 			}
 		}
-		this.overflowVerdict = { key, reason };
-		return { reason, key };
+		this.overflowVerdict = { key, reason, partial };
+		return { reason, key, partial };
 	}
 
 	/** Content discriminator: message counts alone let an in-place shrink reuse a
@@ -420,22 +453,36 @@ export class CompactionCoordinator {
 		return { chars, exhausted };
 	}
 
+	/** Returns null when the cut cannot be keyed at all, so a traversal failure fails
+	 * open (measure this cut again) instead of throwing out of an event handler. */
 	private summarizationCutKey(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
-	): string {
+	): { key: string; partial: boolean } | null {
+		try {
+			return this.buildSummarizationCutKey(event, ctx);
+		} catch {
+			// Key building walks caller-shaped payload. A getter that throws, or a
+			// prototype that makes Object.entries fail, must not turn a guard pass into
+			// an unhandled error in a Pi event handler.
+			return null;
+		}
+	}
+
+	private buildSummarizationCutKey(
+		event: SessionBeforeCompactEvent,
+		ctx: ExtensionEventContext,
+	): { key: string; partial: boolean } {
 		const preparation = event.preparation;
 		const instructions = this.callerGuidance(event);
 		const content = this.cutContentChars(preparation);
-		// A walk that ran out of nodes saw only part of the payload, so its total is
-		// not a key another cut may match. The nonce forces a fresh measurement instead
-		// of letting a partial key reuse a verdict.
-		const contentKey = content.exhausted
-			? `partial:${++this.cutKeyNonce}`
-			: content.chars;
+		// A walk that ran out of budget (or depth) saw only part of the payload. The key
+		// stays stable so the notice dedupe still recognizes the cut, and `partial` is what
+		// stops a partial total from ever carrying or matching a verdict.
+		const contentKey = content.exhausted ? "partial" : content.chars;
 		// Length alone would treat two guidance strings of the same size as the same
 		// cut. Internal key: never logged or persisted.
-		return [
+		const key = [
 			ctx.sessionManager.getSessionId(),
 			ctx.sessionManager.getLeafId(),
 			modelKey(ctx.model),
@@ -449,6 +496,7 @@ export class CompactionCoordinator {
 			instructions.slice(-32),
 			guidanceDigest(instructions),
 		].join(":");
+		return { key, partial: content.exhausted };
 	}
 
 	/**
@@ -503,13 +551,6 @@ export class CompactionCoordinator {
 		);
 	}
 
-	/** The notice dedupe must stay deterministic across attempts, so a key whose walk
-	 * ran out of budget is compared in its stable partial form. The verdict cache keeps
-	 * the nonce, because a partial total cannot identify a cut. */
-	private noticeKey(key: string): string {
-		return key.replace(/partial:\d+/, "partial");
-	}
-
 	/**
 	 * Warn at most once for an unchanged cut, and record the decision the report belongs to.
 	 * `kind` is the caller's own decision: `null` means the caller writes the verdict itself (the
@@ -534,13 +575,17 @@ export class CompactionCoordinator {
 		}
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
-		const key = this.noticeKey(
-			measuredKey ?? this.summarizationCutKey(event, ctx),
-		);
-		// A manual command always explains itself. Only automatic repeats of an
-		// unchanged cut are deduped.
-		if (!manualAttempt && this.overflowNoticeKey === key) return;
-		this.overflowNoticeKey = key;
+		const key =
+			measuredKey ?? this.summarizationCutKey(event, ctx)?.key ?? null;
+		// A manual command always explains itself. Only automatic repeats of an unchanged
+		// cut are deduped. A cut with no key has nothing to compare against, so it must not
+		// match the "no notice recorded yet" state and lose its first warning.
+		if (!manualAttempt && key !== null && this.overflowNoticeKey === key)
+			return;
+		// Only a keyed cut may take over the notice slot: an unkeyed cut already bypasses the
+		// dedupe, and overwriting the slot with "no key" would let a later keyed cut warn a
+		// second time for something already explained.
+		if (key !== null) this.overflowNoticeKey = key;
 		ctx.ui.notify(warning, "warning");
 	}
 

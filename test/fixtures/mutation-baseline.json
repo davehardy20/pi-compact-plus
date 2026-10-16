@@ -11,6 +11,6 @@
 	"runtimeErrors": 1,
 	"headlineScore": 63.16,
 	"coveredScore": 65.81,
-	"scoreNote": "headline = (killed + timeout) / (total - runtimeErrors), coveredScore excludes noCoverage and runtimeErrors. Stryker reported 63.16.",
+	"scoreNote": "headline = (killed + timeout) / (killed + timeout + survived + noCoverage), coveredScore = (killed + timeout) / (killed + timeout + survived), matching Stryker's own terms. runtimeErrors count toward totalMutants but sit in neither denominator. Stryker reported 63.16. concurrency is pinned to the committed stryker.config.json by test/stryker-config.test.ts: it changes how often a mutant is cut off by the timeout instead of surviving, so tuning it requires re-running npm run mutation and regenerating this fixture.",
 	"note": "Repo-wide run over src/**/*.ts with the committed config (14m53s). Timeout counts as detected. Regenerate with npm run mutation, then recompute from reports/mutation/mutation.json before changing thresholds.break."
 }

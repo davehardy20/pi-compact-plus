@@ -209,26 +209,32 @@ function runNativeCompact(
 }
 
 // Pi builds the two summarization prompts differently: generateSummaryWithUsage wraps the
-// transcript in <conversation> tags and appends its instructions (compaction.js:523-527), while
-// the private generateTurnPrefixSummary leads with "# Conversation" and closes with the last line
-// of TURN_PREFIX_SUMMARIZATION_PROMPT (compaction.js:730). Classifying on those message boundaries
-// cannot be faked by transcript content the way a shared heading can, and the fixture above puts
-// the confusable strings in a user message to prove it.
+// transcript in <conversation> tags and appends its instructions, while the private
+// generateTurnPrefixSummary leads with "# Conversation" and closes with the last line of
+// TURN_PREFIX_SUMMARIZATION_PROMPT. Classifying on those message boundaries cannot be faked
+// by transcript content the way a shared heading can, and the fixture above puts the
+// confusable strings in a user message to prove it.
 //
-// Pinned against the resolved devDependency version (Pi 1.0.1). The 0.87.1 host compatibility
-// boundary is covered separately in test/provider-boundary-087.test.ts.
+// Anchored to upstream symbols rather than line numbers, which move on every Pi bump: the
+// history request is assembled in generateSummaryWithUsage, the turn-prefix prompt template is
+// applied in the private generateTurnPrefixSummary, and compact() issues the history request
+// before the turn-prefix request in its split-turn branch.
+//
+// Pinned against the resolved devDependency (Pi 1.0.1). The 0.87.1 host compatibility boundary
+// is covered separately in test/provider-boundary-087.test.ts.
 const TURN_PREFIX_PROMPT_TAIL =
 	"Only summarize information explicitly present above. Do not infer or recreate later messages.";
 
+/**
+ * Flattens the user message of a summarization request into the prompt text Pi would send.
+ * Pi sends content blocks, so only the array shape is read: if upstream ever sends a plain
+ * string instead, this yields "" and the shape assertions below fail loudly rather than the
+ * helper quietly absorbing the change.
+ */
 function summarizationPromptText(context: { messages: unknown[] }): string {
 	const message = context.messages.find(
 		(entry) => (entry as { role?: string }).role === "user",
 	) as { content?: unknown } | undefined;
-	// Pi sends content blocks. A plain string is accepted too so an upstream shape change shows
-	// up as an unexpected prompt shape in the assertions rather than a raw TypeError here.
-	if (typeof message?.content === "string") {
-		return message.content;
-	}
 	const blocks = Array.isArray(message?.content) ? message.content : [];
 	const text = blocks.map((block) => (block as { text?: string })?.text ?? "");
 	return text.join("");
@@ -274,9 +280,9 @@ describe("native summarization request pins", () => {
 		});
 
 		expect(requests.length).toBe(2);
-		// Pi issues the history request before the turn-prefix request (compaction.js:693-702), and
-		// each request is identified by its own prompt shape rather than by a heading that
-		// transcript content could also contain.
+		// Pi issues the history request before the turn-prefix request (compact() split-turn
+		// branch), and each request is identified by its own prompt shape rather than by a
+		// heading that transcript content could also contain.
 		const classified = requests.map((r) => isTurnPrefixRequest(r.promptText));
 		expect(classified).toEqual([false, true]);
 		// The prompt shapes are pinned too, so a Pi change to either prompt fails here instead of
@@ -286,6 +292,11 @@ describe("native summarization request pins", () => {
 		expect(historyPrompt.startsWith("<conversation>")).toBe(true);
 		expect(prefixPrompt.startsWith("# Conversation")).toBe(true);
 		expect(prefixPrompt.endsWith(TURN_PREFIX_PROMPT_TAIL)).toBe(true);
+		// The confusable text must sit inside the prompt string the classifier actually reads,
+		// not only inside the prepared messages. Otherwise this test would prove the fixture is
+		// confusable without proving the classification resists it in the real request.
+		expect(historyPrompt.includes("# Conversation")).toBe(true);
+		expect(historyPrompt.includes(TURN_PREFIX_PROMPT_TAIL)).toBe(true);
 		// Drift guard for the fractions documented in src/summarization-request-budget.ts:
 		// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
 		// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens

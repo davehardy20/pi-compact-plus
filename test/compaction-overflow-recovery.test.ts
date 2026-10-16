@@ -1047,6 +1047,139 @@ ${"old context ".repeat(90_000)}`),
 		).toEqual({ cancel: true });
 	});
 
+	it("keys a deeply nested payload as partial instead of recursing without bound", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+		// Nested well past the walk's depth budget but comfortably inside any host's call stack,
+		// so what is being asserted is that the walk stops at its own budget, not how deep a
+		// particular Node build tolerates before throwing. The margin over the budget is named so
+		// that raising STRUCTURAL_DEPTH_BUDGET past it fails here with an obvious cause.
+		const NEST_DEPTH_PAST_BUDGET = 800;
+		const nest = (leaf: unknown): unknown => {
+			let value = leaf;
+			for (let index = 0; index < NEST_DEPTH_PAST_BUDGET; index++)
+				value = { nested: value };
+			return value;
+		};
+		const call = (leaf: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "text", text: "x".repeat(1_000_000) },
+					{ type: "toolCall", id: "c1", name: "read", arguments: nest(leaf) },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(event(ctx, [call("v")]), ctx),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+
+		// The leaf differs only at NEST_DEPTH_PAST_BUDGET, past the walk's budget, so key
+		// building never saw the difference: same partial key, still warned once, and still
+		// measured on its own rather than judged by the earlier partial total. Without the depth
+		// cap the walk would reach the leaf, produce a different key, and warn a second time.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+	});
+
+	it("re-measures a budget-exhausting cut when only its measurable text shrinks", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		// Wide enough to exhaust the node budget on every attempt, so the cut keeps the same
+		// stable partial key while its measurable text changes.
+		const wideArgs = Object.fromEntries(
+			Array.from({ length: 12_000 }, (_unused, index) => [`k${index}`, "v"]),
+		);
+		const call = (text: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "text", text },
+					{ type: "toolCall", id: "c1", name: "read", arguments: wideArgs },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+
+		// The partial key is stable, so the notice dedupe still recognizes the cut. It must
+		// not carry a verdict: this cut now fits, and reusing the previous decline would
+		// cancel a summarization request that can be sent.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("small task")]),
+				ctx,
+			),
+		).toBeUndefined();
+	});
+
+	it("warns for an overflow whose cut it cannot key", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = "standard";
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) =>
+					call[1] === "warning" &&
+					typeof call[0] === "string" &&
+					call[0].includes("cancelled"),
+			).length;
+		// Key building enumerates the payload and hits the throwing getter, so this cut has
+		// no key at all. The overflow itself comes from the provider's response, so the guard
+		// still reports it instead of letting the traversal failure escape.
+		const payload = {
+			get boom(): never {
+				throw new Error("payload getter throws on enumeration");
+			},
+		};
+		const call = (): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c1", name: "read", arguments: payload },
+				],
+				timestamp: 1,
+			}) as unknown as AgentMessage;
+		const cut = event(ctx, [call()]);
+
+		compactMock.mockRejectedValue(new Error(PI_OUTPUT_CAP_FAILURE));
+		expect(await coordinator.onSessionBeforeCompact(cut, ctx)).toEqual({
+			cancel: true,
+		});
+		// A cut with no key has nothing to compare against, so it must not match the "no
+		// notice recorded yet" state and lose its first warning.
+		expect(warnings()).toBe(1);
+
+		state.selectedMode = "standard";
+		expect(await coordinator.onSessionBeforeCompact(cut, ctx)).toEqual({
+			cancel: true,
+		});
+		// Still unkeyable, so it explains itself again rather than deduping against a
+		// sentinel that means "nothing warned about yet".
+		expect(warnings()).toBe(2);
+	});
+
 	it("keeps a manual attempt's bypass when an older attempt settles late", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
@@ -1136,37 +1269,106 @@ ${"old context ".repeat(90_000)}`),
 		expect(guidanceDigest(a)).toBe(guidanceDigest("A".repeat(1_000_000)));
 	});
 
-	it("cannot see image growth because Pi drops image parts from the request", async () => {
+	it("does not cancel a cut that is oversized only in image bytes", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
 		state.selectedMode = null;
-		const image = (data: string): AgentMessage =>
+		// Pi renders the summarization conversation through serializeConversation, which drops
+		// image blocks (it keeps user and assistant text, thinking, tool calls, and truncated
+		// tool results), so a megabyte of image data is not part of the request the guard has to
+		// fit. Usage is pushed past the session-fit fast path so the guard actually measures this
+		// cut: if measurement ever scored the image bytes, this cut would be declined and a
+		// summarization request the provider can serve would be cancelled.
+		const withImage = (data: string): AgentMessage =>
 			({
 				role: "assistant",
-				content: [{ type: "image", data, mimeType: "image/png" }],
+				content: [
+					{ type: "text", text: "small task" },
+					{ type: "image", data, mimeType: "image/png" },
+				],
 				timestamp: 1,
+			}) as unknown as AgentMessage;
+		const withText = (text: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [{ type: "text", text }],
+				timestamp: 2,
 			}) as unknown as AgentMessage;
 
 		expect(
 			await coordinator.onSessionBeforeCompact(
-				event(ctx, [image("aGVsbG8=")]),
+				event(ctx, [withImage("x".repeat(1_000_000))]),
 				ctx,
 			),
 		).toBeUndefined();
+		// No decision recorded either: the guard measured the cut and found it fits.
+		expect(coordinator.getLastVerdict()).toBeNull();
+		expect(
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length,
+		).toBe(0);
 
-		// Characterization: Pi renders the summarization conversation through
-		// contentText, which keeps only type "text" blocks, so image bytes are never sent
-		// to the provider and estimateTokens scores an image part at zero. A 1,000,000
-		// character base64 payload therefore cannot make the request overflow, and the
-		// guard correctly leaves it alone. The key still counts the data, so a cut whose
-		// image changed is not judged by a stale verdict.
+		// The same fixture with those bytes as text is declined, so the pass above is a
+		// measurement that fitted, not the guard skipping the cut.
 		expect(
 			await coordinator.onSessionBeforeCompact(
-				event(ctx, [image("x".repeat(1_000_000))]),
+				event(ctx, [withText("x".repeat(1_000_000))]),
 				ctx,
 			),
-		).toBeUndefined();
+		).toEqual({ cancel: true });
+	});
+
+	it("counts image payload in the cut key while measuring only text", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+		const withImage = (data: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "text", text: "x".repeat(1_000_000) },
+					{ type: "image", data, mimeType: "image/png" },
+				],
+				timestamp: 1,
+			}) as unknown as AgentMessage;
+
+		// Characterization of the measurement blind spot: Pi renders the summarization
+		// conversation through serializeConversation, which drops image blocks, so estimateTokens
+		// (which would otherwise score each image at the fixed ESTIMATED_IMAGE_CHARS = 4800) never
+		// sees them. The overflow below is caused entirely by the text payload.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [withImage("aGVsbG8=")]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+
+		// The unchanged cut reuses the recorded verdict and its notice dedupes.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [withImage("aGVsbG8=")]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(1);
+
+		// Only the image payload changed. The measurement cannot see those bytes, but the cut
+		// key counts part data length, so this is a different cut: it must be measured fresh
+		// instead of judged by the stale verdict.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [withImage("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+		expect(warnings()).toBe(2);
 	});
 
 	it("resets guard state when the registered session_start handler runs", async () => {
@@ -1336,6 +1538,40 @@ ${"old context ".repeat(90_000)}`),
 				(call) => call[1] === "warning",
 			),
 		).toHaveLength(1);
+	});
+
+	it("expires a manual bypass left armed by an attempt Pi never settled", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		const oversized = event(ctx, [user("x".repeat(1_000_000))]);
+		const warnings = () =>
+			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
+				(call) => call[1] === "warning",
+			).length;
+
+		// An automatic attempt warns once for the oversized cut and records the notice key.
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
+
+		// Pi never calls back on this manual attempt, so neither onSettled nor the
+		// synchronous-throw catch clears the bypass and manualAttemptInFlight stays armed.
+		compactMock.mockImplementation(() => new Promise(() => {}));
+		await coordinator.handleManualCommand("standard", ctx);
+
+		// A session transition fences the abandoned attempt's callbacks and moves the epoch,
+		// so the stale bypass no longer matches the attempt it is compared against.
+		state.invalidateCompactionCallbacks();
+		state.selectedMode = null;
+
+		// Same unchanged cut in the new session: it dedupes instead of explaining itself. If
+		// the stale bypass were still honoured, this would warn a second time.
+		expect(await coordinator.onSessionBeforeCompact(oversized, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(warnings()).toBe(1);
 	});
 
 	it("resetOverflowState clears the notice dedupe for a new session", async () => {
