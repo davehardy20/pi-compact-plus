@@ -1047,7 +1047,7 @@ ${"old context ".repeat(90_000)}`),
 		).toEqual({ cancel: true });
 	});
 
-	it("keys a deeply nested payload as partial instead of recursing into a stack overflow", async () => {
+	it("keys a deeply nested payload as partial instead of recursing without bound", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
@@ -1056,34 +1056,41 @@ ${"old context ".repeat(90_000)}`),
 			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
 				(call) => call[1] === "warning",
 			).length;
-		// Nested far past what the call stack tolerates. Depth is what has to stop the walk:
-		// without STRUCTURAL_DEPTH_BUDGET the traversal recurses until the stack fails, and
-		// the cut then has no key at all.
+		// Nested well past the walk's depth budget but comfortably inside any host's call stack,
+		// so what is being asserted is that the walk stops at its own budget, not how deep a
+		// particular Node build tolerates before throwing. The margin over the budget is named so
+		// that raising STRUCTURAL_DEPTH_BUDGET past it fails here with an obvious cause.
+		const NEST_DEPTH_PAST_BUDGET = 800;
 		const nest = (leaf: unknown): unknown => {
 			let value = leaf;
-			for (let index = 0; index < 12_000; index++) value = { nested: value };
+			for (let index = 0; index < NEST_DEPTH_PAST_BUDGET; index++)
+				value = { nested: value };
 			return value;
 		};
-		const call = (): AgentMessage =>
+		const call = (leaf: string): AgentMessage =>
 			({
 				role: "assistant",
 				content: [
 					{ type: "text", text: "x".repeat(1_000_000) },
-					{ type: "toolCall", id: "c1", name: "read", arguments: nest("v") },
+					{ type: "toolCall", id: "c1", name: "read", arguments: nest(leaf) },
 				],
 				timestamp: 1,
 			}) as AgentMessage;
 
 		expect(
-			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+			await coordinator.onSessionBeforeCompact(event(ctx, [call("v")]), ctx),
 		).toEqual({ cancel: true });
 		expect(warnings()).toBe(1);
 
-		// The partial key is still stable, so the unchanged cut is warned about once even
-		// though its verdict is never reused. Without the depth cap the traversal throws,
-		// the cut loses its key, and this warns a second time.
+		// The leaf differs only at NEST_DEPTH_PAST_BUDGET, past the walk's budget, so key
+		// building never saw the difference: same partial key, still warned once, and still
+		// measured on its own rather than judged by the earlier partial total. Without the depth
+		// cap the walk would reach the leaf, produce a different key, and warn a second time.
 		expect(
-			await coordinator.onSessionBeforeCompact(event(ctx, [call()]), ctx),
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("x".repeat(1_000_000))]),
+				ctx,
+			),
 		).toEqual({ cancel: true });
 		expect(warnings()).toBe(1);
 	});
