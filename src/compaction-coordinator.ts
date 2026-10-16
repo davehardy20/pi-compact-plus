@@ -960,7 +960,9 @@ export class CompactionCoordinator {
 		// rather than as a whole string: a modified echo still starts with our prompt, and
 		// forwarding that whole prompt as caller guidance would spend the guidance allowance on
 		// our own boilerplate and truncate whatever the caller appended after it. Guidance we do
-		// not own — prepended, whitespace-modified, or merely similar — stays intact.
+		// not own — prepended, whitespace-modified, or merely similar — stays intact, which means
+		// a whitespace-modified echo is treated as caller-owned and may still be truncated by the
+		// bound.
 		const issuedPrompt = this.state.lastIssuedCompactionInstructions;
 		const customInstructions =
 			issuedPrompt !== null &&

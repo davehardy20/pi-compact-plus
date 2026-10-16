@@ -21,13 +21,18 @@ const focus = {
 };
 
 // A reachable focus is longer than the 1600-character caller guidance allowance, so a
-// lifecycle-owned prefix can actually crowd out the text appended after it. With empty
-// blockers the issued prompt is 1578 characters and the loss is not observable.
+// lifecycle-owned prefix can actually crowd out the text appended after it. Blockers use the
+// same per-item cap and count the production extractor applies (5 items, 300 characters
+// each). With empty blockers the issued prompt is 1578 characters and the loss is not
+// observable.
 const longFocus = {
 	...focus,
-	blockers: [
-		"the login route times out behind the gateway retry loop".repeat(45),
-	],
+	blockers: Array.from({ length: 5 }, (_, i) =>
+		`blocker ${i}: the login route times out behind the gateway retry loop`.slice(
+			0,
+			300,
+		),
+	),
 };
 
 function fixture(currentFocus: CurrentFocus = focus) {
