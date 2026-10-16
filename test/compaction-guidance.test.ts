@@ -63,6 +63,9 @@ function fixture(currentFocus: CurrentFocus = focus) {
 			} as never,
 			ctx as never,
 		);
+		// Fail loudly if the custom path was never reached: a missing call otherwise looks
+		// exactly like "guidance was dropped".
+		expect(runCustom.mock.calls.length).toBeGreaterThan(0);
 		return runCustom.mock.calls.at(-1)?.[5].customInstructions;
 	};
 	return { state, issue, forward };
@@ -180,11 +183,14 @@ it("truncates a whitespace-modified echo, the documented cost of treating it as 
 	expect(rendered).not.toContain("Preserve the retry diagnostic.");
 });
 
-it("ignores guidance that is not a string", async () => {
-	const f = fixture();
-	f.state.selectedMode = "standard";
-	expect(await f.forward(42 as never)).toBeUndefined();
-});
+it.each([42, ""])(
+	"ignores guidance %p that carries no instruction text",
+	async (value) => {
+		const f = fixture();
+		f.state.selectedMode = "standard";
+		expect(await f.forward(value as never)).toBeUndefined();
+	},
+);
 
 describe("instruction provenance is attempt-scoped", () => {
 	it.each(["reset", "epoch", "model", "complete", "error"])(

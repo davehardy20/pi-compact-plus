@@ -292,7 +292,8 @@ export class CompactionCoordinator {
 	}
 
 	/** Caller guidance Pi will really append, normalized once for the fast path, the
-	 * measurement, and the verdict key. */
+	 * measurement, the verdict key, and the custom-path ownership strip. Non-string and empty
+	 * guidance normalize to "", which callers treat as no guidance at all. */
 	private callerGuidance(event: SessionBeforeCompactEvent): string {
 		return typeof event.customInstructions === "string"
 			? event.customInstructions
