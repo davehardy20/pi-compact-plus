@@ -73,10 +73,11 @@ export interface CompactionVerdictEvidence {
 }
 
 /**
- * Every reason Compact+ writes, mapped to the decision it describes. Keys are the
- * same constants the writers use, so a renamed reason breaks this table at compile
- * time instead of silently reclassifying a verdict. A reason that reaches Compact+
- * on exactly one path is mapped to the kind that path records, so a verdict read
+ * Every reason Compact+ writes, mapped to the decision it describes. The summarization and
+ * compatibility keys are the same constants the writers import, so renaming one breaks this
+ * table at compile time; the generic reason strings are duplicated literals, pinned by
+ * test/compaction-verdict-type.test.ts rather than by the compiler. A reason that reaches
+ * Compact+ on exactly one path is mapped to the kind that path records, so a verdict read
  * back from telemetry classifies the same way as the live decision did.
  */
 const REASON_KINDS: ReadonlyMap<string, CompactionVerdictKind> = new Map([
@@ -119,6 +120,12 @@ const REASON_PREFIX_KINDS: ReadonlyArray<ReasonPrefixKind> = [
  * a deferral comes from a path that declined to run its own compaction, so a future cancel
  * reason added without a table entry would be misclassified here rather than crash. The raw
  * reason is always preserved on the verdict, so a mapping gap loses no information.
+ *
+ * A third class of divergence is not a mapping gap and cannot be fixed by the table: when
+ * Compact+ defers and Pi then settles a compaction, the live session's newest verdict becomes
+ * `accepted` (or `trimmed`) while the prose that deferral wrote still classifies as `deferred`
+ * on restore. Only the newest decision is kept, and a restore cannot see the settlement that
+ * followed it.
  */
 export function compactionVerdictKindForReason(
 	reason: string | null,

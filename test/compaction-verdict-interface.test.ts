@@ -264,7 +264,7 @@ describe("Compact+-owned entry points expose their decision through the accessor
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 9);
 
-		expect(coordinator.getLastVerdict()).toBe(recorded);
+		expect(coordinator.getLastVerdict()).toEqual(recorded);
 	});
 });
 
@@ -400,6 +400,44 @@ describe("restored telemetry cannot disagree with the verdict", () => {
 
 		expect(state.lastFallbackReason).toBe(NATIVE_FALLBACK_REASON);
 		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: NATIVE_FALLBACK_REASON,
+		});
+	});
+
+	it("cannot restore a settlement that happened after the persisted decision", async () => {
+		// Compact+ defers, Pi settles a compaction, and the session's newest verdict becomes
+		// `accepted`. The prose that survives telemetry is still the deferral's, so the same
+		// reason restores as `deferred`. A restore cannot see the settlement, only the decision
+		// that was last persisted.
+		const ctx = createCtx({ streamRoute: "none" });
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+
+		await beforeCompact(ctx, coordinator);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: NATIVE_FALLBACK_REASON,
+		});
+
+		await coordinator.onSessionCompact(
+			{
+				compactionEntry: {
+					timestamp: new Date().toISOString(),
+					details: null,
+				},
+				fromExtension: false,
+			} as never,
+			ctx,
+		);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "accepted",
+			reason: NATIVE_FALLBACK_REASON,
+		});
+
+		const { coordinator: restored } = createCoordinator();
+		restored.restoreVerdictFromPersistedReason(NATIVE_FALLBACK_REASON);
+		expect(restored.getLastVerdict()).toMatchObject({
 			kind: "deferred",
 			reason: NATIVE_FALLBACK_REASON,
 		});

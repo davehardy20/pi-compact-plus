@@ -215,6 +215,11 @@ export class CompactionCoordinator {
 	 * not persisted. Persisting the kind would need a telemetry schema change, which this slice
 	 * deliberately does not make. The mapper docstring in src/compaction-verdict.ts names the same
 	 * set.
+	 *
+	 * A restore also cannot see what happened after the persisted decision. When Compact+ defers
+	 * and Pi then settles a compaction, the live session's newest verdict is `accepted` while the
+	 * persisted prose restores as `deferred`. That is a limit of what telemetry keeps, not a
+	 * mapping gap.
 	 */
 	restoreVerdictFromPersistedReason(reason: string | null): void {
 		if (reason === null) return;
@@ -575,9 +580,13 @@ export class CompactionCoordinator {
 	 * settle records nothing, so the previous verdict stays in place. A consumer that needs the
 	 * outcome of a specific compaction reads it after that compaction settles, not simply after
 	 * an entry point returns.
+	 *
+	 * Returned as a frozen copy: the accessor is a snapshot, and a consumer cannot write through
+	 * it into session state.
 	 */
 	getLastVerdict(): Readonly<CompactionVerdict> | null {
-		return this.state.lastVerdict;
+		const verdict = this.state.lastVerdict;
+		return verdict ? Object.freeze({ ...verdict }) : null;
 	}
 
 	async handleManualCommand(
