@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeCompaction } from "../src/lifecycle.js";
 import { CompactionState } from "../src/state.js";
-import { SUMMARIZATION_CONTEXT_OVERFLOW_REASON } from "../src/summarization-overflow.js";
 
 interface MockCtx {
 	hasUI: boolean;
@@ -453,7 +452,6 @@ describe("executeCompaction stale extension context handling", () => {
 		(ctx.compact as ReturnType<typeof vi.fn>).mockImplementation(
 			({ onError }: { onError?: (error: Error) => void }) => {
 				// The coordinator recorded the decline during this attempt.
-				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 				state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 				if (onError) onError(new Error("provider request failed"));
 			},
@@ -479,7 +477,6 @@ describe("executeCompaction stale extension context handling", () => {
 
 	it("suppresses the failure notice when the same overflow is reported again", () => {
 		const state = new CompactionState();
-		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 		const ctx = createMockCtx();
 		const pi = createMockPi();
@@ -488,7 +485,6 @@ describe("executeCompaction stale extension context handling", () => {
 			({ onError }: { onError?: (error: Error) => void }) => {
 				// Steady state: the guard declines the same cut every attempt, so the
 				// stamp is re-recorded inside this attempt.
-				state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 				state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 				if (onError) onError(new Error("Compaction cancelled"));
 			},
@@ -516,7 +512,6 @@ describe("executeCompaction stale extension context handling", () => {
 		const state = new CompactionState();
 		// Same epoch: it only moves on a session transition, and the stamp belongs
 		// to the earlier attempt, not this one.
-		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		state.lastOverflowReportedEpoch = state.currentCompactionEpoch;
 		const ctx = createMockCtx();
 		const pi = createMockPi();
@@ -551,7 +546,6 @@ describe("executeCompaction stale extension context handling", () => {
 
 	it("still reports a failure when only an older attempt reported an overflow", () => {
 		const state = new CompactionState();
-		state.lastFallbackReason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
 		state.lastOverflowReportedEpoch = state.currentCompactionEpoch - 1;
 		const ctx = createMockCtx();
 		const pi = createMockPi();

@@ -24,7 +24,6 @@ export class CompactionState {
 	pendingCompaction: CompactionTelemetry | null = null;
 	/** Awaiting Pi's transactional commit, not yet a successful compaction. */
 	pendingBoundaryMarker: string | null = null;
-	lastFallbackReason: string | null = null;
 	/** Typed outcome of the most recent compaction decision made in this session. */
 	lastVerdict: CompactionVerdict | null = null;
 	/** Epoch of the attempt whose decline was already reported to the user. */
@@ -61,7 +60,6 @@ export class CompactionState {
 		this.lastCompaction = null;
 		this.pendingCompaction = null;
 		this.pendingBoundaryMarker = null;
-		this.lastFallbackReason = null;
 		this.lastVerdict = null;
 		this.lastOverflowReportedEpoch = null;
 		this.lastInjectedEcho = null;
@@ -91,7 +89,6 @@ export class CompactionState {
 			this.lastCompaction = null;
 			this.pendingCompaction = null;
 			this.pendingBoundaryMarker = null;
-			this.lastFallbackReason = null;
 			this.lastVerdict = null;
 			this.lastIssuedCompactionInstructions = null;
 			this.lastInjectedEcho = null;

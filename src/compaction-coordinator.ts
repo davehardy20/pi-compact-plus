@@ -227,12 +227,16 @@ export class CompactionCoordinator {
 	 */
 	restoreVerdict(verdict: Readonly<CompactionVerdict> | null): void {
 		if (!verdict) return;
-		this.recordVerdict(verdict.kind, verdict.reason);
+		this.recordVerdict(verdict.kind, verdict.reason, {
+			evidenceTrimmedTurns: verdict.evidenceTrimmedTurns,
+			usageTokens: verdict.usageTokens,
+		});
 	}
 
 	/**
-	 * The single writer of the session verdict. `lastFallbackReason` stays the prose view of
-	 * the same decision, so every existing consumer keeps reading the same string.
+	 * The single writer of the session verdict. It is the only place a compaction decision is
+	 * recorded, and no production reader consumes prose any more: the persisted telemetry prose
+	 * and the status fallback line are both derived from the recorded verdict.
 	 */
 	private recordVerdict(
 		kind: CompactionVerdictKind,
@@ -241,7 +245,6 @@ export class CompactionCoordinator {
 	): CompactionVerdict {
 		const verdict = compactionVerdict(kind, reason, evidence);
 		this.state.lastVerdict = verdict;
-		this.state.lastFallbackReason = verdict.reason;
 		return verdict;
 	}
 
@@ -257,12 +260,13 @@ export class CompactionCoordinator {
 		);
 	}
 
-	private cancelAbortedCompaction(): { cancel: true } {
+	/** An aborted attempt carries usage only when the caller had a measurement in scope. */
+	private cancelAbortedCompaction(usageTokens?: number): { cancel: true } {
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
 		this.state.clearPendingCompaction();
-		this.recordVerdict("cancelled", "compaction aborted");
+		this.recordVerdict("cancelled", "compaction aborted", { usageTokens });
 		return { cancel: true };
 	}
 
@@ -830,6 +834,7 @@ export class CompactionCoordinator {
 				this.state.clearPendingCompaction();
 				this.recordVerdictFromReason(
 					"safe turn-boundary compaction unavailable",
+					{ usageTokens: usage.tokens ?? undefined },
 				);
 			}
 			return undefined;
@@ -1076,7 +1081,7 @@ export class CompactionCoordinator {
 		);
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {
-			return this.cancelAbortedCompaction();
+			return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
 		// A trimmed attempt is a success with a smaller payload, not a decline. Say so, and

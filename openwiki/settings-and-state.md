@@ -137,7 +137,7 @@ Runtime-resolved values **must** be obtained from `resolveCompactPlusSettings()`
 
 Single mutable state container for all compaction and pruning state. See [architecture.md](architecture.md#state-lifecycle-srcstatets) for the full field list and reset triggers.
 
-**Verdict field:** `lastVerdict: CompactionVerdict | null` (`src/compaction-verdict.ts`) is the typed outcome of the newest compaction decision made in the session, and consumers (status output, the telemetry snapshot) read it rather than `lastFallbackReason`. `lastFallbackReason` is the prose view of the same decision, written only from `CompactionCoordinator.recordVerdict()`, so the pair cannot diverge. `lastVerdict` is **not** persisted: `reset()` and `resetOnModelChange()` clear it, and a restored session rebuilds it from the persisted `lastFallbackReason`. See [compaction.md](compaction.md#compaction-verdict-srccompaction-verdictts).
+**Verdict field:** `lastVerdict: CompactionVerdict | null` (`src/compaction-verdict.ts`) is the typed outcome of the newest compaction decision made in the session, and it is the only session-side record of that decision: status output and the telemetry snapshot both read it. `lastVerdict` is **not** persisted: `reset()` and `resetOnModelChange()` clear it, and a restored session rebuilds it from the persisted `lastFallbackReason`, which is itself written from `lastVerdict?.reason`. See [compaction.md](compaction.md#compaction-verdict-srccompaction-verdictts).
 
 **Guard helpers:**
 - `isOnCooldown(cooldownMs)`: `Date.now() - lastCompactTime < cooldownMs`

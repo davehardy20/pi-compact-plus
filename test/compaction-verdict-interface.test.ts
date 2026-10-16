@@ -410,11 +410,10 @@ describe("Pi-owned boundary handler keeps its return shape", () => {
 
 describe("restored telemetry cannot disagree with the verdict", () => {
 	it("derives a verdict from a persisted reason", () => {
-		const { coordinator, state } = createCoordinator();
+		const { coordinator } = createCoordinator();
 
 		restorePersistedReason(coordinator, NATIVE_FALLBACK_REASON);
 
-		expect(state.lastFallbackReason).toBe(NATIVE_FALLBACK_REASON);
 		expect(coordinator.getLastVerdict()).toMatchObject({
 			kind: "deferred",
 			reason: NATIVE_FALLBACK_REASON,
@@ -468,22 +467,20 @@ describe("restored telemetry cannot disagree with the verdict", () => {
 	});
 });
 
-describe("status output reads the verdict, not the prose mirror", () => {
-	function statusLines(
+describe("status output reads the verdict", () => {
+	function statusSnapshot(
 		coordinator: CompactionCoordinator,
 		state: CompactionState,
 	) {
-		return formatStatusLines(
-			buildStatusSnapshot({
-				usage: HIGH_USAGE,
-				selectedMode: state.selectedMode,
-				isCompacting: false,
-				lastCompactTime: 0,
-				lastCompaction: null,
-				lastVerdict: coordinator.getLastVerdict(),
-				lastInjectedEcho: null,
-			}),
-		);
+		return buildStatusSnapshot({
+			usage: HIGH_USAGE,
+			selectedMode: state.selectedMode,
+			isCompacting: false,
+			lastCompactTime: 0,
+			lastCompaction: null,
+			lastVerdict: coordinator.getLastVerdict(),
+			lastInjectedEcho: null,
+		});
 	}
 
 	it("renders the fallback line from the verdict the coordinator recorded", async () => {
@@ -492,20 +489,21 @@ describe("status output reads the verdict, not the prose mirror", () => {
 		state.selectedMode = "standard";
 		await beforeCompact(ctx, coordinator);
 
-		// Diverge the mirror: if any consumer still read it, the status line would change.
-		state.lastFallbackReason = "a reason no verdict carries";
-
-		const lines = statusLines(coordinator, state);
-		expect(lines).toContain(`  Last fallback: ${NATIVE_FALLBACK_REASON}`);
-		expect(lines.join("\n")).not.toContain("a reason no verdict carries");
+		const status = statusSnapshot(coordinator, state);
+		expect(formatStatusLines(status)).toContain(
+			`  Last fallback: ${NATIVE_FALLBACK_REASON}`,
+		);
+		// The snapshot carries the decision, not a prose copy, so no consumer can render a
+		// fallback string that no verdict recorded.
+		expect(Object.keys(status)).not.toContain("lastFallbackReason");
 	});
 
 	it("renders no fallback line when the session has recorded no verdict", () => {
 		const { coordinator, state } = createCoordinator();
-		state.lastFallbackReason = NATIVE_FALLBACK_REASON;
 
-		const lines = statusLines(coordinator, state);
-		expect(lines.join("\n")).not.toContain("Last fallback:");
+		expect(
+			formatStatusLines(statusSnapshot(coordinator, state)).join("\n"),
+		).not.toContain("Last fallback:");
 	});
 });
 

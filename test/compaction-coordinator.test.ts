@@ -282,7 +282,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		);
 
 		expect(result).not.toEqual({ cancel: true });
-		expect(state.lastFallbackReason).not.toContain(
+		expect(coordinator.getLastVerdict()?.reason).not.toContain(
 			"additional intent evidence could not be captured",
 		);
 	});
@@ -337,7 +337,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(result).toBeUndefined();
 		expect(state.selectedMode).toBeNull();
 		expect(state.isCompacting).toBe(false);
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			"compact error: provider request failed",
 		);
 		// The cancel warning is gone: nothing was cancelled, and the fallback notice is the
@@ -382,7 +382,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		// The budget is unusable, so nothing was measured and the warning says the evidence
 		// could not be captured rather than claiming it was too large.
 		expect(result).toEqual({ cancel: true });
-		expect(state.lastFallbackReason).toBe(
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			"additional intent evidence could not be captured within the summary request budget",
 		);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(

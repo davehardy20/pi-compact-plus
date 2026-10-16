@@ -2,21 +2,21 @@
  * The typed verdict of one Compact+ compaction decision.
  *
  * Compact+ decides whether a compaction runs, runs with less of its own optional
- * evidence, or does not run at all. Until now that decision survived only as a
- * free-text `state.lastFallbackReason` string plus a UI notice, so a caller could
- * not ask "what just happened?" without matching prose.
+ * evidence, or does not run at all. The decision used to survive only as a free-text
+ * prose string plus a UI notice, so a caller could not ask "what just happened?" without
+ * matching prose.
  *
  * The verdict is the decision, not a log line. `kind` is the closed set of outcomes
  * Compact+ can produce, `reason` is the unchanged prose for that outcome, and the
  * optional evidence fields carry the numbers behind a budget decision.
  *
- * `reason` is never rewritten and never embeds provider text, so existing consumers
- * (status output, telemetry) can keep reading it verbatim while the verdict is being
- * introduced.
+ * `reason` is never rewritten and never embeds provider text, so the status fallback line and
+ * the persisted telemetry prose can render it verbatim without either becoming a second source
+ * of truth.
  *
- * The mapper and the runtime guard stay module-internal until the consumer and telemetry
- * slices switch their readers. Only the verdict types and the closed kind set are re-exported
- * from the extension entry point.
+ * The mapper and the runtime guard are used at the telemetry read boundary in `src/events.ts`,
+ * where a persisted reason is mapped and guarded before the coordinator records it. Only the
+ * verdict types and the closed kind set are re-exported from the extension entry point.
  */
 
 import { NATIVE_FALLBACK_REASON } from "./compatibility.js";
@@ -64,10 +64,10 @@ export interface CompactionVerdict {
 	/** Set only when Compact+ dropped its own optional intent evidence. */
 	evidenceTrimmedTurns?: number;
 	/**
-	 * Usage in effect when the decision was made (provider-reported or estimated). Recorded at
-	 * every write site that had a measurement in scope: the guard cascade, a boundary or session
-	 * attempt, and its cancel or deferral. `cancelAbortedCompaction()` has no context to measure,
-	 * so an aborted verdict carries no usage.
+	 * Usage in effect when the decision was made (provider-reported or estimated). Attached at
+	 * every write site that had a measurement in scope: the guard cascade, an attempt cancel, a
+	 * deferral, a settled attempt, the overflow report, and the safe-boundary failure. An attempt
+	 * aborted before any usage was computed carries no usage.
 	 */
 	usageTokens?: number;
 }

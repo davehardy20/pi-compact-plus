@@ -115,7 +115,6 @@ export const __test__ = {
 	getLastCompactTokens: () => state.lastCompactTokens,
 	getLastModelKey: () => state.lastModelKey,
 	getLastCompaction: () => state.lastCompaction,
-	getLastFallbackReason: () => state.lastFallbackReason,
 	getLastVerdict: () => state.lastVerdict,
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,

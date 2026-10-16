@@ -1137,9 +1137,6 @@ describe("@davehardy20/pi-compact-plus", () => {
 
 		await sessionStartHandler({}, ctx);
 
-		expect(__test__.getLastFallbackReason()).toBe(
-			"custom summarization unavailable",
-		);
 		expect(__test__.getLastVerdict()).toMatchObject({
 			kind: "deferred",
 			reason: "custom summarization unavailable",
@@ -1878,9 +1875,8 @@ describe("@davehardy20/pi-compact-plus", () => {
 				executionPath: "native-fallback",
 				fromExtension: false,
 			});
-			expect(__test__.getLastFallbackReason()).toContain(expectedReason);
 			// Pi committed the entry, so the session's newest decision is a compaction that
-			// happened, even though the prose still describes the earlier deferral.
+			// happened, described by the same prose the deferral recorded.
 			expect(__test__.getLastVerdict()).toMatchObject({
 				kind: "accepted",
 				reason: expect.stringContaining(expectedReason),
@@ -4576,7 +4572,7 @@ describe("Compact+ lifecycle order", () => {
 		expect(__test__.getLastCompaction()).toBeNull();
 		expect(__test__.getLastTriggerAuto()).toBe(false);
 		expect(__test__.getSelectedMode()).toBeNull();
-		expect(__test__.getLastFallbackReason()).toBeNull();
+		expect(__test__.getLastVerdict()).toBeNull();
 		expect(__test__.getLastInjectedEcho()).toBeNull();
 	});
 
@@ -4638,7 +4634,7 @@ describe("Compact+ lifecycle order", () => {
 		expect(__test__.getLastCompaction()).toBeNull();
 		expect(__test__.getLastTriggerAuto()).toBe(false);
 		expect(__test__.getSelectedMode()).toBeNull();
-		expect(__test__.getLastFallbackReason()).toBeNull();
+		expect(__test__.getLastVerdict()).toBeNull();
 		expect(__test__.getLastInjectedEcho()).toBeNull();
 	});
 
@@ -4714,6 +4710,53 @@ describe("Compact+ lifecycle order", () => {
 		const saveMock = vi.mocked(persist.saveTelemetryWithDiagnostics);
 		const matchingCall = saveMock.mock.calls.find(
 			(call) => call[0].lastCompactTokens === 0,
+		);
+		expect(matchingCall).toBeDefined();
+	});
+
+	it("persists the prose the recorded verdict carries", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+
+		const compactPlusCommand = pi.commands.get("compact-plus");
+		const beforeCompactHandler = pi.events.get("session_before_compact")?.[0];
+		expect(compactPlusCommand).toBeDefined();
+		expect(beforeCompactHandler).toBeDefined();
+		if (!compactPlusCommand || !beforeCompactHandler) {
+			throw new Error("required handlers not registered");
+		}
+
+		const compactMock = vi.mocked(piCore.compact);
+		compactMock.mockResolvedValue(undefined as never);
+		Object.defineProperty(compactMock, "length", {
+			configurable: true,
+			value: 8,
+		});
+
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		await compactPlusCommand.handler("", ctx);
+		await beforeCompactHandler(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+				},
+				branchEntries: [],
+				signal: ctx.signal,
+			},
+			ctx,
+		);
+
+		const verdict = __test__.getLastVerdict();
+		expect(verdict).not.toBeNull();
+		expect(verdict?.kind).toBe("deferred");
+		// The persisted prose is written from the verdict, so a restored session reads back the
+		// reason of the decision that was actually made.
+		const saveMock = vi.mocked(persist.saveTelemetryWithDiagnostics);
+		const matchingCall = saveMock.mock.calls.find(
+			(call) => call[0].lastFallbackReason === verdict?.reason,
 		);
 		expect(matchingCall).toBeDefined();
 	});
