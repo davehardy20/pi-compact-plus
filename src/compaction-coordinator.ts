@@ -15,6 +15,13 @@ import { prepareBoundaryCompaction } from "./boundary-preparation.js";
 import { runCustomCompaction } from "./compact.js";
 import { extractTriggerFocus } from "./compaction-intent.js";
 import {
+	type CompactionVerdict,
+	type CompactionVerdictEvidence,
+	type CompactionVerdictKind,
+	compactionVerdict,
+	compactionVerdictKindForReason,
+} from "./compaction-verdict.js";
+import {
 	type CompactionExecutionPath,
 	resolveCompactionRuntimeCompatibility,
 } from "./compatibility.js";
@@ -193,12 +200,65 @@ export class CompactionCoordinator {
 		this.cutKeyNonce = 0;
 	}
 
+	/**
+	 * Rebuild the session verdict from a reason restored from telemetry at `session_start`.
+	 * The persisted reason is the only decision Compact+ keeps across a restart, so the
+	 * restored verdict is classified from it and `getLastVerdict()` cannot disagree with the
+	 * reason the status output shows. No reason means no recorded decision: the verdict stays
+	 * null rather than claiming one.
+	 *
+	 * The kind is the mapper's, not the live decision's. Two reasons reach Compact+ on more than
+	 * one path: the context-overflow reason (guard decline, cancelled attempt, or a deferral that
+	 * still reports the overflow) and the output-cap reason (cancelled attempt, or a deferral after
+	 * the provider confirmed the failure). For those, this restore reports the mapper's kind, which
+	 * is one of the live kinds but not necessarily the one that decision had, because the path is
+	 * not persisted. Persisting the kind would need a telemetry schema change, which this slice
+	 * deliberately does not make. The mapper docstring in src/compaction-verdict.ts names the same
+	 * set.
+	 *
+	 * A restore also cannot see what happened after the persisted decision. When Compact+ defers
+	 * and Pi then settles a compaction, the live session's newest verdict is `accepted` while the
+	 * persisted prose restores as `deferred`. That is a limit of what telemetry keeps, not a
+	 * mapping gap.
+	 */
+	restoreVerdictFromPersistedReason(reason: string | null): void {
+		if (reason === null) return;
+		this.recordVerdictFromReason(reason);
+	}
+
+	/**
+	 * The single writer of the session verdict. `lastFallbackReason` stays the prose view of
+	 * the same decision, so every existing consumer keeps reading the same string.
+	 */
+	private recordVerdict(
+		kind: CompactionVerdictKind,
+		reason: string | null,
+		evidence?: CompactionVerdictEvidence,
+	): CompactionVerdict {
+		const verdict = compactionVerdict(kind, reason, evidence);
+		this.state.lastVerdict = verdict;
+		this.state.lastFallbackReason = verdict.reason;
+		return verdict;
+	}
+
+	/** Record a decision whose kind follows from the reason Compact+ wrote. */
+	private recordVerdictFromReason(
+		reason: string | null,
+		evidence?: CompactionVerdictEvidence,
+	): CompactionVerdict {
+		return this.recordVerdict(
+			compactionVerdictKindForReason(reason),
+			reason,
+			evidence,
+		);
+	}
+
 	private cancelAbortedCompaction(): { cancel: true } {
 		this.state.selectedMode = null;
 		this.state.isCompacting = false;
 		this.state.lastTriggerAuto = false;
 		this.state.clearPendingCompaction();
-		this.state.lastFallbackReason = "compaction aborted";
+		this.recordVerdict("cancelled", "compaction aborted");
 		return { cancel: true };
 	}
 
@@ -442,16 +502,24 @@ export class CompactionCoordinator {
 		return key.replace(/partial:\d+/, "partial");
 	}
 
-	/** Record the decline, and warn at most once for an unchanged cut. */
-	private reportSummarizationOverflow(
-		event: SessionBeforeCompactEvent,
-		ctx: ExtensionEventContext,
-		reason: string,
-		warning: string,
-		manualAttempt: boolean,
-		measuredKey: string | null,
-	): void {
-		this.state.lastFallbackReason = reason;
+	/**
+	 * Warn at most once for an unchanged cut, and record the decision the report belongs to.
+	 * `kind` is the caller's own decision: `null` means the caller writes the verdict itself (the
+	 * cancel paths call `cancelCustom` right after), so exactly one verdict is written per
+	 * decision instead of a transient kind that the decision never had.
+	 */
+	private reportSummarizationOverflow(options: {
+		event: SessionBeforeCompactEvent;
+		ctx: ExtensionEventContext;
+		reason: string;
+		warning: string;
+		manualAttempt: boolean;
+		measuredKey: string | null;
+		kind: CompactionVerdictKind | null;
+	}): void {
+		const { event, ctx, reason, warning, manualAttempt, measuredKey, kind } =
+			options;
+		if (kind !== null) this.recordVerdict(kind, reason);
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
 		const key = this.noticeKey(
@@ -486,18 +554,39 @@ export class CompactionCoordinator {
 				this.state.lastIssuedCompactionInstructions,
 			)
 		) {
-			this.state.lastFallbackReason = SUMMARIZATION_SUSPECT_ESTIMATE_REASON;
+			this.recordVerdictFromReason(SUMMARIZATION_SUSPECT_ESTIMATE_REASON);
 			return undefined;
 		}
-		this.reportSummarizationOverflow(
+		this.reportSummarizationOverflow({
 			event,
 			ctx,
 			reason,
-			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+			warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 			manualAttempt,
-			key,
-		);
+			measuredKey: key,
+			kind: "declined",
+		});
 		return { cancel: true };
+	}
+
+	/**
+	 * The typed outcome of the most recent compaction decision made in this session, on any
+	 * path: Compact+'s own guard, a boundary attempt, or Pi's compaction that Compact+ settled.
+	 * Null until this session records one. A session restored from telemetry restores a
+	 * persisted reason as a verdict; a persisted session that recorded no reason starts with no
+	 * verdict, because inventing `accepted` would claim a decision the telemetry never made.
+	 *
+	 * It can also be older than the newest compaction: a Pi-native compaction Compact+ did not
+	 * settle records nothing, so the previous verdict stays in place. A consumer that needs the
+	 * outcome of a specific compaction reads it after that compaction settles, not simply after
+	 * an entry point returns.
+	 *
+	 * Returned as a frozen copy: the accessor is a snapshot, and a consumer cannot write through
+	 * it into session state.
+	 */
+	getLastVerdict(): Readonly<CompactionVerdict> | null {
+		const verdict = this.state.lastVerdict;
+		return verdict ? Object.freeze({ ...verdict }) : null;
 	}
 
 	async handleManualCommand(
@@ -729,8 +818,9 @@ export class CompactionCoordinator {
 		} catch {
 			if (this.state.currentCompactionEpoch === epoch) {
 				this.state.clearPendingCompaction();
-				this.state.lastFallbackReason =
-					"safe turn-boundary compaction unavailable";
+				this.recordVerdictFromReason(
+					"safe turn-boundary compaction unavailable",
+				);
 			}
 			return undefined;
 		} finally {
@@ -895,9 +985,12 @@ export class CompactionCoordinator {
 					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
 					: (compatibility.reason ?? undefined),
 			};
-			this.state.lastFallbackReason = headroomDefers
-				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
-				: compatibility.reason;
+			this.recordVerdict(
+				"deferred",
+				headroomDefers
+					? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
+					: compatibility.reason,
+			);
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 
@@ -909,14 +1002,15 @@ export class CompactionCoordinator {
 			}
 
 			if (deferred.reason && !headroomDefers) {
-				this.reportSummarizationOverflow(
+				this.reportSummarizationOverflow({
 					event,
 					ctx,
-					deferred.reason,
-					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+					reason: deferred.reason,
+					warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
-					deferred.key,
-				);
+					measuredKey: deferred.key,
+					kind: "deferred",
+				});
 				return { cancel: true };
 			}
 			// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
@@ -951,7 +1045,7 @@ export class CompactionCoordinator {
 			this.state.isCompacting = false;
 			this.state.lastTriggerAuto = false;
 			this.state.clearPendingCompaction();
-			this.state.lastFallbackReason = reason;
+			this.recordVerdict("cancelled", reason);
 			return { cancel: true };
 		};
 		// The lifecycle clears the issued prompt when the attempt settles, so the echo
@@ -1029,16 +1123,18 @@ export class CompactionCoordinator {
 				if (nativeOverflow && headroomOverride) nativeOverflow = null;
 			}
 			if (nativeOverflow) {
-				this.reportSummarizationOverflow(
+				this.reportSummarizationOverflow({
 					event,
 					ctx,
-					nativeOverflow,
-					nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
-						? SUMMARIZATION_OUTPUT_CAP_WARNING
-						: SUMMARIZATION_OVERFLOW_WARNING,
+					reason: nativeOverflow,
+					warning:
+						nativeOverflow === SUMMARIZATION_OUTPUT_CAP_REASON
+							? SUMMARIZATION_OUTPUT_CAP_WARNING
+							: SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
-					nativeOverflowKey,
-				);
+					measuredKey: nativeOverflowKey,
+					kind: null,
+				});
 				return cancelCustom(nativeOverflow);
 			}
 			// Otherwise Pi's separate requests are estimated to fit: fall through to
@@ -1052,7 +1148,12 @@ export class CompactionCoordinator {
 				fallbackReason: attempt.fallbackReason ?? undefined,
 				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
-			this.state.lastFallbackReason = attempt.fallbackReason;
+			this.recordVerdictFromReason(
+				attempt.fallbackReason ?? null,
+				attempt.evidenceTrimmedTurns === undefined
+					? undefined
+					: { evidenceTrimmedTurns: attempt.evidenceTrimmedTurns },
+			);
 			await this.persistTelemetrySnapshot();
 			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 			if (!isCurrent()) return cancelCustom("compaction context changed");
@@ -1083,17 +1184,17 @@ export class CompactionCoordinator {
 		// attempt reported it.
 		const overflowDecline =
 			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
-		this.state.lastFallbackReason =
+		const deferralReason =
 			headroomOverride && overflowDecline
 				? SUMMARIZATION_SUSPECT_ESTIMATE_REASON
 				: (attempt.fallbackReason ?? "custom summarization unavailable");
+		this.recordVerdict("deferred", deferralReason);
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",
 			fromExtension: false,
-			fallbackReason: this.state.lastFallbackReason,
-			compatibilityReason:
-				telemetryBase.compatibilityReason ?? this.state.lastFallbackReason,
+			fallbackReason: deferralReason,
+			compatibilityReason: telemetryBase.compatibilityReason ?? deferralReason,
 		};
 		// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
 		// caller treats the same deferral as no compaction this turn. Either way release
@@ -1124,14 +1225,15 @@ export class CompactionCoordinator {
 		// to an estimate-driven context overflow.
 		const fallback = await this.detectSummarizationRequestOverflow(event, ctx);
 		if (fallback.reason && !headroomOverride) {
-			this.reportSummarizationOverflow(
+			this.reportSummarizationOverflow({
 				event,
 				ctx,
-				fallback.reason,
-				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
+				reason: fallback.reason,
+				warning: NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 				manualAttempt,
-				fallback.key,
-			);
+				measuredKey: fallback.key,
+				kind: null,
+			});
 			return cancelCustom(fallback.reason);
 		}
 
@@ -1183,7 +1285,18 @@ export class CompactionCoordinator {
 					? details.compatibilityReason
 					: (pending.compatibilityReason ?? null),
 		};
-		this.state.lastFallbackReason = fallbackReason ?? null;
+		// Pi committed a compaction entry, so the session's outcome is a compaction that
+		// happened. Classifying this from the reason alone would flip a deferral recorded
+		// earlier in the same attempt into a contradictory kind; the reason stays as prose.
+		const trimmedTurns = pending.intentEvidenceTrimmedTurns;
+		this.recordVerdict(
+			trimmedTurns === undefined ? "accepted" : "trimmed",
+			fallbackReason ?? null,
+			{
+				evidenceTrimmedTurns: trimmedTurns,
+				usageTokens: pending.usageTokensAtTrigger,
+			},
+		);
 		this.state.lastCompactTime = this.state.lastCompaction.timestamp;
 		this.state.lastInjectedEcho =
 			executionPath === "custom" &&

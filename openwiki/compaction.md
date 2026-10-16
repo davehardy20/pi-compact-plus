@@ -160,11 +160,20 @@ The registry contract is asserted in `test/compaction-runtime-contract.test.ts`:
 - **Signal selection:** `selectCompactionSignal(signal, ctx.signal)` — the coordinator passes `event.signal`; when both signals exist and are distinct they are combined with `AbortSignal.any([signal, contextSignal])` so aborting *either* one cancels the compaction, otherwise whichever exists is used; `undefined` if neither exists.
 - **Checked before auth resolution, again after auth, and once more after argument construction** (before `compact()` is called): an aborted combined signal returns `{ result: undefined, fallbackReason: "compaction aborted" }` without resolving credentials or streaming — a context-signal abort during a pending auth resolution cancels even while the event signal is still live.
 - **During streaming:** if the request throws, `requestSignal?.aborted` distinguishes cancellation (`"compaction aborted"`) from a provider failure (`"compact error: provider request failed"`).
-- **Coordinator level:** `onSessionBeforeCompact` re-checks `event.signal?.aborted || ctx.signal?.aborted` after `runCustomCompaction` and calls `cancelAbortedCompaction()` — resets `selectedMode`/`isCompacting`/`lastTriggerAuto`, clears pending compaction, records `lastFallbackReason = "compaction aborted"`, and returns `{ cancel: true }` so Pi does not apply a half-finished summary.
+- **Coordinator level:** `onSessionBeforeCompact` re-checks `event.signal?.aborted || ctx.signal?.aborted` after `runCustomCompaction` and calls `cancelAbortedCompaction()` — resets `selectedMode`/`isCompacting`/`lastTriggerAuto`, clears pending compaction, records the `cancelled` verdict with reason `"compaction aborted"`, and returns `{ cancel: true }` so Pi does not apply a half-finished summary.
 
 **Invariant:** `COMPACT_PLUS_COMPACTION_THINKING_LEVEL = "minimal"` — Compact+ summaries always run at minimal thinking regardless of the session's reasoning level, to keep compaction fast and cheap. Failure paths never include provider error text or credentials in `fallbackReason` or telemetry.
 
 **Change-entrypoint:** If Pi changes the `compact()` helper signature, update the arity checks in `resolveCompactionRuntimeCompatibility`. If Pi exposes the live session stream or a registry stream on new runtimes, prefer those over any direct pi-ai adapter import — the compat shim removal was deliberate.
+
+## Compaction verdict (`src/compaction-verdict.ts`)
+
+Every compaction decision Compact+ makes is recorded as a `CompactionVerdict`: `kind` (the closed set `accepted | trimmed | deferred | declined | cancelled`), the unchanged prose `reason`, and optional `evidenceTrimmedTurns` / `usageTokens` measured at the decision.
+
+- **Single writer:** `CompactionCoordinator.recordVerdict()` is the only place the pair is written; `state.lastFallbackReason` is derived from the recorded verdict, so existing consumers (status output, telemetry) keep reading the same strings while the verdict exists alongside them.
+- **Read path:** `coordinator.getLastVerdict()` returns a frozen copy. It is the newest decision, which can be older than the newest compaction: a Pi-native compaction Compact+ did not settle records nothing, so the previous verdict remains.
+- **Restore:** `restoreVerdictFromPersistedReason()` rebuilds the verdict from the persisted `lastFallbackReason` at `session_start`. No persisted reason means no verdict.
+- **Known divergences between a live kind and a restored kind** (pinned in `test/compaction-verdict-interface.test.ts`): `SUMMARIZATION_CONTEXT_OVERFLOW_REASON` (live `declined`, `cancelled` or `deferred`; mapper says `declined`), `SUMMARIZATION_OUTPUT_CAP_REASON` (live `cancelled`, or `deferred` when `guardNativeCompaction` is false; mapper says `cancelled`), and any deferral reason Pi later settles (live `accepted`, restored `deferred`). Persisting the kind would require a telemetry schema change.
 
 ## Summary generation (`src/compact.ts`, `src/prompts.ts`, `src/summary-schema.ts`)
 

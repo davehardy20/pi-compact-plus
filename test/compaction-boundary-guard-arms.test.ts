@@ -27,9 +27,9 @@ import { type EffectiveUsage, REGROWTH_TOKENS } from "../src/types.js";
 
 /**
  * Characterization tests for the `maybeAutoCompactAtBoundary` guard cascade
- * (src/compaction-coordinator.ts:637). Pi 0.87's post-tool transaction must never
- * abort an active run, so every declined arm has to return no boundary result and
- * leave no attempt state behind.
+ * (`maybeAutoCompactAtBoundary`, src/compaction-coordinator.ts). Pi 0.87's post-tool
+ * transaction must never abort an active run, so every declined arm has to return no
+ * boundary result and leave no attempt state behind.
  *
  * Both downstream collaborators are stubbed with a *succeeding* attempt, so each
  * guard is mutation-sensitive: deleting a guard lets execution reach boundary
@@ -163,6 +163,7 @@ function createCoordinator(options?: {
  * what makes each guard individually detectable.
  */
 function expectDeclined(
+	coordinator: CompactionCoordinator,
 	result: unknown,
 	ctx: ExtensionEventContext,
 	state: CompactionState,
@@ -171,13 +172,12 @@ function expectDeclined(
 	expect(prepareBoundaryCompaction).not.toHaveBeenCalled();
 	expect(ctx.compact).not.toHaveBeenCalled();
 	expect(ctx.ui.notify).not.toHaveBeenCalled();
-	// Interim equivalence contract: today's state shape, pinned only so the later
-	// interface change can prove equivalence.
+	// A guard that records no decision leaves no verdict behind.
+	expect(coordinator.getLastVerdict()).toBeNull();
 	expect(state.selectedMode).toBeNull();
 	expect(state.isCompacting).toBe(false);
 	expect(state.lastTriggerAuto).toBe(false);
 	expect(state.pendingBoundaryMarker).toBeNull();
-	expect(state.lastFallbackReason).toBeNull();
 }
 
 /** Today's boundary entry is a Pi `SessionBoundaryDraft`; only the Compact+ stamped
@@ -220,7 +220,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines a turn that did not complete", async () => {
@@ -232,7 +232,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines a non-assistant turn", async () => {
@@ -246,7 +246,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines a turn that ended without a tool call", async () => {
@@ -260,7 +260,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines when the kill switch is set", async () => {
@@ -274,7 +274,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines in an ephemeral headless child with no session file", async () => {
@@ -287,7 +287,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines while a compaction is already in flight", async () => {
@@ -333,7 +333,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines a second boundary attempt inside the same turn", async () => {
@@ -346,7 +346,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines while the cooldown window is still open", async () => {
@@ -359,7 +359,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines when no usage can be resolved", async () => {
@@ -371,7 +371,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines when the session has no model", async () => {
@@ -384,7 +384,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines a checkpoint-band turn", async () => {
@@ -403,7 +403,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines when token regrowth since the last compaction is below the threshold", async () => {
@@ -416,7 +416,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 
 	it("declines when the runtime resolves to native fallback instead of a custom cut", async () => {
@@ -428,7 +428,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary declined guard arms",
 			ctx,
 		);
 
-		expectDeclined(result, ctx, state);
+		expectDeclined(coordinator, result, ctx, state);
 	});
 });
 
@@ -506,7 +506,7 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary accepted arms", () =>
 		expect(result).toBeUndefined();
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(state.pendingBoundaryMarker).toBeNull();
-		expect(state.lastFallbackReason).toBeNull();
+		expect(coordinator.getLastVerdict()).toBeNull();
 		// Interim equivalence contract: the attempt flags are cleared whether or not
 		// preparation succeeded, so a missing preparation is invisible in state.
 		expect(state.selectedMode).toBeNull();
@@ -534,10 +534,9 @@ describe("CompactionCoordinator.maybeAutoCompactAtBoundary accepted arms", () =>
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(state.pendingBoundaryMarker).toBeNull();
 		expect(state.isCompacting).toBe(false);
-		// Interim equivalence contract: today the only signal of this failure is the
-		// reason string in shared state.
-		expect(state.lastFallbackReason).toBe(
-			"safe turn-boundary compaction unavailable",
-		);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "declined",
+			reason: "safe turn-boundary compaction unavailable",
+		});
 	});
 });

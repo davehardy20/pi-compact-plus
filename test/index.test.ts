@@ -1115,6 +1115,37 @@ describe("@davehardy20/pi-compact-plus", () => {
 		expect(persist.saveTelemetryWithDiagnostics).not.toHaveBeenCalled();
 	});
 
+	it("restores a verdict for the reason loaded from telemetry at session_start", async () => {
+		const pi = createMockPi();
+		compactPlusExtension(pi as never);
+		__test__.resetState();
+		const ctx = createMockCtx({ contextWindow: 100000 });
+		const sessionStartHandler = pi.events.get("session_start")?.[0];
+		if (!sessionStartHandler) throw new Error("session_start handler missing");
+		vi.mocked(persist.loadTelemetryWithDiagnostics).mockResolvedValueOnce({
+			telemetry: {
+				version: 3,
+				lastCompactTime: 123,
+				lastCompactTokens: 456,
+				lastCompaction: null,
+				lastFallbackReason: "custom summarization unavailable",
+				lastInjectedEcho: null,
+				lastModelKey: null,
+			},
+			issue: null,
+		});
+
+		await sessionStartHandler({}, ctx);
+
+		expect(__test__.getLastFallbackReason()).toBe(
+			"custom summarization unavailable",
+		);
+		expect(__test__.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: "custom summarization unavailable",
+		});
+	});
+
 	it("resets stale runtime state at session_start when no telemetry is restored", async () => {
 		const pi = createMockPi();
 		compactPlusExtension(pi as never);
@@ -1825,6 +1856,12 @@ describe("@davehardy20/pi-compact-plus", () => {
 				expect.stringContaining("custom summarization unavailable"),
 				"warning",
 			);
+			// The deferral decision is readable through the extension's own test surface, the
+			// same way a consumer reads it, not only through a coordinator instance.
+			expect(__test__.getLastVerdict()).toMatchObject({
+				kind: "deferred",
+				reason: expect.stringContaining(expectedReason),
+			});
 
 			await sessionCompactHandler(
 				{
@@ -1842,6 +1879,12 @@ describe("@davehardy20/pi-compact-plus", () => {
 				fromExtension: false,
 			});
 			expect(__test__.getLastFallbackReason()).toContain(expectedReason);
+			// Pi committed the entry, so the session's newest decision is a compaction that
+			// happened, even though the prose still describes the earlier deferral.
+			expect(__test__.getLastVerdict()).toMatchObject({
+				kind: "accepted",
+				reason: expect.stringContaining(expectedReason),
+			});
 		},
 	);
 

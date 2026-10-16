@@ -9,11 +9,11 @@ import { type EffectiveUsage, REGROWTH_TOKENS } from "../src/types.js";
 
 /**
  * Characterization tests for the `maybeAutoCompact` guard cascade
- * (src/compaction-coordinator.ts:569). Pins today's behaviour: each guard arm is
- * driven through the public method and asserted through caller-visible effects
- * (whether Pi was asked to compact, whether the user was notified), with the
- * current `CompactionState` fields recorded only as the interim equivalence
- * contract for the later verdict-interface work.
+ * (`maybeAutoCompact`, src/compaction-coordinator.ts). Pins today's behaviour: each
+ * guard arm is driven through the public method and asserted through caller-visible
+ * effects (whether Pi was asked to compact, whether the user was notified) plus the
+ * typed verdict the call recorded, with the attempt flags in `CompactionState`
+ * asserted separately because the verdict does not describe them.
  */
 
 type ExtensionEventContext = Parameters<
@@ -90,11 +90,15 @@ function createCoordinator(options?: {
 }
 
 /** Every declined arm must leave no Pi compaction request and no user notice. */
-function expectDeclined(ctx: ExtensionEventContext, state: CompactionState) {
+function expectDeclined(
+	coordinator: CompactionCoordinator,
+	ctx: ExtensionEventContext,
+	state: CompactionState,
+) {
+	// A guard that records no decision leaves no verdict behind.
+	expect(coordinator.getLastVerdict()).toBeNull();
 	expect(ctx.compact).not.toHaveBeenCalled();
 	expect(ctx.ui.notify).not.toHaveBeenCalled();
-	// Interim equivalence contract: today's state shape, pinned only so the later
-	// interface change can prove equivalence.
 	expect(state.isCompacting).toBe(false);
 	expect(state.selectedMode).toBeNull();
 	expect(state.lastTriggerAuto).toBe(false);
@@ -107,7 +111,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines when the session has no model", async () => {
@@ -117,7 +121,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines when neither usage metric is available", async () => {
@@ -138,7 +142,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 		// identical, because `getModeFromEffectiveUsage` then returns null and the
 		// following `!mode` guard declines for the same caller-visible reason. Only the
 		// aggregate contract is observable from outside the method.
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines in the checkpoint band and never auto-compacts a checkpoint candidate", async () => {
@@ -154,7 +158,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines below the standard band", async () => {
@@ -170,7 +174,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines while the cooldown window is still open", async () => {
@@ -180,7 +184,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines when token regrowth since the last compaction is below the threshold", async () => {
@@ -190,7 +194,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("relies on the cooldown guard alone when regrowth cannot be measured", async () => {
@@ -235,7 +239,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines a second trigger inside the same turn", async () => {
@@ -245,7 +249,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 7);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines when the kill switch is set, before any other guard runs", async () => {
@@ -259,7 +263,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 
 	it("declines in an ephemeral headless child with no session file", async () => {
@@ -269,7 +273,7 @@ describe("CompactionCoordinator.maybeAutoCompact declined guard arms", () => {
 
 		await coordinator.maybeAutoCompact(ctx, "turn_end", 1);
 
-		expectDeclined(ctx, state);
+		expectDeclined(coordinator, ctx, state);
 	});
 });
 

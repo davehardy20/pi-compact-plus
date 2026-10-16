@@ -1,3 +1,4 @@
+import type { CompactionVerdict } from "./compaction-verdict.js";
 import { ToolOutputPruningState } from "./tool-output-pruning/state.js";
 import type {
 	CompactionMode,
@@ -24,6 +25,8 @@ export class CompactionState {
 	/** Awaiting Pi's transactional commit, not yet a successful compaction. */
 	pendingBoundaryMarker: string | null = null;
 	lastFallbackReason: string | null = null;
+	/** Typed outcome of the most recent compaction decision made in this session. */
+	lastVerdict: CompactionVerdict | null = null;
 	/** Epoch of the attempt whose decline was already reported to the user. */
 	lastOverflowReportedEpoch: number | null = null;
 	/** Exact lifecycle-issued prompt; transient ownership, never telemetry. */
@@ -59,6 +62,7 @@ export class CompactionState {
 		this.pendingCompaction = null;
 		this.pendingBoundaryMarker = null;
 		this.lastFallbackReason = null;
+		this.lastVerdict = null;
 		this.lastOverflowReportedEpoch = null;
 		this.lastInjectedEcho = null;
 		this.telemetryPersistenceIssues = [];
@@ -88,6 +92,7 @@ export class CompactionState {
 			this.pendingCompaction = null;
 			this.pendingBoundaryMarker = null;
 			this.lastFallbackReason = null;
+			this.lastVerdict = null;
 			this.lastIssuedCompactionInstructions = null;
 			this.lastInjectedEcho = null;
 			this.echoInjected = false;

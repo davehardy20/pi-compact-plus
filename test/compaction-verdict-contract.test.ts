@@ -22,12 +22,10 @@ import type { EffectiveUsage } from "../src/types.js";
 
 /**
  * Characterization tests for the compaction verdict contract
- * (src/compaction-coordinator.ts:785-1140). Today the reason a compaction was
- * declined, trimmed, cancelled or deferred is observable only as
- * `state.lastFallbackReason` plus a user notice; the return value says only
- * `cancel`, `compaction` or nothing. Each test pins one verdict through the
- * caller-visible effects first, and records the state field only as the interim
- * equivalence contract for the later verdict-interface work.
+ * (`onSessionBeforeCompact` and `onSessionCompact`, src/compaction-coordinator.ts).
+ * Each verdict is asserted as the typed verdict the coordinator records, because the
+ * return value says only `cancel`, `compaction` or nothing, and the attempt flags are
+ * asserted separately because the verdict does not describe them.
  *
  * Scope is deliberately the five verdict reasons no other suite names at this
  * interface: `custom compaction cancelled`, `custom summarization unavailable`,
@@ -147,7 +145,10 @@ describe("CompactionCoordinator verdict contract: custom attempt outcomes", () =
 		// reason in shared state.
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(notices(ctx)).toHaveLength(0);
-		expect(state.lastFallbackReason).toBe("custom compaction cancelled");
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason: "custom compaction cancelled",
+		});
 	});
 
 	it("uses the generic unavailable reason when the attempt reports neither a result nor a reason", async () => {
@@ -170,7 +171,10 @@ describe("CompactionCoordinator verdict contract: custom attempt outcomes", () =
 				),
 			),
 		).toBe(true);
-		expect(state.lastFallbackReason).toBe("custom summarization unavailable");
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: "custom summarization unavailable",
+		});
 	});
 
 	it("cancels when the branch changed while the attempt was running", async () => {
@@ -193,7 +197,10 @@ describe("CompactionCoordinator verdict contract: custom attempt outcomes", () =
 		expect(result).toEqual({ cancel: true });
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(notices(ctx)).toHaveLength(0);
-		expect(state.lastFallbackReason).toBe("compaction context changed");
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason: "compaction context changed",
+		});
 		expect(state.pendingCompaction).toBeNull();
 	});
 
@@ -217,7 +224,10 @@ describe("CompactionCoordinator verdict contract: custom attempt outcomes", () =
 		expect(result).toEqual({ cancel: true });
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(notices(ctx)).toHaveLength(0);
-		expect(state.lastFallbackReason).toBe("compaction aborted");
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason: "compaction aborted",
+		});
 		expect(state.isCompacting).toBe(false);
 		expect(state.selectedMode).toBeNull();
 	});
@@ -241,7 +251,10 @@ describe("CompactionCoordinator verdict contract: native deferral", () => {
 				text.includes("deferring to native Pi compaction"),
 			),
 		).toBe(true);
-		expect(state.lastFallbackReason).toBe(NATIVE_FALLBACK_REASON);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "deferred",
+			reason: NATIVE_FALLBACK_REASON,
+		});
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
 		expect(state.isCompacting).toBe(false);
 	});
