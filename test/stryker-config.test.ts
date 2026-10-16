@@ -347,10 +347,12 @@ describe("stryker mutation config", () => {
 		expect(String(baseline.strykerVersion)).toBe(
 			devDeps["@stryker-mutator/core"],
 		);
-		// Concurrency is score-neutral, so it is pinned as presence-only provenance: a
-		// tuning change must not force a ~15-minute full re-measurement to keep this green.
-		expect(typeof baseline.concurrency).toBe("string");
-		expect(String(baseline.concurrency).length).toBeGreaterThan(0);
+		// Provenance, not just arithmetic: the recorded numbers must belong to the tool and
+		// config this repository actually pins. Concurrency is pinned too, because it changes
+		// how often a mutant is cut off by the timeout instead of surviving: tuning
+		// stryker.config.json therefore requires a fresh `npm run mutation` and a regenerated
+		// fixture, and this assertion is what makes that requirement visible.
+		expect(String(baseline.concurrency)).toBe(String(config.concurrency));
 		expect(String(baseline.coverageAnalysis)).toBe(
 			String(config.coverageAnalysis),
 		);

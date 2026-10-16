@@ -215,13 +215,13 @@ function runNativeCompact(
 // by transcript content the way a shared heading can, and the fixture above puts the
 // confusable strings in a user message to prove it.
 //
-// Anchored to upstream symbols rather than dist line numbers, which move on every Pi bump.
-// Version-qualified aside for the resolved devDependency (Pi 1.0.1): the history request is
-// assembled in generateSummaryWithUsage (compaction.js:523-527), the turn-prefix prompt
-// template is applied in generateTurnPrefixSummary (compaction.js:730), and compact() issues
-// the history request before the turn-prefix request in its split-turn branch
-// (compaction.js:693-702). The 0.87.1 host compatibility boundary is covered separately in
-// test/provider-boundary-087.test.ts.
+// Anchored to upstream symbols rather than line numbers, which move on every Pi bump: the
+// history request is assembled in generateSummaryWithUsage, the turn-prefix prompt template is
+// applied in the private generateTurnPrefixSummary, and compact() issues the history request
+// before the turn-prefix request in its split-turn branch.
+//
+// Pinned against the resolved devDependency (Pi 1.0.1). The 0.87.1 host compatibility boundary
+// is covered separately in test/provider-boundary-087.test.ts.
 const TURN_PREFIX_PROMPT_TAIL =
 	"Only summarize information explicitly present above. Do not infer or recreate later messages.";
 

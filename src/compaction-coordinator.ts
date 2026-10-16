@@ -582,7 +582,10 @@ export class CompactionCoordinator {
 		// match the "no notice recorded yet" state and lose its first warning.
 		if (!manualAttempt && key !== null && this.overflowNoticeKey === key)
 			return;
-		this.overflowNoticeKey = key;
+		// Only a keyed cut may take over the notice slot: an unkeyed cut already bypasses the
+		// dedupe, and overwriting the slot with "no key" would let a later keyed cut warn a
+		// second time for something already explained.
+		if (key !== null) this.overflowNoticeKey = key;
 		ctx.ui.notify(warning, "warning");
 	}
 

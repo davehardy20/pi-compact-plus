@@ -1088,6 +1088,44 @@ ${"old context ".repeat(90_000)}`),
 		expect(warnings()).toBe(1);
 	});
 
+	it("re-measures a budget-exhausting cut when only its measurable text shrinks", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
+		state.selectedMode = null;
+		// Wide enough to exhaust the node budget on every attempt, so the cut keeps the same
+		// stable partial key while its measurable text changes.
+		const wideArgs = Object.fromEntries(
+			Array.from({ length: 12_000 }, (_unused, index) => [`k${index}`, "v"]),
+		);
+		const call = (text: string): AgentMessage =>
+			({
+				role: "assistant",
+				content: [
+					{ type: "text", text },
+					{ type: "toolCall", id: "c1", name: "read", arguments: wideArgs },
+				],
+				timestamp: 1,
+			}) as AgentMessage;
+
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("x".repeat(1_000_000))]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
+
+		// The partial key is stable, so the notice dedupe still recognizes the cut. It must
+		// not carry a verdict: this cut now fits, and reusing the previous decline would
+		// cancel a summarization request that can be sent.
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [call("small task")]),
+				ctx,
+			),
+		).toBeUndefined();
+	});
+
 	it("warns for an overflow whose cut it cannot key", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
