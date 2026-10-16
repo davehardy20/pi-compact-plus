@@ -9,16 +9,6 @@ vi.mock("../src/boundary-preparation.js", () => ({
 	prepareBoundaryCompaction,
 }));
 vi.mock("../src/compact.js", () => ({ runCustomCompaction: runCustom }));
-vi.mock("../src/persist.js", () => ({
-	loadTelemetryWithDiagnostics: vi.fn(async () => ({
-		telemetry: null,
-		issue: null,
-	})),
-	saveTelemetryWithDiagnostics: vi.fn(async () => ({
-		saved: true,
-		issue: null,
-	})),
-}));
 
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import {
@@ -32,6 +22,7 @@ import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_INTENT_EVIDENCE_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
 } from "../src/summarization-overflow.js";
 import type { EffectiveUsage } from "../src/types.js";
 
@@ -453,6 +444,24 @@ function singlePathRows(): MappingRow[] {
 			drive: viaBeforeCompact,
 		},
 		{
+			// The output cap is a provider response failure: it reaches the coordinator only as
+			// a cancelled attempt, never as a guard decline.
+			reason: SUMMARIZATION_OUTPUT_CAP_REASON,
+			arm: customAttempt({
+				cancel: true,
+				fallbackReason: SUMMARIZATION_OUTPUT_CAP_REASON,
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
+			reason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
+			arm: customAttempt({
+				cancel: true,
+				fallbackReason: SUMMARIZATION_INTENT_EVIDENCE_REASON,
+			}),
+			drive: viaBeforeCompact,
+		},
+		{
 			reason: "compaction context changed",
 			arm: customAttempt({
 				cancel: true,
@@ -576,33 +585,29 @@ describe("live verdict kinds agree with the reason mapping", () => {
 		}
 	});
 
-	it("pins the divergence for a reason Compact+ reaches on two paths", async () => {
-		// Live: the attempt failed after it started, so the coordinator saw a cancelled
-		// attempt. Restored: only the prose survives, and the mapper classifies the guard
-		// path. Both sides are asserted so the consumer-switching slice cannot treat a
+	it("pins the divergence for the reason Compact+ reaches on several paths", async () => {
+		// Live: the attempt was cancelled after it started, so the coordinator recorded a
+		// cancelled attempt. Restored: only the prose survives, and the mapper classifies the
+		// guard decline. Both sides are asserted so the consumer-switching slice cannot treat a
 		// restored verdict as the decision the live session actually made.
-		for (const reason of [
-			SUMMARIZATION_INTENT_EVIDENCE_REASON,
-			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-		]) {
-			expect(compactionVerdictKindForReason(reason), reason).toBe("declined");
+		const reason = SUMMARIZATION_CONTEXT_OVERFLOW_REASON;
+		expect(compactionVerdictKindForReason(reason)).toBe("declined");
 
-			const ctx = createCtx();
-			const { coordinator, state } = createCoordinator();
-			state.selectedMode = "standard";
-			runCustom.mockResolvedValue({ cancel: true, fallbackReason: reason });
-			await beforeCompact(ctx, coordinator);
-			expect(coordinator.getLastVerdict(), reason).toMatchObject({
-				kind: "cancelled",
-				reason,
-			});
+		const ctx = createCtx();
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		runCustom.mockResolvedValue({ cancel: true, fallbackReason: reason });
+		await beforeCompact(ctx, coordinator);
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason,
+		});
 
-			const { coordinator: restored } = createCoordinator();
-			restored.restoreVerdictFromPersistedReason(reason);
-			expect(restored.getLastVerdict(), reason).toMatchObject({
-				kind: "declined",
-				reason,
-			});
-		}
+		const { coordinator: restored } = createCoordinator();
+		restored.restoreVerdictFromPersistedReason(reason);
+		expect(restored.getLastVerdict()).toMatchObject({
+			kind: "declined",
+			reason,
+		});
 	});
 });

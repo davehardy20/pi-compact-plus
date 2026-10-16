@@ -494,7 +494,12 @@ export class CompactionCoordinator {
 		return key.replace(/partial:\d+/, "partial");
 	}
 
-	/** Record the decline, and warn at most once for an unchanged cut. */
+	/**
+	 * Warn at most once for an unchanged cut, and record the decision the report belongs to.
+	 * `kind` is the caller's own decision: `null` means the caller writes the verdict itself
+	 * (the cancel paths do), so exactly one verdict is written per decision instead of a
+	 * transient kind that the decision never had.
+	 */
 	private reportSummarizationOverflow(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionEventContext,
@@ -502,8 +507,9 @@ export class CompactionCoordinator {
 		warning: string,
 		manualAttempt: boolean,
 		measuredKey: string | null,
+		kind: CompactionVerdictKind | null,
 	): void {
-		this.recordVerdictFromReason(reason);
+		if (kind !== null) this.recordVerdict(kind, reason);
 		this.state.lastOverflowReportedEpoch = this.state.currentCompactionEpoch;
 		if (!ctx.hasUI) return;
 		const key = this.noticeKey(
@@ -548,6 +554,7 @@ export class CompactionCoordinator {
 			NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 			manualAttempt,
 			key,
+			"declined",
 		);
 		return { cancel: true };
 	}
@@ -983,6 +990,7 @@ export class CompactionCoordinator {
 					NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
 					deferred.key,
+					"deferred",
 				);
 				return { cancel: true };
 			}
@@ -1105,6 +1113,7 @@ export class CompactionCoordinator {
 						: SUMMARIZATION_OVERFLOW_WARNING,
 					manualAttempt,
 					nativeOverflowKey,
+					null,
 				);
 				return cancelCustom(nativeOverflow);
 			}
@@ -1203,6 +1212,7 @@ export class CompactionCoordinator {
 				NATIVE_SUMMARIZATION_OVERFLOW_WARNING,
 				manualAttempt,
 				fallback.key,
+				null,
 			);
 			return cancelCustom(fallback.reason);
 		}

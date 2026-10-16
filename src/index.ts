@@ -24,9 +24,6 @@ import {
 	type CompactionVerdict,
 	type CompactionVerdictEvidence,
 	type CompactionVerdictKind,
-	compactionVerdictFromReason,
-	compactionVerdictKindForReason,
-	isCompactionVerdict,
 } from "./compaction-verdict.js";
 import { registerCompactPlusEventHandlers } from "./events.js";
 import { createPackageMetadataResolver } from "./package-metadata.js";
@@ -46,11 +43,8 @@ export {
 	type CompactionVerdictEvidence,
 	type CompactionVerdictKind,
 	classifyMessages,
-	compactionVerdictFromReason,
-	compactionVerdictKindForReason,
 	type EffectiveUsage,
 	extractCurrentFocus,
-	isCompactionVerdict,
 	type SummaryInstructionOptions,
 };
 
