@@ -81,6 +81,34 @@ describe("measureSummaryRequestTokens", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	it("does not measure image payload the summarization request never sends", async () => {
+		const transcript = [user(`Task: repair login.\n${"detail ".repeat(500)}`)];
+		const imageMessage = {
+			role: "assistant",
+			content: [
+				{ type: "image", data: "x".repeat(1_000_000), mimeType: "image/png" },
+			],
+			timestamp: 2,
+		} as unknown as AgentMessage;
+
+		const without = await measureSummaryRequestTokens({
+			messages: transcript,
+			model: model(),
+			reserveTokens: 16_384,
+		});
+		const withImage = await measureSummaryRequestTokens({
+			messages: [...transcript, imageMessage],
+			model: model(),
+			reserveTokens: 16_384,
+		});
+
+		// Pi renders the summarization conversation through serializeConversation, which keeps
+		// only text blocks, so a megabyte of image data is not part of the request being measured
+		// and must not move the guard's numbers.
+		expect(withImage?.transcriptTokens).toBe(without?.transcriptTokens);
+		expect(withImage?.totalTokens).toBe(without?.totalTokens);
+	});
+
 	it("reserves the same output budget Pi reserves for the summary", async () => {
 		const measurement = await measureSummaryRequestTokens({
 			messages: [user("short")],

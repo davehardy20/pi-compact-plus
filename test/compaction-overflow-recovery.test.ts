@@ -1272,12 +1272,13 @@ ${"old context ".repeat(90_000)}`),
 	it("does not cancel a cut that is oversized only in image bytes", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
-		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 500_000 });
 		state.selectedMode = null;
-		// Pi renders the summarization conversation through contentText, which keeps only type
-		// "text" blocks, so a megabyte of image data is not part of the request the guard has
-		// to fit. If measurement ever started scoring image parts, this cut would be declined
-		// and a summarization request that the provider can actually serve would be cancelled.
+		// Pi renders the summarization conversation through serializeConversation, which keeps
+		// only type "text" blocks, so a megabyte of image data is not part of the request the
+		// guard has to fit. Usage is pushed past the session-fit fast path so the guard actually
+		// measures this cut: if measurement ever scored the image bytes, this cut would be
+		// declined and a summarization request the provider can serve would be cancelled.
 		const imageOnly = (data: string): AgentMessage =>
 			({
 				role: "assistant",
@@ -1294,6 +1295,8 @@ ${"old context ".repeat(90_000)}`),
 				ctx,
 			),
 		).toBeUndefined();
+		// No decision recorded either: the guard measured the cut and found it fits.
+		expect(coordinator.getLastVerdict()).toBeNull();
 		expect(
 			(ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.filter(
 				(call) => call[1] === "warning",
