@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,6 +33,7 @@ import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 import {
 	PI_OUTPUT_CAP_FAILURE,
 	STRATA_CONTEXT_OVERFLOW,
+	STRATA_NO_ROOM_CONTEXT_OVERFLOW,
 } from "./fixtures/summarization-errors.js";
 
 function message(role: string, text: string): AgentMessage {
@@ -141,6 +143,89 @@ describe("runCustomCompaction characterization", () => {
 		compactMock.mockReset();
 		compactMock.mockResolvedValue(successfulResult());
 		captureProbe.mockReset();
+	});
+
+	it.each([false, true])(
+		"omits historical thinking before budgeting and sending (split=%s)",
+		async (isSplitTurn) => {
+			const source = message("user", "Task: repair routing.");
+			const visible = {
+				type: "text" as const,
+				text: "Keep the audit controls.",
+			};
+			const call = {
+				type: "toolCall" as const,
+				id: "call-1",
+				name: "read",
+				arguments: { path: "src/routing.ts" },
+			};
+			const thinking = {
+				type: "thinking" as const,
+				thinking: "historical reasoning ".repeat(30_000),
+			};
+			const assistant = {
+				role: "assistant",
+				content: [thinking, visible, call],
+			} as AssistantMessage;
+			Object.freeze(assistant.content);
+			Object.freeze(assistant);
+			const result = toolResult("call-1", "Audit controls are enabled.");
+			const prefix = isSplitTurn ? [assistant, result] : [];
+			const messages = isSplitTurn ? [source] : [source, assistant, result];
+			const ctx = context();
+			const attempt = await runCustomCompaction(
+				preparation({ messages, prefix, isSplitTurn }),
+				"standard",
+				ctx,
+				compatibility(),
+			);
+
+			// The old helper would replay >100k estimated tokens of thinking alone.
+			// Visible evidence fits with the output reserve and must still compact.
+			expect(attempt.result).toBeDefined();
+			expect(attempt.fallbackReason).toBeNull();
+			expect(compactMock).toHaveBeenCalledTimes(1);
+			expect(captureProbe).toHaveBeenCalledTimes(1);
+			const captured = captureProbe.mock.calls[0];
+			const sent = compactMock.mock.calls[0];
+			expect(sent[0].messagesToSummarize).toBe(captured[0]);
+			expect(sent[0].messagesToSummarize).toEqual([
+				source,
+				{ ...assistant, content: [visible, call] },
+				result,
+			]);
+			expect(sent[0].messagesToSummarize[0]).toBe(source);
+			expect(sent[0].messagesToSummarize[1].content[0]).toBe(visible);
+			expect(sent[0].messagesToSummarize[1].content[1]).toBe(call);
+			expect(sent[0].messagesToSummarize[2]).toBe(result);
+			expect(sent[0].turnPrefixMessages).toEqual([]);
+			expect(sent[0].isSplitTurn).toBe(false);
+			expect(sent[4]).toBe(captured[6]);
+			expect(assistant.content).toEqual([thinking, visible, call]);
+			expect(messages).toEqual(
+				isSplitTurn ? [source] : [source, assistant, result],
+			);
+			expect(prefix).toEqual(isSplitTurn ? [assistant, result] : []);
+		},
+	);
+
+	it("marks Strata's no-room rejection as a provider-confirmed overflow", async () => {
+		compactMock.mockRejectedValueOnce(
+			new Error(STRATA_NO_ROOM_CONTEXT_OVERFLOW),
+		);
+		await expect(
+			runCustomCompaction(
+				preparation({ messages: [message("user", "Task: repair routing.")] }),
+				"standard",
+				context(),
+				compatibility(),
+			),
+		).resolves.toEqual({
+			result: undefined,
+			fallbackReason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+			requestOverflow: true,
+			providerConfirmed: true,
+		});
 	});
 
 	it("budgets the exact normalized hard-mode request before resolving auth", async () => {

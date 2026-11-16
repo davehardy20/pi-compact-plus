@@ -302,6 +302,10 @@ settings are resolved when pruning commands and lifecycle events run, but
 ## Notes
 
 - Compact+ hooks into Pi's `session_before_compact` event to provide custom summarization.
+- Custom summaries omit historical assistant thinking before sizing and sending.
+  Visible conversation text and tool evidence remain; the original session is
+  unchanged. This avoids extra reasoning replay on older Pi helpers. Request sizes
+  are still estimates, so a provider can reject a request that was estimated to fit.
 - When Pi does not expose the live session stream to extensions, Compact+ uses
   `ctx.modelRegistry.streamSimple` if available. This keeps configured provider
   routing, request transforms, and request-time authentication in Pi's registry.

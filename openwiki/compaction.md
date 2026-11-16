@@ -118,6 +118,8 @@ The native-path guard measures each request Pi would actually send: the history 
 
 `classifySummarizationFailure(error)` returns `"context-overflow"`, `"output-cap"`, or `"provider-error"`, and `summarizationFailureReason()` maps the first two to stable reason constants. Pi's `OVERFLOW_PATTERNS` missed the captured llama.cpp-style wording (`prompt (300932 tokens) + max tokens (1) exceeds the context (262144)`) and the error is not retryable, so unclassified it flattens to a generic provider error and the identical oversized payload goes straight back to native Pi compaction.
 
+Both Strata forms are recognised: `prompt (...) + max tokens (...) exceeds the context (...)` and `request exceeds the context window: prompt (...) leaves no room to answer in the context (...)`. Unrelated provider errors still use the generic failure path.
+
 Classification only: reason strings are stable constants carrying no provider text, digits, or credentials, so they stay safe for telemetry and UI. `runCustomCompaction()` marks the attempt `requestOverflow: true`; the coordinator measures the payload Pi would actually send before choosing between cancelling and deferring, and picks the warning from the classified reason, so an output-cap exhaustion is not reported as a context-window overflow.
 
 ## Compatibility resolution (`src/compatibility.ts`)
@@ -177,6 +179,12 @@ Every compaction decision Compact+ makes is recorded as a `CompactionVerdict`: `
 - **Known divergences between a live kind and a restored kind** (pinned in `test/compaction-verdict-interface.test.ts`): `SUMMARIZATION_CONTEXT_OVERFLOW_REASON` (live `declined`, `cancelled` or `deferred`; mapper says `declined`), `SUMMARIZATION_OUTPUT_CAP_REASON` (live `cancelled`, or `deferred` when `guardNativeCompaction` is false; mapper says `cancelled`), and any deferral reason Pi later settles (live `accepted`, restored `deferred`). Persisting the kind would require a telemetry schema change.
 
 ## Summary generation (`src/compact.ts`, `src/prompts.ts`, `src/summary-schema.ts`)
+
+### Historical thinking and request size
+
+`normalizeCompactionPreparation()` removes assistant `thinking` blocks from copies of both summary slices before hard-mode classification, budget measurement and sending. Older Pi helpers (including the locked 1.0.1 helper) otherwise serialize historical reasoning as plain text, even when the provider omits it from live requests. Visible text, tool calls/results, message order and the kept boundary are preserved; the session transcript is unchanged. Newer helpers already omit thinking, so this preparation is compatible with either behavior. This is separate from the summary model's own `thinkingLevel` setting.
+
+The budget still includes the summary output reserve, and its token counts remain estimates, not provider-tokenizer measurements. Native fallback is measured against the native helper's own payload, not this modified custom preparation. Regression coverage includes intercepted real-SDK requests with large synthetic thinking histories; it does not prove the exact cause of a particular live provider failure.
 
 ### Summary instruction structure
 

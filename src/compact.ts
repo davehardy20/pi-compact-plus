@@ -268,11 +268,31 @@ function normalizePreviousSummary(
 	);
 }
 
+/** Older Pi helpers serialize thinking that providers may omit from live context.
+ * Remove it only from summary copies, before both budget measurement and sending.
+ * Visible text and tool evidence stay intact; session messages are never mutated. */
+function omitAssistantThinking(messages: AgentMessage[] = []): AgentMessage[] {
+	return messages.map((message) => {
+		if (
+			message.role !== "assistant" ||
+			!message.content.some((block) => block.type === "thinking")
+		) {
+			return message;
+		}
+		return {
+			...message,
+			content: message.content.filter((block) => block.type !== "thinking"),
+		};
+	});
+}
+
 export function normalizeCompactionPreparation(
 	preparation: Parameters<typeof compact>[0],
 ): Parameters<typeof compact>[0] {
 	return {
 		...preparation,
+		messagesToSummarize: omitAssistantThinking(preparation.messagesToSummarize),
+		turnPrefixMessages: omitAssistantThinking(preparation.turnPrefixMessages),
 		previousSummary: normalizePreviousSummary(preparation.previousSummary),
 	};
 }

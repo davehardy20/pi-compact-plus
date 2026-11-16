@@ -48,9 +48,10 @@ export const SUMMARIZATION_INTENT_EVIDENCE_REASON =
 export const SUMMARIZATION_SUSPECT_ESTIMATE_REASON =
 	"summarization estimate exceeded the window while provider usage reported headroom";
 
-/** `prompt (300932 tokens) + max tokens (1) exceeds the context (262144)` */
+/** Strata rejects either an oversized prompt alone or prompt plus reserved output. */
 const CONTEXT_OVERFLOW_PATTERNS = [
 	/prompt \(\d[\d,]* tokens\) \+ max tokens \(\d[\d,]*\) exceeds the context \(\d[\d,]*\)/i,
+	/request exceeds the context window: prompt \(\d[\d,]* tokens\) leaves no room to answer in the context \(\d[\d,]*\)/i,
 	// Companion clause: the server found no room left for any output at all.
 	/max_tokens \(at most 0 here\)/i,
 ];
