@@ -116,6 +116,12 @@ describe("PR Node workflow checks", () => {
 		const lock = JSON.parse(
 			readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"),
 		);
+		const biome = JSON.parse(
+			readFileSync(new URL("../biome.json", import.meta.url), "utf8"),
+		);
+		expect(biome.$schema).toBe(
+			"./node_modules/@biomejs/biome/configuration_schema.json",
+		);
 		expect(manifest.scripts.lint).toBe("biome check src test scripts");
 		expect(manifest.devDependencies["@biomejs/biome"]).toBe("2.5.8");
 		expect(lock.packages["node_modules/@biomejs/biome"].version).toBe("2.5.8");

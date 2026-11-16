@@ -56,11 +56,15 @@ const runtimes = [
 		version: "1.0.1",
 		root:
 			process.env.PI_COMPACT_PLUS_TEST_PI_101_ROOT ??
+			findInstalledPiRuntime("1.0.1"),
+	},
+	{
+		version: "1.5.2",
+		root: dirname(
 			dirname(
-				dirname(
-					fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
-				),
+				fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
 			),
+		),
 	},
 ];
 

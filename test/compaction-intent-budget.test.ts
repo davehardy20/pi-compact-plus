@@ -38,7 +38,10 @@ async function budgetOf(
 	projected: AgentMessage[],
 	prepared: ReturnType<typeof preparation> & { previousSummary?: string },
 	contextWindow: number,
-	maxTokens = contextWindow,
+	maxTokens = Math.min(
+		Math.floor(0.8 * prepared.settings.reserveTokens),
+		contextWindow,
+	),
 ) {
 	return prepareBudgetedCompactionFocus(projected, prepared, {
 		model: {
@@ -220,7 +223,7 @@ function runNativeCompact(
 // applied in the private generateTurnPrefixSummary, and compact() issues the history request
 // before the turn-prefix request in its split-turn branch.
 //
-// Pinned against the resolved devDependency (Pi 1.0.1). The 0.87.1 host compatibility boundary
+// Pinned against the resolved devDependency (Pi 1.5.2). The 0.87.1 host compatibility boundary
 // is covered separately in test/provider-boundary-087.test.ts.
 const TURN_PREFIX_PROMPT_TAIL =
 	"Only summarize information explicitly present above. Do not infer or recreate later messages.";
@@ -259,7 +262,7 @@ describe("native summarization request pins", () => {
 		fetchSpy.mockRestore();
 	});
 
-	it("pins both summarization fractions to Pi's own requests", async () => {
+	it("pins both requests to Pi's model-default output allowance", async () => {
 		const prepared = nativeSplitTurnPreparation();
 		expect(prepared.isSplitTurn).toBe(true);
 		expect(prepared.messagesToSummarize.length).toBeGreaterThan(0);
@@ -270,10 +273,13 @@ describe("native summarization request pins", () => {
 		expect(transcript.includes("# Conversation")).toBe(true);
 		expect(transcript.includes(TURN_PREFIX_PROMPT_TAIL)).toBe(true);
 
-		const requests: Array<{ maxTokens: number; promptText: string }> = [];
+		const requests: Array<{
+			maxTokens: number | undefined;
+			promptText: string;
+		}> = [];
 		await runNativeCompact(prepared, 200_000, (context, options) => {
 			requests.push({
-				maxTokens: options?.maxTokens ?? 0,
+				maxTokens: options?.maxTokens,
 				promptText: summarizationPromptText(context),
 			});
 			return stubSummary("## Goal\nstub summary");
@@ -297,40 +303,37 @@ describe("native summarization request pins", () => {
 		// confusable without proving the classification resists it in the real request.
 		expect(historyPrompt.includes("# Conversation")).toBe(true);
 		expect(historyPrompt.includes(TURN_PREFIX_PROMPT_TAIL)).toBe(true);
-		// Drift guard for the fractions documented in src/summarization-request-budget.ts:
-		// generateSummaryWithUsage reserves floor(0.8 * reserveTokens) = 13_107 and the private
-		// generateTurnPrefixSummary reserves floor(0.5 * reserveTokens) = 8_192. maxTokens
-		// 200_000 keeps the model cap from masking either fraction.
-		expect(requests[0]?.maxTokens).toBe(13_107);
-		expect(requests[1]?.maxTokens).toBe(8_192);
+		// Pi 1.5.2 leaves both caps unspecified; provider options default to the model ceiling.
+		expect(requests.map((request) => request.maxTokens)).toEqual([
+			undefined,
+			undefined,
+		]);
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("pins the model-cap clamp Pi applies to both requests", async () => {
 		const prepared = nativeSplitTurnPreparation();
-		const captured: number[] = [];
+		const captured: Array<number | undefined> = [];
 		await runNativeCompact(prepared, 4096, (_context, options) => {
-			captured.push(options?.maxTokens ?? 0);
+			captured.push(options?.maxTokens);
 			return stubSummary("## Goal\nstub summary");
 		});
 
-		// Pi clamps both requests to model.maxTokens: min(floor(0.8 * 16_384), 4096) and
-		// min(floor(0.5 * 16_384), 4096). clampReservedOutput must keep reproducing that.
-		expect(captured).toEqual([4096, 4096]);
+		// Even a small model ceiling is selected downstream, not by the helper.
+		expect(captured).toEqual([undefined, undefined]);
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("pins the unclamped requests Pi sends when the model declares no output cap", async () => {
 		const prepared = nativeSplitTurnPreparation();
-		const captured: number[] = [];
+		const captured: Array<number | undefined> = [];
 		await runNativeCompact(prepared, 0, (_context, options) => {
-			captured.push(options?.maxTokens ?? 0);
+			captured.push(options?.maxTokens);
 			return stubSummary("## Goal\nstub summary");
 		});
 
-		// Pi treats a non-positive model cap as no cap at all, so both fractions survive
-		// unclamped. clampReservedOutput mirrors that branch and must not silently clamp to zero.
-		expect(captured).toEqual([13_107, 8_192]);
+		// A zero model ceiling does not make the omitted request cap measurable.
+		expect(captured).toEqual([undefined, undefined]);
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });
@@ -554,11 +557,8 @@ it("rejects a small-model request when native prompt plus output exceeds context
 		...preparation([source]),
 		settings: { reserveTokens: 512 },
 	};
-	const focus = await extractCompactionFocus(
-		[source, retained],
-		prepared,
-		1024,
-	);
+	const budgeted = await budgetOf([source, retained], prepared, 1024, 1024);
+	const focus = budgeted.focus;
 	const marker = new Error("capture only: no provider call");
 	let requestTokens = 0;
 	await expect(
@@ -587,7 +587,7 @@ it("rejects a small-model request when native prompt plus output exceeds context
 				).toBe(true);
 				requestTokens = context.messages.reduce(
 					(total, message) => total + estimateTokens(message),
-					options?.maxTokens ?? 0,
+					options?.maxTokens ?? 1024,
 				);
 				throw marker;
 			},
@@ -677,13 +677,13 @@ it("fits the exact captured total but rejects one token less", async () => {
 			undefined,
 			(_model, context, options) => {
 				captures++;
-				expect(options?.maxTokens).toBe(512);
+				expect(options?.maxTokens).toBeUndefined();
 				expect(options?.apiKey).toBeUndefined();
 				expect(options?.headers).toBeUndefined();
 				expect(options?.env).toBeUndefined();
 				total = context.messages.reduce(
 					(sum, message) => sum + estimateTokens(message),
-					options?.maxTokens ?? 0,
+					options?.maxTokens ?? model.maxTokens,
 				);
 				throw marker;
 			},

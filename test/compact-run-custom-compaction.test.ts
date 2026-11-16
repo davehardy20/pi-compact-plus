@@ -159,8 +159,8 @@ describe("runCustomCompaction characterization", () => {
 			compatibility(),
 		);
 		expect(attempt.fallbackReason).toBeNull();
-		expect(captureProbe).toHaveBeenCalledTimes(1);
-		const capture = captureProbe.mock.calls[0];
+		expect(captureProbe).toHaveBeenCalledTimes(2);
+		const capture = captureProbe.mock.calls[1];
 		const sent = compactMock.mock.calls[0];
 		expect(sent[0].messagesToSummarize).toBe(capture[0]);
 		expect(sent[0].messagesToSummarize).toEqual([source, prefix]);

@@ -40,11 +40,7 @@ import {
 	SUMMARIZATION_OUTPUT_CAP_REASON,
 	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "./summarization-overflow.js";
-import {
-	clampReservedOutput,
-	measureSummaryRequestTokens,
-	piReservedTurnPrefixOutputTokens,
-} from "./summarization-request-budget.js";
+import { measureSummaryRequestTokens } from "./summarization-request-budget.js";
 import {
 	type CompactionMode,
 	type CompactionTelemetry,
@@ -355,13 +351,10 @@ export class CompactionCoordinator {
 		) {
 			return { reason: this.overflowVerdict.reason, key, partial: false };
 		}
-		// Pi issues one request per preparation slice. On a split turn the prefix
-		// request carries no custom instructions or previous summary and reserves
-		// floor(0.5 * reserveTokens), matching Pi's budget for that request. Pi's
-		// prefix prompt template is not reproduced, so that measurement is approximate.
+		// Capture each actual SDK builder, including its version-specific guidance
+		// and output allowance. Never substitute a history template for a prefix.
 		const requests: {
 			messages: AgentMessage[];
-			output?: number;
 			wrapper: boolean;
 		}[] = [];
 		const history = preparation.messagesToSummarize ?? [];
@@ -370,10 +363,6 @@ export class CompactionCoordinator {
 		if (preparation.isSplitTurn && prefix.length > 0) {
 			requests.push({
 				messages: prefix,
-				output: clampReservedOutput(
-					model,
-					piReservedTurnPrefixOutputTokens(reserve as number),
-				),
 				wrapper: false,
 			});
 		}
@@ -385,8 +374,8 @@ export class CompactionCoordinator {
 				messages: request.messages,
 				model,
 				reserveTokens: reserve,
-				reservedOutputTokens: request.output,
-				customInstructions: request.wrapper ? customInstructions : undefined,
+				turnPrefix: !request.wrapper,
+				customInstructions,
 				previousSummary: request.wrapper
 					? preparation.previousSummary
 					: undefined,

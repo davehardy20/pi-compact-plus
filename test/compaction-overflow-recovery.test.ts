@@ -27,7 +27,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		value: 13,
 		configurable: true,
 	});
-	return { ...actual, compact: compactMock };
+	const routed: typeof actual.compact = (...args) =>
+		args[0].isSplitTurn && args[0].messagesToSummarize.length === 0
+			? actual.compact(...args)
+			: compactMock(...args);
+	Object.defineProperty(routed, "length", { value: actual.compact.length });
+	return { ...actual, compact: routed };
 });
 
 import {
