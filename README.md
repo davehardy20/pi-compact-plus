@@ -506,7 +506,8 @@ upgraded.
 The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `postcss`, and the 0.84.x intermediate slices resolved Pi 0.83.0's bundled
 `brace-expansion` and `undici` advisories. The current dependency update pins
-Pi 1.5.2 (`undici` 8.12.3), Vite 7.3.8, and matching Vitest/coverage 4.1.12.
+Pi 1.5.2 (`undici` 8.12.3) and Vite 7.3.8. Vitest and coverage remain pinned
+together at 4.1.11.
 CI continues to reject high-severity audit findings; remaining moderate findings
 are not treated as a clean audit.
 

@@ -68,10 +68,10 @@
 		"@stryker-mutator/core": "10.0.0",
 		"@stryker-mutator/vitest-runner": "10.0.0",
 		"@types/node": "^24.7.2",
-		"@vitest/coverage-v8": "4.1.12",
+		"@vitest/coverage-v8": "4.1.11",
 		"typescript": "^5.9.3",
 		"vite": "7.3.8",
-		"vitest": "4.1.12"
+		"vitest": "4.1.11"
 	},
 	"pi": {
 		"extensions": [
