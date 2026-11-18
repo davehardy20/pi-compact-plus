@@ -14,13 +14,109 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
+import { runCustomCompaction } from "../src/compact.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
+import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { CompactionState } from "../src/state.js";
 import { ToolOutputPruningCoordinator } from "../src/tool-output-pruning/coordinator.js";
 import { getEffectiveUsage } from "../src/usage.js";
 import { createMockPi } from "./fixtures/extension.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
+
+it.each(["standard", "hard"] as const)(
+	"real SDK: %s summaries omit historical thinking and preserve the kept boundary",
+	async (mode) => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("Task: repair routing."));
+		const thinking = {
+			type: "thinking" as const,
+			thinking: "historical-reasoning-only ".repeat(30_000),
+		};
+		const historical = assistant(
+			[
+				thinking,
+				{ type: "text", text: "Decision: preserve the audit controls." },
+				{
+					type: "toolCall",
+					id: "audit-call",
+					name: "read",
+					arguments: { path: "src/routing.ts" },
+				},
+			],
+			"toolUse",
+		);
+		session.appendMessage(historical);
+		session.appendMessage({
+			role: "toolResult",
+			toolCallId: "audit-call",
+			toolName: "read",
+			content: [{ type: "text", text: "Audit controls are enabled." }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		const redirect = "Stop investigating; finish the approved repair instead.";
+		const keptId = session.appendMessage(user(redirect));
+		session.appendMessage(
+			assistant([{ type: "text", text: "Proceeding with the repair." }]),
+		);
+		const preparation = sdkCompaction.prepareCompaction(session.getBranch(), {
+			enabled: true,
+			reserveTokens: 4096,
+			keepRecentTokens: 16,
+		});
+		expect(preparation.firstKeptEntryId).toBe(keptId);
+		const requests: unknown[][] = [];
+		const routed = vi.fn(async (...args: unknown[]) => {
+			requests.push(args);
+			const stream = createAssistantMessageEventStream();
+			stream.end(assistant([{ type: "text", text: VALID_STRUCTURED_SUMMARY }]));
+			return stream;
+		});
+		const auth = vi.fn();
+		const registry = { streamSimple: routed, getApiKeyAndHeaders: auth };
+		const model = {
+			id: "local-test",
+			provider: "local-test",
+			api: "openai-completions",
+			contextWindow: 32_768,
+			maxTokens: 4096,
+		};
+		const ctx = {
+			model,
+			modelRegistry: registry,
+		} as unknown as ExtensionContext;
+		const compatibility = resolveCompactionRuntimeCompatibility({
+			event: {},
+			modelRegistry: registry,
+		});
+		const fetch = vi.spyOn(globalThis, "fetch");
+		try {
+			const attempt = await runCustomCompaction(
+				preparation,
+				mode,
+				ctx,
+				compatibility,
+				undefined,
+				{ projected: session.buildSessionContext().messages },
+			);
+			expect(attempt.result?.firstKeptEntryId).toBe(keptId);
+			expect(attempt.fallbackReason).toBeNull();
+			expect(routed).toHaveBeenCalledTimes(1);
+			const payload = JSON.stringify(requests[0]?.[1]);
+			expect(payload).not.toContain("historical-reasoning-only");
+			expect(payload).toContain("Decision: preserve the audit controls.");
+			expect(payload).toContain("src/routing.ts");
+			expect(payload).toContain("Audit controls are enabled.");
+			expect(payload).toContain(redirect);
+			expect(historical.content[0]).toBe(thinking);
+			expect(auth).not.toHaveBeenCalled();
+			expect(fetch).not.toHaveBeenCalled();
+		} finally {
+			fetch.mockRestore();
+		}
+	},
+);
 
 // Resolve the installed, lockfile-controlled SDK; never use a global Pi path.
 const sdkRoot = dirname(

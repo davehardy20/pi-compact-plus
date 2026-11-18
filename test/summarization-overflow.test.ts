@@ -9,6 +9,7 @@ import {
 	PI_OUTPUT_CAP_FAILURE,
 	STRATA_CONTEXT_OVERFLOW,
 	STRATA_CONTEXT_OVERFLOW_SMALL_WINDOW,
+	STRATA_NO_ROOM_CONTEXT_OVERFLOW,
 	TRANSIENT_FAILURES,
 } from "./fixtures/summarization-errors.js";
 
@@ -18,6 +19,19 @@ describe("classifySummarizationFailure", () => {
 		["string", STRATA_CONTEXT_OVERFLOW],
 	])("classifies the Strata context rejection from a %s", (_label, error) => {
 		expect(classifySummarizationFailure(error)).toBe("context-overflow");
+	});
+
+	it.each([
+		["Error", new Error(STRATA_NO_ROOM_CONTEXT_OVERFLOW)],
+		["string", STRATA_NO_ROOM_CONTEXT_OVERFLOW],
+	])("classifies Strata's no-room rejection from a %s", (_label, error) => {
+		expect(classifySummarizationFailure(error)).toBe("context-overflow");
+	});
+
+	it("does not mistake unrelated no-room wording for a context rejection", () => {
+		expect(
+			classifySummarizationFailure("provider unavailable: no room to answer"),
+		).toBe("provider-error");
 	});
 
 	it("classifies the same rejection shape at a smaller context window", () => {

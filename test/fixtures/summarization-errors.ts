@@ -8,6 +8,10 @@ export const STRATA_CONTEXT_OVERFLOW =
 export const STRATA_CONTEXT_OVERFLOW_SMALL_WINDOW =
 	'400: {"type":"invalid_request_error","message":"prompt (62899 tokens) + max tokens (4096) exceeds the context (65536); requests are never truncated. Send a smaller max_tokens (at most 2629 here), or add \\"fit_max_tokens\\": true to the model\'s strata-<model>.json to shorten it to the room left (#545)"}';
 
+/** Strata's rejection when the prompt alone exhausts the context window. */
+export const STRATA_NO_ROOM_CONTEXT_OVERFLOW =
+	'Summarization failed: 400: {"type":"invalid_request_error","message":"request exceeds the context window: prompt (280723 tokens) leaves no room to answer in the context (262144); requests are never truncated"}';
+
 /** Pi's own failure when the clamped output budget left no room to answer. */
 export const PI_OUTPUT_CAP_FAILURE =
 	"Summarization failed: generation hit the token cap and the summary is incomplete";
