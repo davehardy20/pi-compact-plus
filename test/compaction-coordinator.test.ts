@@ -460,7 +460,7 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 			ctx,
 		);
 		expect(result).toEqual({ cancel: true });
-		expect(mutateDuringBudget).toHaveBeenCalledOnce();
+		expect(mutateDuringBudget).toHaveBeenCalledTimes(2);
 		expect(auth).not.toHaveBeenCalled();
 		expect(stream).not.toHaveBeenCalled();
 		expect(state.lastCompaction).toBeNull();

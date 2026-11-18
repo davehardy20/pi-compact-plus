@@ -30,15 +30,9 @@ afterEach(() => {
 	fetchSpy.mockClear();
 });
 
-describe("reserved output fractions", () => {
-	// These are the arithmetic checks. The same fractions are also pinned against Pi's own
-	// compact() in test/compaction-intent-budget.test.ts, describe "native summarization request
-	// pins", which is the drift guard for upstream changes.
-	it("names the two output fractions Pi uses for its summarization requests", () => {
-		// Mirrors Pi's dist/core/compaction/compaction.js: generateSummaryWithUsage reserves
-		// floor(0.8 * reserveTokens) and the private generateTurnPrefixSummary reserves
-		// floor(0.5 * reserveTokens). Both are then min()'d against model.maxTokens, which
-		// clampReservedOutput reproduces.
+describe("legacy reserved output fractions", () => {
+	// Real 0.87.1/1.0.1 requests are pinned in provider-boundary-087.test.ts.
+	it("names the legacy fractions without imposing them on the current SDK", () => {
 		expect(piReservedOutputTokens(16_384)).toBe(13_107);
 		expect(piReservedTurnPrefixOutputTokens(16_384)).toBe(8_192);
 		expect(clampReservedOutput({ maxTokens: 4096 }, 13_107)).toBe(4096);
@@ -64,20 +58,15 @@ describe("measureSummaryRequestTokens", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it("measures a model whose output cap is zero", async () => {
+	it("declines an unspecified request cap when the model ceiling is zero", async () => {
 		const measurement = await measureSummaryRequestTokens({
 			messages: [user("Task: repair login.")],
 			model: model(200_000, 0),
 			reserveTokens: 16_384,
 		});
 
-		// Pi clamps the request rather than leaving it unmeasurable, so the guard
-		// stays active for a model configured with maxTokens 0.
-		expect(Number.isSafeInteger(measurement?.totalTokens)).toBe(true);
-		expect(measurement?.totalTokens).toBe(
-			(measurement?.transcriptTokens ?? 0) +
-				(measurement?.reservedOutputTokens ?? 0),
-		);
+		// Pi 1.5.2 omits the request cap; zero is not a usable default ceiling.
+		expect(measurement).toBeUndefined();
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
@@ -119,10 +108,8 @@ describe("measureSummaryRequestTokens", () => {
 			reserveTokens: 16_384,
 		});
 
-		// Pi's generateSummaryWithUsage sends min(floor(0.8 * reserveTokens), model.maxTokens).
-		expect(measurement?.reservedOutputTokens).toBe(
-			Math.min(Math.floor(0.8 * 16_384), 8192),
-		);
+		// Pi 1.5.2 omits an explicit cap, so use the configured model ceiling.
+		expect(measurement?.reservedOutputTokens).toBe(8192);
 	});
 
 	it("clamps a caller-supplied output budget to the model cap Pi clamps to", async () => {
@@ -133,8 +120,7 @@ describe("measureSummaryRequestTokens", () => {
 			reservedOutputTokens: 120_000,
 		});
 
-		// Pi sends min(fraction * reserveTokens, model.maxTokens); the measurement
-		// must model that, not the unclamped fraction the caller named.
+		// A legacy override cannot exceed the configured model ceiling.
 		expect(measurement?.reservedOutputTokens).toBe(4096);
 		expect(measurement?.totalTokens).toBe(
 			(measurement?.transcriptTokens ?? 0) + 4096,

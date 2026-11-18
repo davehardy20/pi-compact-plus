@@ -116,16 +116,22 @@ describe("PR Node workflow checks", () => {
 		const lock = JSON.parse(
 			readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"),
 		);
+		const biome = JSON.parse(
+			readFileSync(new URL("../biome.json", import.meta.url), "utf8"),
+		);
+		expect(biome.$schema).toBe(
+			"./node_modules/@biomejs/biome/configuration_schema.json",
+		);
 		expect(manifest.scripts.lint).toBe("biome check src test scripts");
 		expect(manifest.devDependencies["@biomejs/biome"]).toBe("2.5.8");
 		expect(lock.packages["node_modules/@biomejs/biome"].version).toBe("2.5.8");
 	});
 
-	it("fails the PR check on high-severity dependency advisories", () => {
+	it("uses the expiring scoped audit policy without ignoring failures", () => {
 		const auditStep = workflow
 			.split("\n      - name: Dependency audit if lockfile present\n")[1]
 			?.split("\n      - name: ")[0];
-		expect(auditStep).toContain("npm audit --audit-level=high");
+		expect(auditStep).toContain("node scripts/check-dependency-audit.mjs");
 		expect(auditStep).not.toContain("continue-on-error");
 	});
 

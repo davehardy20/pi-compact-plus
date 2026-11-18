@@ -27,7 +27,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		value: 13,
 		configurable: true,
 	});
-	return { ...actual, compact: compactMock };
+	const routed: typeof actual.compact = (...args) =>
+		args[0].isSplitTurn && args[0].messagesToSummarize.length === 0
+			? actual.compact(...args)
+			: compactMock(...args);
+	Object.defineProperty(routed, "length", { value: actual.compact.length });
+	return { ...actual, compact: routed };
 });
 
 import {
@@ -43,6 +48,7 @@ import {
 	SUMMARIZATION_OUTPUT_CAP_REASON,
 	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "../src/summarization-overflow.js";
+import * as summaryBudget from "../src/summarization-request-budget.js";
 import type { EffectiveUsage } from "../src/types.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
@@ -56,6 +62,7 @@ function user(text: string): AgentMessage {
 
 function createCtx(options?: {
 	contextWindow?: number;
+	maxTokens?: number;
 }): ExtensionEventContext {
 	return {
 		mode: "tui",
@@ -69,7 +76,7 @@ function createCtx(options?: {
 			id: "qwen-test",
 			api: "openai-completions",
 			contextWindow: options?.contextWindow ?? 262_144,
-			maxTokens: 8192,
+			maxTokens: options?.maxTokens ?? 8192,
 		},
 		getContextUsage: vi.fn(() => ({
 			tokens: 250_000,
@@ -158,6 +165,177 @@ afterEach(() => {
 });
 
 describe("CompactionCoordinator summarisation overflow handling", () => {
+	it.each([
+		"native-fast",
+		"native-measured",
+		"runtime-fallback",
+		"custom-fallback",
+		"final-fallback",
+	] as const)("counts the SDK output ceiling on the %s path", async (route) => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000, maxTokens: 128_000 });
+		const coordinator = createCoordinator(state, { usageTokens: 100_000 });
+		let instructions =
+			route === "native-fast" ? undefined : "summarize the task";
+		if (route === "final-fallback") {
+			// Custom input fits without the echoed prompt, then fails generically.
+			// Pi would append that prompt verbatim and overcommit the same output.
+			instructions = "task ".repeat(8000);
+			compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+		}
+		state.lastIssuedCompactionInstructions = instructions ?? null;
+		if (route.endsWith("fallback")) state.selectedMode = "standard";
+		const characters = route === "final-fallback" ? 260_000 : 380_000;
+		const input = event(ctx, [user("x".repeat(characters))], { instructions });
+		if (route === "runtime-fallback") {
+			delete (input as { streamFn?: unknown }).streamFn;
+		}
+
+		// About 95k input plus the real SDK's 128k default output exceeds 200k,
+		// even though provider usage plus the old 16k reserve appears comfortable.
+		expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(coordinator.getLastVerdict()?.reason).toBe(
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+		);
+		if (route === "final-fallback") expect(compactMock).toHaveBeenCalledOnce();
+		else expect(compactMock).not.toHaveBeenCalled();
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it.each(["maxTokens", "contextWindow"] as const)(
+		"invalidates a measured cut when model %s changes",
+		async (field) => {
+			const state = new CompactionState();
+			const ctx = createCtx({
+				contextWindow: field === "contextWindow" ? 300_000 : 200_000,
+				maxTokens: field === "maxTokens" ? 8192 : 128_000,
+			});
+			const coordinator = createCoordinator(state, { usageTokens: 100_000 });
+			state.lastIssuedCompactionInstructions = "summarize the task";
+			const input = event(ctx, [user("x".repeat(380_000))], {
+				instructions: "summarize the task",
+			});
+			expect(
+				await coordinator.onSessionBeforeCompact(input, ctx),
+			).toBeUndefined();
+			if (ctx.model)
+				ctx.model[field] = field === "maxTokens" ? 128_000 : 200_000;
+			expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
+				cancel: true,
+			});
+			expect(coordinator.getLastVerdict()?.reason).toBe(
+				SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+			);
+		},
+	);
+
+	it.each([0, 128_000])(
+		"uses a captured legacy cap for headroom with model ceiling %s",
+		async (maxTokens) => {
+			const measured = vi
+				.spyOn(summaryBudget, "measureSummaryRequestTokens")
+				.mockResolvedValue({
+					transcriptTokens: 210_000,
+					reservedOutputTokens: 13_107,
+					totalTokens: 223_107,
+				});
+			try {
+				const state = new CompactionState();
+				const ctx = createCtx({ contextWindow: 200_000, maxTokens });
+				const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+				const input = event(ctx, [user("legacy transcript")]);
+				expect(
+					await coordinator.onSessionBeforeCompact(input, ctx),
+				).toBeUndefined();
+				expect(measured).toHaveBeenCalledOnce();
+				expect(coordinator.getLastVerdict()?.reason).toBe(
+					SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+				);
+			} finally {
+				measured.mockRestore();
+			}
+		},
+	);
+
+	it("checks both split requests before trusting captured output headroom", async () => {
+		const measured = vi
+			.spyOn(summaryBudget, "measureSummaryRequestTokens")
+			.mockResolvedValueOnce({
+				transcriptTokens: 210_000,
+				reservedOutputTokens: 13_107,
+				totalTokens: 223_107,
+			})
+			.mockResolvedValueOnce({
+				transcriptTokens: 95_000,
+				reservedOutputTokens: 128_000,
+				totalTokens: 223_000,
+			});
+		try {
+			const state = new CompactionState();
+			const ctx = createCtx({ contextWindow: 200_000, maxTokens: 128_000 });
+			const coordinator = createCoordinator(state, { usageTokens: 100_000 });
+			state.lastIssuedCompactionInstructions = "summarize the task";
+			const input = event(ctx, [user("history")], {
+				prefix: [user("prefix")],
+				splitTurn: true,
+				instructions: "summarize the task",
+			});
+			expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
+				cancel: true,
+			});
+			expect(measured).toHaveBeenCalledTimes(2);
+			expect(coordinator.getLastVerdict()?.reason).toBe(
+				SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+			);
+		} finally {
+			measured.mockRestore();
+		}
+	});
+
+	it("retries an incomplete output capture instead of caching its decline", async () => {
+		const measured = vi
+			.spyOn(summaryBudget, "measureSummaryRequestTokens")
+			.mockResolvedValueOnce({
+				transcriptTokens: 210_000,
+				reservedOutputTokens: 13_107,
+				totalTokens: 223_107,
+			})
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce({
+				transcriptTokens: 210_000,
+				reservedOutputTokens: 13_107,
+				totalTokens: 223_107,
+			})
+			.mockResolvedValueOnce({
+				transcriptTokens: 100,
+				reservedOutputTokens: 8192,
+				totalTokens: 8292,
+			});
+		try {
+			const state = new CompactionState();
+			const ctx = createCtx({ contextWindow: 200_000, maxTokens: 128_000 });
+			const coordinator = createCoordinator(state, { usageTokens: 150_000 });
+			const input = event(ctx, [user("legacy history")], {
+				prefix: [user("legacy prefix")],
+				splitTurn: true,
+			});
+			expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
+				cancel: true,
+			});
+			expect(
+				await coordinator.onSessionBeforeCompact(input, ctx),
+			).toBeUndefined();
+			expect(measured).toHaveBeenCalledTimes(4);
+			expect(coordinator.getLastVerdict()?.reason).toBe(
+				SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+			);
+		} finally {
+			measured.mockRestore();
+		}
+	});
+
 	it("cancels when the custom request overflowed and Pi's own cut cannot fit either", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });

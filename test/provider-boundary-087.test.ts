@@ -35,11 +35,15 @@ const runtimes = [
 		version: "1.0.1",
 		root:
 			process.env.PI_COMPACT_PLUS_TEST_PI_101_ROOT ??
+			findInstalledPiRuntime("1.0.1"),
+	},
+	{
+		version: "1.5.2",
+		root: dirname(
 			dirname(
-				dirname(
-					fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
-				),
+				fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
 			),
+		),
 	},
 ];
 
@@ -130,6 +134,65 @@ it.for(runtimes)(
 			isSplitTurn: false,
 			settings: { reserveTokens: 1024 },
 		};
+		// Pin both output and guidance behavior on every real SDK, including legacy hosts.
+		const marker = new Error("offline native request capture");
+		const outputCaps: Array<number | undefined> = [];
+		const guided: boolean[] = [];
+		const capture = (
+			_model: unknown,
+			context: { messages: unknown[] },
+			options?: { maxTokens?: number },
+		) => {
+			outputCaps.push(options?.maxTokens);
+			guided.push(
+				JSON.stringify(context.messages).includes("GUIDED_PREFIX_PROBE"),
+			);
+			throw marker;
+		};
+		const probeModel = { ...model, maxTokens: 200_000 };
+		await expect(
+			generateSummaryWithUsage(
+				[budgetSource],
+				probeModel,
+				16_384,
+				undefined,
+				undefined,
+				undefined,
+				"GUIDED_PREFIX_PROBE",
+				undefined,
+				undefined,
+				capture,
+			),
+		).rejects.toBe(marker);
+		await expect(
+			compact087(
+				{
+					...budgetPreparation,
+					messagesToSummarize: [],
+					turnPrefixMessages: [budgetSource],
+					isSplitTurn: true,
+					firstKeptEntryId: "budget-probe",
+					tokensBefore: 0,
+					fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+					settings: {
+						enabled: true,
+						keepRecentTokens: 1,
+						reserveTokens: 16_384,
+					},
+				},
+				probeModel,
+				undefined,
+				undefined,
+				"GUIDED_PREFIX_PROBE",
+				undefined,
+				undefined,
+				capture,
+			),
+		).rejects.toBe(marker);
+		expect(outputCaps).toEqual(
+			version === "1.5.2" ? [undefined, undefined] : [13_107, 8192],
+		);
+		expect(guided).toEqual([true, version === "1.5.2"]);
 		const budgeted = await prepareBudgetedCompactionFocus(
 			[budgetSource],
 			budgetPreparation,

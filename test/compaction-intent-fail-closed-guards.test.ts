@@ -43,7 +43,8 @@ type CaptureBehaviour = {
 	baseChars?: number;
 	/** The output budget the fake SDK reports for the captured request. Deliberately a
 	 * distinctive number so a test cannot accidentally pin Pi's own reserve fraction. */
-	capturedOutput?: number;
+	capturedOutput?: unknown;
+	omitOutput?: boolean;
 	/** Call index that resolves normally instead of capturing. */
 	resolveNormallyAt?: number;
 	/** Call index that throws a foreign provider error. */
@@ -72,7 +73,7 @@ function armCapture(behaviour: CaptureBehaviour) {
 			streamFn: (
 				m: unknown,
 				context: { messages: { role: string; content: string }[] },
-				options: { maxTokens: number },
+				options: { maxTokens?: unknown },
 			) => unknown,
 		) => {
 			calls++;
@@ -82,7 +83,9 @@ function armCapture(behaviour: CaptureBehaviour) {
 			}
 			const transcriptChars =
 				(behaviour.baseChars ?? 2_000) + (customInstructions?.length ?? 0);
-			const output = behaviour.capturedOutput ?? 123;
+			const output = Object.hasOwn(behaviour, "capturedOutput")
+				? behaviour.capturedOutput
+				: 123;
 			const context = {
 				messages: [
 					{
@@ -91,7 +94,7 @@ function armCapture(behaviour: CaptureBehaviour) {
 					},
 				],
 			};
-			const options = { maxTokens: output };
+			const options = behaviour.omitOutput ? {} : { maxTokens: output };
 			if (behaviour.foreignErrorAt === calls) {
 				// Capture once, so the captured token fields are valid and marker identity
 				// is the only remaining rejection condition.
@@ -120,6 +123,57 @@ afterEach(() => {
 });
 
 describe("measureSummaryRequestTokens capture rejects", () => {
+	it("uses a positive model ceiling only when the helper omits its output cap", async () => {
+		armCapture({ omitOutput: true });
+		const measurement = await measureSummaryRequestTokens({
+			messages: [user("Task: repair login.")],
+			model: model(20_000, 4096),
+			reserveTokens: 100,
+		});
+		expect(measurement?.reservedOutputTokens).toBe(4096);
+		expect(measurement?.totalTokens).toBe(
+			(measurement?.transcriptTokens ?? 0) + 4096,
+		);
+	});
+
+	it.each([null, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+		"does not replace an invalid explicit output cap (%s) with the model ceiling",
+		async (capturedOutput) => {
+			armCapture({ capturedOutput });
+			expect(
+				await measureSummaryRequestTokens({
+					messages: [user("Task: repair login.")],
+					model: model(),
+					reserveTokens: 100,
+				}),
+			).toBeUndefined();
+		},
+	);
+
+	it("does not treat an absent cap and a zero model ceiling as bounded output", async () => {
+		armCapture({ omitOutput: true });
+		expect(
+			await measureSummaryRequestTokens({
+				messages: [user("Task: repair login.")],
+				model: model(20_000, 0),
+				reserveTokens: 100,
+			}),
+		).toBeUndefined();
+	});
+
+	it("preserves an explicit zero output cap from a legacy helper", async () => {
+		armCapture({ capturedOutput: 0 });
+		expect(
+			(
+				await measureSummaryRequestTokens({
+					messages: [user("Task: repair login.")],
+					model: model(),
+					reserveTokens: 100,
+				})
+			)?.reservedOutputTokens,
+		).toBe(0);
+	});
+
 	it("returns no measurement when the SDK summarizes without ever capturing the request", async () => {
 		armCapture({ resolveNormallyAt: 1 });
 

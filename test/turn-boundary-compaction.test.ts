@@ -257,7 +257,7 @@ it.each([
 	});
 	const result = await f.pi.events.get("turn_end")?.[0]?.(f.event, f.ctx);
 	expect(result).toBeUndefined();
-	expect(mutateDuringBudget).toHaveBeenCalledOnce();
+	expect(mutateDuringBudget).toHaveBeenCalledTimes(2);
 	expect(f.stream).not.toHaveBeenCalled();
 	expect(f.ctx.compact).not.toHaveBeenCalled();
 	expect(f.pi.sendUserMessage).not.toHaveBeenCalled();

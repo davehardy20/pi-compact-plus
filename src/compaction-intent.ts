@@ -2,9 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { extractCurrentFocus, extractTextContent } from "./session-evidence.js";
 import {
-	clampReservedOutput,
 	measureSummaryRequestTokens,
-	piReservedOutputTokens,
 	type SummaryModel,
 	type SummaryThinking,
 } from "./summarization-request-budget.js";
@@ -117,6 +115,21 @@ export async function prepareBudgetedCompactionFocus<
 		if (!text || text === CONTINUATION_PROMPT) continue;
 		eligibleTurns.push(text);
 	}
+	const measure = (instructions?: string) =>
+		measureSummaryRequestTokens({
+			messages: source,
+			model,
+			reserveTokens: reserve,
+			...(instructions === undefined
+				? {}
+				: { customInstructions: instructions }),
+			previousSummary: preparation.previousSummary,
+			thinkingLevel: options.thinkingLevel,
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+	// Observe the installed SDK's allowance rather than assuming a reserve fraction.
+	const baseline = await measure();
+	if (!baseline) return reject();
 	const recentUserTurns: string[] = [];
 	let evidenceLowerBound = 0;
 	// Evidence alone can never cost more than the window minus the reserved output, so the
@@ -127,9 +140,7 @@ export async function prepareBudgetedCompactionFocus<
 	// one, and older turns that still fit are kept. The cap never evicts a newer turn to
 	// make room for an older one that would not otherwise fit. The authoritative measurement
 	// and the trim search below still decide the final fit.
-	const evidenceCapTokens =
-		model.contextWindow -
-		clampReservedOutput(model, piReservedOutputTokens(reserve));
+	const evidenceCapTokens = model.contextWindow - baseline.reservedOutputTokens;
 	for (let index = eligibleTurns.length - 1; index >= 0; index--) {
 		// Discount one rounding unit per turn. SDK text-only estimates then
 		// lower-bound the combined complete evidence, before any wrappers.
@@ -164,18 +175,6 @@ export async function prepareBudgetedCompactionFocus<
 				}
 			: undefined,
 	});
-	const measure = (instructions?: string) =>
-		measureSummaryRequestTokens({
-			messages: source,
-			model,
-			reserveTokens: reserve,
-			...(instructions === undefined
-				? {}
-				: { customInstructions: instructions }),
-			previousSummary: preparation.previousSummary,
-			thinkingLevel: options.thinkingLevel,
-			...(options.signal ? { signal: options.signal } : {}),
-		});
 	const render = (turns: string[]): string | undefined => {
 		try {
 			const instructions = options.renderInstructions(withEvidence(turns));
@@ -205,8 +204,7 @@ export async function prepareBudgetedCompactionFocus<
 	// Separate transcript-driven from evidence-driven rejection: re-measure the
 	// same cut carrying no custom instructions. If it still cannot fit, the
 	// transcript is the cause, not the evidence Compact+ chose to add.
-	const baseline = await measure();
-	if (baseline && baseline.totalTokens > model.contextWindow) {
+	if (baseline.totalTokens > model.contextWindow) {
 		return reject(true);
 	}
 	// Evidence-driven: shrink what Compact+ added, oldest turns first, and re-measure.

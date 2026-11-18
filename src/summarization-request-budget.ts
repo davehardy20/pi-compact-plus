@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
+	compact,
 	estimateTokens,
 	generateSummaryWithUsage,
 } from "@earendil-works/pi-coding-agent";
@@ -11,38 +12,23 @@ export interface SummaryRequestMeasurement {
 	/** Estimated tokens of the rendered summarization request itself. */
 	transcriptTokens: number;
 	/**
-	 * Output tokens the request actually reserves, clamped the way Pi clamps the
-	 * request it sends: `min(fraction * reserveTokens, model.maxTokens)` when the
-	 * model declares a positive cap.
+	 * Captured output allowance, or the positive model ceiling when the SDK leaves
+	 * it unspecified. Provider-specific reductions/transforms happen after capture.
 	 */
 	reservedOutputTokens: number;
-	/** transcript + clamped reserved output: what the provider must fit in one request. */
+	/** Transcript plus bounded helper/default output allowance, before provider transforms. */
 	totalTokens: number;
 }
 
 /**
- * The output budget Pi reserves for a summarization request: `floor(0.8 * reserveTokens)`.
- * Mirrors `generateSummaryWithUsage` in `@earendil-works/pi-coding-agent`
- * (`dist/core/compaction/compaction.js`), which sends
- * `min(floor(0.8 * reserveTokens), model.maxTokens)` when the model declares a positive cap.
- * For a compaction summarization request, Compact+ clamps every reserved output it computes:
- * `src/compaction-intent.ts` clamps this 0.8 fraction for the intent-evidence cap,
- * `src/compaction-coordinator.ts` clamps the prefix fraction below, and
- * `measureSummaryRequestTokens` clamps both a caller-supplied `reservedOutputTokens` override and
- * the budget Pi itself reported. The split-turn prefix request uses a different fraction; see
- * `piReservedTurnPrefixOutputTokens`.
+ * Legacy Pi 0.87.1/1.0.1 history allowance; real compatibility fixtures pin this fraction.
+ * Measurement captures options instead: Pi 1.5.2 defaults to the model ceiling.
  */
 export function piReservedOutputTokens(reserveTokens: number): number {
 	return Math.floor(0.8 * reserveTokens);
 }
 
-/**
- * Pi builds the split-turn prefix request through its private `generateTurnPrefixSummary`
- * (`dist/core/compaction/compaction.js`, not exported from the SDK), which reserves
- * `floor(0.5 * reserveTokens)` rather than the 0.8 fraction `generateSummaryWithUsage` uses.
- * Compact+'s split-turn guard passes the result through `clampReservedOutput`
- * (`src/compaction-coordinator.ts`), so the model cap applies there too.
- */
+/** Legacy Pi 0.87.1/1.0.1 prefix allowance, not the current SDK's output-default policy. */
 export function piReservedTurnPrefixOutputTokens(
 	reserveTokens: number,
 ): number {
@@ -62,8 +48,10 @@ export function clampReservedOutput(
 }
 
 /**
- * Measure the exact summarization request Pi would send, without contacting a
- * provider. The public SDK builds the request, then the injected stream function
+ * Measure Pi's assembled helper request without contacting a provider. An omitted
+ * output cap uses the model ceiling (Pi 1.5.2); explicit legacy caps remain authoritative.
+ * This is a conservative helper-level estimate, not a provider-tokenizer measurement.
+ * The public SDK builds the request, then the injected stream function
  * captures the assembled context and throws before any registry, credential,
  * transport, or network work happens.
  *
@@ -78,11 +66,12 @@ export async function measureSummaryRequestTokens(options: {
 	model: SummaryModel | null | undefined;
 	reserveTokens: unknown;
 	/**
-	 * Replace the captured output budget. Clamped to the model's own cap before use,
-	 * exactly as Pi clamps it. See `piReservedOutputTokens` and
-	 * `piReservedTurnPrefixOutputTokens` for the fractions Pi itself uses.
+	 * Legacy caller override, clamped to the model ceiling. Production prefix checks
+	 * capture the native prefix builder instead of substituting a reserve fraction.
 	 */
 	reservedOutputTokens?: number;
+	/** Capture the private prefix builder through a prefix-only public compact() call. */
+	turnPrefix?: boolean;
 	signal?: AbortSignal;
 	customInstructions?: string;
 	previousSummary?: string;
@@ -107,36 +96,70 @@ export async function measureSummaryRequestTokens(options: {
 	let transcriptTokens: number | undefined;
 	let reservedOutputTokens: number | undefined;
 
+	const capture: NonNullable<Parameters<typeof generateSummaryWithUsage>[9]> = (
+		_model,
+		context,
+		requestOptions,
+	) => {
+		captures++;
+		const explicit = requestOptions?.maxTokens;
+		const output =
+			explicit === undefined && model.maxTokens > 0
+				? model.maxTokens
+				: explicit;
+		// Explicit zero is bounded; an omitted cap with no positive model ceiling is not.
+		if (
+			Number.isSafeInteger(output) &&
+			typeof output === "number" &&
+			output >= 0 &&
+			context.messages.some((message) => message.role === "system")
+		) {
+			transcriptTokens = context.messages.reduce(
+				(total, message) => total + estimateTokens(message),
+				0,
+			);
+			reservedOutputTokens = output;
+		}
+		throw marker;
+	};
 	try {
-		await generateSummaryWithUsage(
-			options.messages,
-			model,
-			reserve as number,
-			undefined,
-			undefined,
-			options.signal,
-			options.customInstructions,
-			options.previousSummary,
-			options.thinkingLevel,
-			(_model, context, requestOptions) => {
-				captures++;
-				const output = requestOptions?.maxTokens;
-				// A zero output budget is a measurement, not a failure: it means the
-				// request left no room for the summary at all.
-				if (
-					Number.isSafeInteger(output) &&
-					(output ?? 0) >= 0 &&
-					context.messages.some((message) => message.role === "system")
-				) {
-					transcriptTokens = context.messages.reduce(
-						(total, message) => total + estimateTokens(message),
-						0,
-					);
-					reservedOutputTokens = output ?? 0;
-				}
-				throw marker;
-			},
-		);
+		if (options.turnPrefix) {
+			await compact(
+				{
+					messagesToSummarize: [],
+					turnPrefixMessages: options.messages,
+					isSplitTurn: true,
+					firstKeptEntryId: "compact-plus-budget-capture",
+					tokensBefore: 0,
+					fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+					settings: {
+						enabled: true,
+						reserveTokens: reserve as number,
+						keepRecentTokens: 0,
+					},
+				},
+				model,
+				undefined,
+				undefined,
+				options.customInstructions,
+				options.signal,
+				options.thinkingLevel,
+				capture,
+			);
+		} else {
+			await generateSummaryWithUsage(
+				options.messages,
+				model,
+				reserve as number,
+				undefined,
+				undefined,
+				options.signal,
+				options.customInstructions,
+				options.previousSummary,
+				options.thinkingLevel,
+				capture,
+			);
+		}
 		return undefined;
 	} catch (error) {
 		if (
@@ -156,6 +179,7 @@ export async function measureSummaryRequestTokens(options: {
 				? (override as number)
 				: (reservedOutputTokens as number);
 		const output = clampReservedOutput(model, requested);
+		if (!Number.isSafeInteger(transcript + output)) return undefined;
 		return {
 			transcriptTokens: transcript,
 			reservedOutputTokens: output,
