@@ -26,13 +26,16 @@ import {
 	type SummaryModel,
 	type SummaryThinking,
 } from "./summarization-request-budget.js";
-import { validateStructuredSummary } from "./summary-schema.js";
+import {
+	MAX_VALID_SUMMARY_TOKENS,
+	SUMMARY_CHARS_PER_TOKEN,
+	validateStructuredSummary,
+} from "./summary-schema.js";
 import type { CompactionMode } from "./types.js";
 
 type Preparation = Parameters<typeof compact>[0];
 const MAX_PARTIALS = 4;
-// Matches compact.ts's MAX_VALID_SUMMARY_TOKENS (4,000) × 4 chars/token.
-const MAX_PARTIAL_CHARS = 16_000;
+const MAX_PARTIAL_CHARS = MAX_VALID_SUMMARY_TOKENS * SUMMARY_CHARS_PER_TOKEN;
 
 function data(text: string): AgentMessage {
 	return { role: "user", content: text, timestamp: 0 };
@@ -121,10 +124,9 @@ function aggregateUsage(usages: Array<Usage | undefined>): Usage | undefined {
 	return total;
 }
 
-/** No partial state leaves this function: return only the complete validated reduction. */
-export async function recoverCompaction(options: {
+interface RecoveryOptions {
 	preparation: Preparation;
-	projected: AgentMessage[];
+	projected?: AgentMessage[];
 	model: SummaryModel;
 	mode: CompactionMode;
 	thinkingLevel?: SummaryThinking;
@@ -135,7 +137,36 @@ export async function recoverCompaction(options: {
 		preparation: Preparation,
 		instructions: string,
 	) => Promise<CompactionAttemptResult>;
-}): Promise<CompactionAttemptResult> {
+}
+
+type RecoverySnapshot = ReturnType<typeof snapshotRecoveryInputs>;
+
+export function recoverCompaction(
+	options: RecoveryOptions & { projected: AgentMessage[] },
+): Promise<CompactionAttemptResult> {
+	return runRecovery(options, () => snapshotRecoveryInputs(options));
+}
+
+/** Capture before the normal budget await; defer planning and failures until needed. */
+export function captureCompactionRecovery(
+	options: RecoveryOptions,
+): () => Promise<CompactionAttemptResult> {
+	try {
+		const captured = snapshotRecoveryInputs(options);
+		return () => runRecovery(options, () => captured);
+	} catch (error) {
+		return () =>
+			runRecovery(options, () => {
+				throw error;
+			});
+	}
+}
+
+/** No partial state leaves this function: return only the complete validated reduction. */
+async function runRecovery(
+	options: RecoveryOptions,
+	readSnapshot: () => RecoverySnapshot,
+): Promise<CompactionAttemptResult> {
 	const fail = (reason = RECOVERY_LIMIT_REASON): CompactionAttemptResult => ({
 		result: undefined,
 		cancel: true,
@@ -154,8 +185,9 @@ export async function recoverCompaction(options: {
 			source,
 			projected,
 			customInstructions,
-			budget,
-		} = snapshotRecoveryInputs(options);
+			budget: capturedBudget,
+		} = readSnapshot();
+		const budget = { ...capturedBudget };
 		const groups = atomicGroups(source);
 		if (original.previousSummary) {
 			groups.unshift([

@@ -1,5 +1,7 @@
 export const STRUCTURED_SUMMARY_TITLE = "Compaction Summary — Compact+ memory";
 const MAX_RAW_SUMMARY_CHARS = 128_000;
+export const MAX_VALID_SUMMARY_TOKENS = 4_000;
+export const SUMMARY_CHARS_PER_TOKEN = 4;
 export const FENCED_EXAMPLE_OMISSION =
 	"[Code example omitted during normalization]";
 
