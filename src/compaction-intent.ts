@@ -49,6 +49,35 @@ function overflowFocus(focus: CurrentFocus): CurrentFocus {
 	};
 }
 
+/** Complete omitted user turns, in order and without text-key deduplication. */
+export function collectOmittedCompactionUserTurns(
+	projected: AgentMessage[],
+	source: AgentMessage[],
+): string[] {
+	let boundary = -1;
+	for (let index = projected.length - 1; index >= 0; index--) {
+		if (projected[index].role === "compactionSummary") {
+			boundary = index;
+			break;
+		}
+	}
+	const users = projected.slice(boundary + 1).filter((m) => m.role === "user");
+	const supplied = source.filter((m) => m.role === "user");
+	// Only a verified prefix may be subtracted; preserve repeats and unknown provenance.
+	const prefixMatches = supplied.every(
+		(message, index) =>
+			users[index] &&
+			extractTextContent(message) === extractTextContent(users[index]),
+	);
+	const omitted = prefixMatches ? users.slice(supplied.length) : users;
+	const turns: string[] = [];
+	for (const message of omitted) {
+		const text = extractTextContent(message).trim();
+		if (text && text !== CONTINUATION_PROMPT) turns.push(text);
+	}
+	return turns;
+}
+
 /** Select complete chronological evidence; capture the exact public SDK request. */
 export async function prepareBudgetedCompactionFocus<
 	T extends IntentPreparation,
@@ -90,31 +119,7 @@ export async function prepareBudgetedCompactionFocus<
 	) {
 		return reject();
 	}
-	let boundary = -1;
-	for (let index = projected.length - 1; index >= 0; index--) {
-		if (projected[index].role === "compactionSummary") {
-			boundary = index;
-			break;
-		}
-	}
-	const users = projected.slice(boundary + 1).filter((m) => m.role === "user");
-	const supplied = source.filter((m) => m.role === "user");
-	// Native cuts cover a prefix after the canonical compaction boundary;
-	// retained raw entries are already inside that projected cut domain.
-	// Verify it, never use a text-keyed set or remove a middle subsequence:
-	// unknown provenance keeps complete user order, including later repeats.
-	const prefixMatches = supplied.every(
-		(message, index) =>
-			users[index] &&
-			extractTextContent(message) === extractTextContent(users[index]),
-	);
-	const omitted = prefixMatches ? users.slice(supplied.length) : users;
-	const eligibleTurns: string[] = [];
-	for (const message of omitted) {
-		const text = extractTextContent(message).trim();
-		if (!text || text === CONTINUATION_PROMPT) continue;
-		eligibleTurns.push(text);
-	}
+	const eligibleTurns = collectOmittedCompactionUserTurns(projected, source);
 	const measure = (instructions?: string) =>
 		measureSummaryRequestTokens({
 			messages: source,
