@@ -7,6 +7,7 @@ import type {
 import { compact } from "@earendil-works/pi-coding-agent";
 import { classifyMessages } from "./classify.js";
 import { prepareBudgetedCompactionFocus } from "./compaction-intent.js";
+import { captureCompactionRecovery } from "./compaction-recovery.js";
 import type { CompactionRuntimeCompatibility } from "./compatibility.js";
 import {
 	getAssistantIdBearingToolCallBlocks,
@@ -24,9 +25,11 @@ import {
 	CRITICAL_HEADINGS,
 	FENCED_EXAMPLE_OMISSION,
 	isSubstantiveCriticalLine,
+	MAX_VALID_SUMMARY_TOKENS,
 	parseSummaryFenceMarker,
 	STRUCTURED_SUMMARY_HEADINGS,
 	STRUCTURED_SUMMARY_TITLE,
+	SUMMARY_CHARS_PER_TOKEN,
 	validateStructuredSummary,
 } from "./summary-schema.js";
 import type { CompactionMode, CurrentFocus } from "./types.js";
@@ -77,7 +80,6 @@ interface ValidationResult {
 	reason?: string;
 }
 
-const MAX_VALID_SUMMARY_TOKENS = 4000;
 const TARGET_NORMALIZED_SUMMARY_TOKENS = 3200;
 const MAX_PREVIOUS_SUMMARY_TOKENS = 1600;
 const TARGET_PREVIOUS_SUMMARY_TOKENS = 1200;
@@ -91,7 +93,7 @@ const SECTION_BODY_LINE_LIMITS = new Map<string, number>(
 );
 
 function estimateSummaryTokens(text: string): number {
-	return text.length / 4;
+	return text.length / SUMMARY_CHARS_PER_TOKEN;
 }
 
 function truncateLine(line: string, maxChars = MAX_SUMMARY_LINE_CHARS): string {
@@ -412,6 +414,8 @@ interface CompactionIntent {
 	customInstructions?: string;
 	/** Rechecked after every await before auth, provider work, or acceptance. */
 	isCurrent?: () => boolean;
+	/** Internal opt-in; requires lifecycle freshness supplied by the caller. */
+	enableRecovery?: true;
 }
 
 function getCompactionFocusSource(
@@ -471,7 +475,8 @@ export function prepareCompactionIntent(
 }
 
 function createCompactArguments(args: {
-	prepared: PreparedCompactionContext;
+	preparation: CompactionPreparation;
+	instructions: string;
 	model: unknown;
 	auth: {
 		apiKey?: string;
@@ -483,7 +488,7 @@ function createCompactArguments(args: {
 	signal?: AbortSignal;
 }): unknown[] {
 	const compactArgs: unknown[] = [
-		args.prepared.preparation,
+		args.preparation,
 		args.auth.baseUrl
 			? { ...(args.model as object), baseUrl: args.auth.baseUrl }
 			: args.model,
@@ -495,7 +500,7 @@ function createCompactArguments(args: {
 					),
 				)
 			: undefined,
-		args.prepared.customInstructions,
+		args.instructions,
 		args.signal,
 	];
 
@@ -522,15 +527,16 @@ function getCompactionClassifiedCounts(
 
 function finalizeCompactionAttempt(
 	result: CompactionResult | undefined,
-	classifiedCounts: NonNullable<CompactionAttemptResult["classifiedCounts"]>,
+	classifiedCounts?: CompactionAttemptResult["classifiedCounts"],
 	evidenceNote?: string | null,
 	trimmedTurns?: number,
 ): CompactionAttemptResult {
+	const counts = classifiedCounts ? { classifiedCounts } : {};
 	if (!result) {
 		return {
 			result: undefined,
 			fallbackReason: "compact returned undefined",
-			classifiedCounts,
+			...counts,
 		};
 	}
 
@@ -541,7 +547,7 @@ function finalizeCompactionAttempt(
 		return {
 			result: undefined,
 			fallbackReason: `compaction summary invalid: ${initialValidation.reason}`,
-			classifiedCounts,
+			...counts,
 		};
 	}
 	const normalizedResult = normalizeCompactionResult(result);
@@ -550,13 +556,13 @@ function finalizeCompactionAttempt(
 		return {
 			result: undefined,
 			fallbackReason: `compaction summary invalid: ${validation.reason}`,
-			classifiedCounts,
+			...counts,
 		};
 	}
 	return {
 		result: normalizedResult,
 		fallbackReason: evidenceNote ?? null,
-		classifiedCounts,
+		...counts,
 		...(trimmedTurns === undefined
 			? {}
 			: { evidenceTrimmedTurns: trimmedTurns }),
@@ -638,6 +644,67 @@ export async function runCustomCompaction(
 		};
 		const beforeBudget = cancelled();
 		if (beforeBudget) return beforeBudget;
+		const thinkingLevel = compatibility.helperSupportsThinkingLevel
+			? (compatibility.thinkingLevel ?? undefined)
+			: undefined;
+		const compactRunner = compact as unknown as (
+			...args: unknown[]
+		) => Promise<CompactionResult | undefined>;
+		const dispatch = async (
+			payload: CompactionPreparation,
+			instructions: string,
+		): Promise<CompactionAttemptResult> => {
+			const beforeAuth = cancelled();
+			if (beforeAuth) return beforeAuth;
+			const registry = ctx.modelRegistry as ModelRegistry;
+			// Registry streams resolve auth at request time. Don't override it.
+			const auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>> =
+				compatibility.streamRoute === "registry"
+					? { ok: true }
+					: await registry.getApiKeyAndHeaders(model);
+			const afterAuth = cancelled();
+			if (afterAuth) return afterAuth;
+			if (!auth.ok) return authUnavailableResult();
+			const compactArgs = createCompactArguments({
+				preparation: payload,
+				instructions,
+				model,
+				auth,
+				compatibility,
+				signal: requestSignal,
+			});
+			const beforeProvider = cancelled();
+			if (beforeProvider) return beforeProvider;
+			const result = await compactRunner(...compactArgs);
+			return cancelled() ?? { result, fallbackReason: null };
+		};
+		const recovery =
+			intent?.enableRecovery === true &&
+			intent.isCurrent &&
+			compatibility.executionPath === "custom" &&
+			compatibility.helperSupportsStreamFn &&
+			compatibility.streamFn &&
+			compatibility.streamRoute
+				? captureCompactionRecovery({
+						preparation,
+						projected: intent.projected,
+						customInstructions: intent.customInstructions,
+						model,
+						mode,
+						thinkingLevel,
+						signal: requestSignal,
+						isCurrent,
+						execute: async (payload, instructions) => {
+							const attempt = await dispatch(payload, instructions);
+							return (
+								cancelled() ??
+								(attempt.fallbackReason !== null
+									? attempt
+									: finalizeCompactionAttempt(attempt.result))
+							);
+						},
+					})
+				: undefined;
 		const actualPreparation = prepareCompactionIntent(preparation, mode);
 		const focusSource = getCompactionFocusSource(preparation);
 		const budgeted = await prepareBudgetedCompactionFocus(
@@ -646,9 +713,7 @@ export async function runCustomCompaction(
 			{
 				model,
 				signal: requestSignal,
-				thinkingLevel: compatibility.helperSupportsThinkingLevel
-					? (compatibility.thinkingLevel ?? undefined)
-					: undefined,
+				thinkingLevel,
 				renderInstructions: (focus) =>
 					buildSummaryInstructions(
 						mode,
@@ -676,6 +741,7 @@ export async function runCustomCompaction(
 		const afterBudget = cancelled();
 		if (afterBudget) return afterBudget;
 		if (budgeted.transcriptOverflow) {
+			if (recovery) return recovery();
 			// The cut itself cannot fit Compact+'s merged request. Report it as a
 			// request overflow so the coordinator judges it against the payload Pi
 			// sends, not against intent evidence that was never added.
@@ -701,33 +767,15 @@ export async function runCustomCompaction(
 			focusSource,
 			customInstructions: budgeted.renderedInstructions,
 		};
-		const registry = ctx.modelRegistry as ModelRegistry;
-		// The registry stream resolves provider auth at request time. Forwarding an
-		// earlier key/header snapshot could override rotated credentials or routing.
-		const auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>> =
-			compatibility.streamRoute === "registry"
-				? { ok: true }
-				: await registry.getApiKeyAndHeaders(model);
-		const afterAuth = cancelled();
-		if (afterAuth) return afterAuth;
-		if (!auth.ok) return authUnavailableResult();
-		const compactArgs = createCompactArguments({
-			prepared,
-			model,
-			auth,
-			compatibility,
-			signal: requestSignal,
-		});
-		const beforeProvider = cancelled();
-		if (beforeProvider) return beforeProvider;
-		const compactRunner = compact as unknown as (
-			...args: unknown[]
-		) => Promise<CompactionResult | undefined>;
-		const result = await compactRunner(...compactArgs);
-		const afterProvider = cancelled();
-		if (afterProvider) return afterProvider;
+		const attempt = await dispatch(
+			prepared.preparation,
+			prepared.customInstructions,
+		);
+		const afterDispatch = cancelled();
+		if (afterDispatch) return afterDispatch;
+		if (attempt.fallbackReason !== null) return attempt;
 		return finalizeCompactionAttempt(
-			result,
+			attempt.result,
 			getCompactionClassifiedCounts(prepared, mode),
 			budgeted.evidenceTrimmed !== undefined
 				? SUMMARIZATION_EVIDENCE_TRIMMED_REASON

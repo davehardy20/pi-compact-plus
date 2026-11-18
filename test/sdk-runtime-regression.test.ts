@@ -19,6 +19,10 @@ import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { CompactionState } from "../src/state.js";
+import {
+	RECOVERY_SUCCESS_REASON,
+	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+} from "../src/summarization-overflow.js";
 import { ToolOutputPruningCoordinator } from "../src/tool-output-pruning/coordinator.js";
 import { getEffectiveUsage } from "../src/usage.js";
 import { createMockPi } from "./fixtures/extension.js";
@@ -165,6 +169,115 @@ function assistant(
 		timestamp: Date.now(),
 	};
 }
+
+it.each(["opted in", "disabled", "no freshness check", "stale model"] as const)(
+	"real SDK: oversized split cut (%s)",
+	async (scenario) => {
+		const history = user(`HISTORY_MARKER ${"x".repeat(70_000)}`);
+		const prefix = user(`PREFIX_MARKER ${"y".repeat(70_000)}`);
+		const preparation: Parameters<typeof runCustomCompaction>[0] = {
+			messagesToSummarize: [history],
+			turnPrefixMessages: [prefix],
+			isSplitTurn: true,
+			firstKeptEntryId: "keep-this-entry",
+			tokensBefore: 27_000,
+			settings: { enabled: true, reserveTokens: 4096, keepRecentTokens: 500 },
+			fileOps: {
+				read: new Set(["src/example.ts"]),
+				written: new Set(),
+				edited: new Set(),
+			},
+		};
+		const model = {
+			id: "local-test",
+			provider: "local-test",
+			api: "openai-completions",
+			contextWindow: 32_768,
+			maxTokens: 4096,
+		};
+		const streamSimple = vi.fn(async (..._args: unknown[]) => {
+			if (scenario === "stale model") model.maxTokens--;
+			const stream = createAssistantMessageEventStream();
+			stream.end(assistant([{ type: "text", text: VALID_STRUCTURED_SUMMARY }]));
+			return stream;
+		});
+		const getApiKeyAndHeaders = vi.fn();
+		const registry = { streamSimple, getApiKeyAndHeaders };
+		const ctx = {
+			model,
+			modelRegistry: registry,
+		} as unknown as ExtensionContext;
+		const compatibility = resolveCompactionRuntimeCompatibility({
+			event: {},
+			modelRegistry: registry,
+		});
+		const fetch = vi
+			.spyOn(globalThis, "fetch")
+			.mockRejectedValue(new Error("Unexpected network request"));
+		try {
+			const intent = {
+				projected: [history, prefix],
+				isCurrent: scenario === "no freshness check" ? undefined : () => true,
+				enableRecovery: scenario === "disabled" ? undefined : (true as const),
+			};
+			const pending = runCustomCompaction(
+				preparation,
+				"standard",
+				ctx,
+				compatibility,
+				undefined,
+				intent,
+			);
+			if (scenario === "opted in") {
+				// Change the caller's data while the initial budget check is pending.
+				preparation.firstKeptEntryId = "changed-id";
+				prefix.content = user(`CHANGED_PREFIX ${"z".repeat(70_000)}`).content;
+			}
+			const attempt = await pending;
+			if (scenario === "stale model") {
+				expect(attempt).toMatchObject({
+					cancel: true,
+					result: undefined,
+					fallbackReason: "compaction context changed",
+				});
+				expect(streamSimple).toHaveBeenCalledTimes(1);
+				return;
+			}
+			if (scenario !== "opted in") {
+				expect(attempt).toMatchObject({
+					result: undefined,
+					requestOverflow: true,
+					fallbackReason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+				});
+				expect(streamSimple).not.toHaveBeenCalled();
+				return;
+			}
+			expect(attempt).toMatchObject({
+				fallbackReason: RECOVERY_SUCCESS_REASON,
+				recoveryRequests: 3,
+				result: {
+					firstKeptEntryId: "keep-this-entry",
+					tokensBefore: 27_000,
+					usage: { input: 3, output: 3, totalTokens: 6 },
+				},
+			});
+			expect(streamSimple).toHaveBeenCalledTimes(3);
+			const [first, second, reducer] = streamSimple.mock.calls.map(
+				(call) => JSON.stringify(call[1]).split("</conversation>", 1)[0],
+			);
+			expect(first).toContain("HISTORY_MARKER");
+			expect(first).not.toContain("PREFIX_MARKER");
+			expect(second).toContain("PREFIX_MARKER");
+			expect(second).not.toContain("HISTORY_MARKER");
+			expect(reducer).toContain("Historical partial 2");
+		} finally {
+			const fetched = fetch.mock.calls.length;
+			fetch.mockRestore();
+			expect(getApiKeyAndHeaders).not.toHaveBeenCalled();
+			expect(fetched).toBe(0);
+		}
+	},
+);
 
 it("Pi 1.5.2: real SDK tool turn -> safe cut -> streamed summary -> echo -> continuation, with retained redirect", async () => {
 	const manifest = JSON.parse(

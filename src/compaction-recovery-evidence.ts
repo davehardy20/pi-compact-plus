@@ -274,7 +274,7 @@ type Preparation = Parameters<typeof compact>[0];
  */
 export function snapshotRecoveryInputs(options: {
 	preparation: Preparation;
-	projected: AgentMessage[];
+	projected?: AgentMessage[];
 	customInstructions?: string;
 }) {
 	const budget = createRecoveryCopyBudget();
@@ -315,15 +315,15 @@ export function snapshotRecoveryInputs(options: {
 		: [];
 	preparation.messagesToSummarize = messages;
 	preparation.turnPrefixMessages = turnPrefix;
-	const projected = snapshotRecoveryMessages(
-		own(input, "projected") as AgentMessage[],
-		budget,
-		true,
-	);
+	const source = messages.concat(turnPrefix);
+	const projected = own(input, "projected");
 	return {
 		preparation: preparation as unknown as Preparation,
-		source: messages.concat(turnPrefix),
-		projected,
+		source,
+		projected:
+			projected === undefined
+				? source
+				: snapshotRecoveryMessages(projected as AgentMessage[], budget, true),
 		customInstructions: supplemental.customInstructions as string | undefined,
 		budget,
 	};
