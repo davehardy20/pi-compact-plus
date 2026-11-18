@@ -50,6 +50,9 @@ export interface CompactionAttemptResult {
 	 * a compaction that succeeded with a smaller payload, so the count is named in the UI
 	 * notice rather than reported only as a reason string. */
 	evidenceTrimmedTurns?: number;
+	/** Recovery results are complete checkpoints; partials must never escape. */
+	recoveryAttempted?: true;
+	recoveryRequests?: number;
 	classifiedCounts?: {
 		critical: number;
 		contextual: number;

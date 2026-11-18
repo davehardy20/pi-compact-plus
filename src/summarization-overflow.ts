@@ -23,6 +23,15 @@ export const SUMMARIZATION_CONTEXT_OVERFLOW_REASON =
 export const SUMMARIZATION_OUTPUT_CAP_REASON =
 	"summarization output budget was exhausted";
 
+export const RECOVERY_SUCCESS_REASON =
+	"oversized summary recovered through bounded multi-pass compaction";
+export const RECOVERY_LIMIT_REASON =
+	"summary recovery exceeded its bounded request budget";
+export const RECOVERY_FAILED_REASON =
+	"summary recovery failed; no checkpoint was written";
+export const RECOVERY_UNSUPPORTED_REASON =
+	"summary recovery cannot faithfully represent non-text evidence";
+
 /**
  * Not a failure: Compact+ dropped some of the additional intent evidence it adds
  * itself so the request could fit. Recorded so a live session can tell a trimmed

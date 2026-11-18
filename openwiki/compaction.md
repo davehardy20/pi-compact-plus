@@ -182,6 +182,12 @@ Every compaction decision Compact+ makes is recorded as a `CompactionVerdict`: `
 
 ## Summary generation (`src/compact.ts`, `src/prompts.ts`, `src/summary-schema.ts`)
 
+### Staged bounded recovery engine
+
+`src/compaction-recovery.ts` contains an independently tested recovery engine. It is **not yet called by the extension**: ordinary compaction and native fallback behavior are unchanged. A later integration must supply normalized SDK results, model/settings freshness checks, authorization and coordinator lifecycle protections before enabling it.
+
+The engine preserves chronological visible evidence and balanced tool intervals, including interleaved calls/results. It carries previous memory, omitted user turns (including repeats) and caller guidance as complete records; excludes historical thinking and explicitly excluded bash; and rejects unsupported evidence instead of truncating it. Serialization rejects hidden JSON hooks and accessor indices without invoking them. Work is bounded to four partial requests plus one reducer, 10,000 messages/groups, eight million text characters, 100,000 structural nodes and depth 256. It measures every planned request and a worst-case reducer through the public SDK before execution, then remeasures the actual reducer at a 95% window limit. Only a validated final result escapes, with original checkpoint metadata/file operations and aggregate usage. Abort, stale work, malformed outputs or exceeded bounds return no checkpoint; the caller must not replay failed recovery natively.
+
 ### Historical thinking and request size
 
 `normalizeCompactionPreparation()` removes assistant `thinking` blocks from copies of both summary slices before hard-mode classification, budget measurement and sending. Older Pi helpers (including the 1.0.1 helper covered by compatibility fixtures) otherwise serialize historical reasoning as plain text, even when the provider omits it from live requests. Visible text, tool calls/results, message order and the kept boundary are preserved; the session transcript is unchanged. Newer helpers, including the locked 1.5.2 SDK, already omit thinking, so this preparation is compatible with either behavior. This is separate from the summary model's own `thinkingLevel` setting.
