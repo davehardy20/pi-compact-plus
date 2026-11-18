@@ -1,17 +1,26 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
+	type StreamOptions,
 	type ToolResultMessage,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
+import type { Model } from "@earendil-works/pi-ai/compat";
 import {
+	type AgentSession,
 	type CompactionResult,
+	createAgentSession,
+	DefaultResourceLoader,
 	type ExtensionContext,
+	type ExtensionFactory,
+	type ModelRuntime,
 	SessionManager,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
 import { runCustomCompaction } from "../src/compact.js";
@@ -20,6 +29,7 @@ import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { CompactionState } from "../src/state.js";
 import {
+	RECOVERY_FAILED_REASON,
 	RECOVERY_SUCCESS_REASON,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 } from "../src/summarization-overflow.js";
@@ -275,6 +285,216 @@ it.each(["opted in", "disabled", "no freshness check", "stale model"] as const)(
 			fetch.mockRestore();
 			expect(getApiKeyAndHeaders).not.toHaveBeenCalled();
 			expect(fetched).toBe(0);
+		}
+	},
+);
+
+it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
+	"real SDK: persists only a valid, current recovery (%s)",
+	async (scenario) => {
+		const root = mkdtempSync(join(tmpdir(), "compact-plus-recovery-"));
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockRejectedValue(new Error("Unexpected network request"));
+		let host: AgentSession | undefined;
+		try {
+			const manager = SessionManager.create(root, root);
+			const earlier = manager.appendMessage(
+				user(`FIRST ${"x".repeat(70_000)}`),
+			);
+			manager.appendMessage(assistant([{ type: "text", text: "First reply" }]));
+			manager.appendMessage(user(`SECOND ${"y".repeat(70_000)}`));
+			manager.appendMessage(
+				assistant([{ type: "text", text: "Second reply" }]),
+			);
+			// Cross the keep-recent budget at the user message, not its reply.
+			const kept = manager.appendMessage(
+				user("Retain follow-up. ".repeat(150)),
+			);
+			manager.appendMessage(
+				assistant([{ type: "text", text: "Recent reply" }]),
+			);
+			const settings = SettingsManager.inMemory({
+				compaction: {
+					enabled: true,
+					reserveTokens: 4096,
+					keepRecentTokens: 500,
+				},
+				cacheWarming: "off",
+			});
+			const model: Model<"openai-completions"> = {
+				id: "local-test",
+				name: "Offline compaction fixture",
+				provider: "local-test",
+				api: "openai-completions",
+				baseUrl: "https://example.invalid",
+				reasoning: false,
+				input: ["text"],
+				contextWindow: 32_768,
+				maxTokens: 4096,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			};
+			const nativeStream = vi.fn(() => {
+				throw new Error("Unexpected native summary");
+			});
+			const runtime = {
+				streamSimple: nativeStream,
+				getAuth: async () => undefined,
+				getCompatibilityRequestConfig: () => ({ authHeader: false }),
+				hasConfiguredAuth: () => true,
+				getModel: () => model,
+				getModels: () => [model],
+				getAvailableSnapshot: () => [model],
+				getRegisteredProviderIds: () => [],
+				getError: () => undefined,
+			} as unknown as ModelRuntime;
+			let issued = 0;
+			const auth = vi.fn(async () => ({
+				ok: true,
+				apiKey: `fixture-key-${++issued}`,
+			}));
+			const checkpointCounts: number[] = [];
+			const finalSummary = VALID_STRUCTURED_SUMMARY.replace(
+				"Finish the current repair.",
+				"Finish the offline recovery test.",
+			);
+			const streamFn = vi.fn(
+				async (_model: unknown, _context: unknown, _options: StreamOptions) => {
+					const request = streamFn.mock.calls.length;
+					checkpointCounts.push(
+						manager.getEntries().filter((e) => e.type === "compaction").length,
+					);
+					if (request === 1 && scenario === "abort") host?.abortCompaction();
+					if (request === 1 && scenario === "stale leaf")
+						manager.branch(earlier);
+					const reduced =
+						scenario === "invalid reducer"
+							? "Malformed final summary"
+							: finalSummary;
+					const text = request === 3 ? reduced : VALID_STRUCTURED_SUMMARY;
+					const stream = createAssistantMessageEventStream();
+					stream.end(assistant([{ type: "text", text }]));
+					return stream;
+				},
+			);
+			let attempt: Awaited<ReturnType<typeof runCustomCompaction>> | undefined;
+			let tokensBefore: number | undefined;
+			const compacted: boolean[] = [];
+			const extension: ExtensionFactory = (pi) => {
+				// Test-only opt-in: the real SDK owns the cut and append. Inject the
+				// session stream that this SDK does not expose on the compact event.
+				pi.on("session_before_compact", async (event, ctx) => {
+					const leaf = ctx.sessionManager.getLeafId();
+					tokensBefore = event.preparation.tokensBefore;
+					attempt = await runCustomCompaction(
+						event.preparation,
+						"standard",
+						{
+							...ctx,
+							modelRegistry: { getApiKeyAndHeaders: auth },
+						} as unknown as ExtensionContext,
+						resolveCompactionRuntimeCompatibility({ event: { streamFn } }),
+						event.signal,
+						{
+							enableRecovery: true,
+							isCurrent: () => ctx.sessionManager.getLeafId() === leaf,
+						},
+					);
+					return attempt.result
+						? { compaction: attempt.result }
+						: { cancel: true };
+				});
+				pi.on("session_compact", (event) => {
+					compacted.push(event.fromExtension);
+				});
+			};
+			const loader = new DefaultResourceLoader({
+				cwd: root,
+				agentDir: root,
+				settingsManager: settings,
+				noExtensions: true,
+				noSkills: true,
+				noThemes: true,
+				noPromptTemplates: true,
+				noContextFiles: true,
+				systemPrompt: "Offline compaction fixture",
+				extensionFactories: [extension],
+			});
+			await loader.reload();
+			({ session: host } = await createAgentSession({
+				cwd: root,
+				agentDir: root,
+				model,
+				modelRuntime: runtime,
+				resourceLoader: loader,
+				settingsManager: settings,
+				sessionManager: manager,
+				noTools: "all",
+			}));
+			const errors: unknown[] = [];
+			await host.bindExtensions({
+				mode: "tui",
+				onError: (error) => errors.push(error),
+			});
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("Expected a file-backed session");
+			const before = readFileSync(file, "utf8");
+			if (scenario === "success") {
+				await host.compact();
+			} else {
+				await expect(host.compact()).rejects.toThrow("Compaction cancelled");
+			}
+			expect(errors).toEqual([]);
+			expect(nativeStream).not.toHaveBeenCalled();
+			expect(fetchSpy).not.toHaveBeenCalled();
+			const count = scenario === "abort" || scenario === "stale leaf" ? 1 : 3;
+			expect(streamFn).toHaveBeenCalledTimes(count);
+			expect(auth).toHaveBeenCalledTimes(count);
+			expect(
+				streamFn.mock.calls.map(([, , options]) => options.apiKey),
+			).toEqual(
+				Array.from({ length: count }, (_, i) => `fixture-key-${i + 1}`),
+			);
+			expect(checkpointCounts).toEqual(Array.from({ length: count }, () => 0));
+			const restored = SessionManager.open(file, root, root);
+			const compactions = restored
+				.getEntries()
+				.filter((e) => e.type === "compaction");
+			if (scenario !== "success") {
+				const reasons = {
+					"invalid reducer": RECOVERY_FAILED_REASON,
+					abort: "compaction aborted",
+					"stale leaf": "compaction context changed",
+				};
+				expect(attempt).toMatchObject({
+					cancel: true,
+					result: undefined,
+					fallbackReason: reasons[scenario],
+				});
+				expect(compacted).toEqual([]);
+				expect(compactions).toEqual([]);
+				expect(readFileSync(file, "utf8")).toBe(before);
+				return;
+			}
+			expect(attempt).toMatchObject({
+				fallbackReason: RECOVERY_SUCCESS_REASON,
+				recoveryRequests: 3,
+			});
+			expect(compacted).toEqual([true]);
+			expect(compactions).toHaveLength(1);
+			expect(compactions[0]?.summary).toContain(
+				"Finish the offline recovery test.",
+			);
+			expect(compactions[0]).toMatchObject({
+				firstKeptEntryId: kept,
+				tokensBefore,
+				summary: attempt?.result?.summary,
+				usage: { input: 3, output: 3, totalTokens: 6 },
+			});
+		} finally {
+			host?.dispose();
+			fetchSpy.mockRestore();
+			rmSync(root, { recursive: true, force: true });
 		}
 	},
 );
