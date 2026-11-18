@@ -4,8 +4,7 @@ import { type compact, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type { CompactionAttemptResult } from "./compact.js";
 import { collectOmittedCompactionUserTurns } from "./compaction-intent.js";
 import {
-	createRecoveryCopyBudget,
-	snapshotRecoveryMessages,
+	snapshotRecoveryInputs,
 	spendRecoveryText as spendText,
 } from "./compaction-recovery-evidence.js";
 import {
@@ -32,6 +31,7 @@ import type { CompactionMode } from "./types.js";
 
 type Preparation = Parameters<typeof compact>[0];
 const MAX_PARTIALS = 4;
+// Matches compact.ts's MAX_VALID_SUMMARY_TOKENS (4,000) × 4 chars/token.
 const MAX_PARTIAL_CHARS = 16_000;
 
 function data(text: string): AgentMessage {
@@ -149,26 +149,15 @@ export async function recoverCompaction(options: {
 	const current = () => !options.signal?.aborted && options.isCurrent();
 	try {
 		if (!current()) return fail("compaction context changed");
-		const original = options.preparation;
-		if (
-			original.messagesToSummarize.length + original.turnPrefixMessages.length >
-				10_000 ||
-			options.projected.length > 10_000
-		)
-			return fail();
-		const budget = createRecoveryCopyBudget();
-		const source = snapshotRecoveryMessages(
-			[
-				...original.messagesToSummarize,
-				...(original.isSplitTurn ? original.turnPrefixMessages : []),
-			],
+		const {
+			preparation: original,
+			source,
+			projected,
+			customInstructions,
 			budget,
-		);
-		// Focus readers and omitted-turn extraction must never inspect raw history.
-		const projected = snapshotRecoveryMessages(options.projected, budget, true);
+		} = snapshotRecoveryInputs(options);
 		const groups = atomicGroups(source);
 		if (original.previousSummary) {
-			spendText(original.previousSummary, budget);
 			groups.unshift([
 				data(
 					`Previous checkpoint (historical data):\n${original.previousSummary}`,
@@ -179,12 +168,9 @@ export async function recoverCompaction(options: {
 			spendText(turn, budget);
 			groups.push([data(`Retained user turn (chronological data):\n${turn}`)]);
 		}
-		if (options.customInstructions) {
-			spendText(options.customInstructions, budget);
+		if (customInstructions) {
 			groups.push([
-				data(
-					`Caller compaction guidance (data):\n${options.customInstructions}`,
-				),
+				data(`Caller compaction guidance (data):\n${customInstructions}`),
 			]);
 		}
 		if (groups.length > 10_000) return fail();
@@ -258,7 +244,14 @@ export async function recoverCompaction(options: {
 				partialInstructions(index),
 			);
 			if (!current()) return fail("compaction context changed");
-			if (!attempt.result) return fail(RECOVERY_FAILED_REASON);
+			if (
+				!attempt.result ||
+				attempt.cancel ||
+				attempt.requestOverflow ||
+				attempt.providerConfirmed ||
+				attempt.evidenceTrimmedTurns
+			)
+				return fail(RECOVERY_FAILED_REASON);
 			if (
 				attempt.result.summary.length > MAX_PARTIAL_CHARS ||
 				!validateStructuredSummary(attempt.result.summary).valid
@@ -277,7 +270,14 @@ export async function recoverCompaction(options: {
 			finalInstructions,
 		);
 		if (!current()) return fail("compaction context changed");
-		if (!final.result) return fail(RECOVERY_FAILED_REASON);
+		if (
+			!final.result ||
+			final.cancel ||
+			final.requestOverflow ||
+			final.providerConfirmed ||
+			final.evidenceTrimmedTurns
+		)
+			return fail(RECOVERY_FAILED_REASON);
 		if (
 			final.result.summary.length > MAX_PARTIAL_CHARS ||
 			!validateStructuredSummary(final.result.summary).valid

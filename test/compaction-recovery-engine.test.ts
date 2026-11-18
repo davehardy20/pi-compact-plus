@@ -13,6 +13,7 @@ import * as budget from "../src/summarization-request-budget.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 type Options = Parameters<typeof recoverCompaction>[0];
+type Attempt = Awaited<ReturnType<Options["execute"]>>;
 type ToolArguments = Extract<
 	AssistantMessage["content"][number],
 	{ type: "toolCall" }
@@ -518,4 +519,225 @@ it("does not serialize an inherited sparse-array getter", async () => {
 		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
 	});
 	expect(f.execute).not.toHaveBeenCalled();
+});
+
+const sourceLists = [
+	"messagesToSummarize",
+	"turnPrefixMessages",
+	"projected",
+] as const;
+it.each(
+	sourceLists.flatMap((list) =>
+		["index getter", "inherited index", "iterator", "iterator getter"].map(
+			(kind) => [list, kind] as const,
+		),
+	),
+)("checks original outer array %s (%s)", async (list, kind) => {
+	const f = fixture();
+	const array =
+		list === "projected" ? f.options.projected : f.preparation[list];
+	const item = array[0];
+	const inspect = vi.fn(() => item);
+	const iterator = function* () {
+		inspect();
+		yield item;
+	};
+	if (kind === "index getter")
+		Object.defineProperty(array, "0", { get: inspect });
+	else if (kind === "inherited index") {
+		const prototype = Object.create(Array.prototype);
+		Object.defineProperty(prototype, "0", { get: inspect });
+		Reflect.deleteProperty(array, "0");
+		Object.setPrototypeOf(array, prototype);
+	} else if (kind === "iterator")
+		Object.defineProperty(array, Symbol.iterator, { value: iterator });
+	else
+		Object.defineProperty(array, Symbol.iterator, {
+			get: () => {
+				inspect();
+				return iterator;
+			},
+		});
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	const attempt = await f.run();
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+	});
+	expect(measure).not.toHaveBeenCalled();
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it.each(
+	["previousSummary", "customInstructions"].flatMap((field) =>
+		["number", "getter", "coercion", "length getter"].map(
+			(kind) => [field, kind] as const,
+		),
+	),
+)("checks supplemental text %s (%s)", async (field, kind) => {
+	const f = fixture();
+	const target = field === "previousSummary" ? f.preparation : f.options;
+	const inspect = vi.fn(() => "Synthetic memory.");
+	if (kind === "getter") Object.defineProperty(target, field, { get: inspect });
+	else {
+		const value = kind === "number" ? 7 : { length: 1, toString: inspect };
+		if (kind === "length getter")
+			Object.defineProperty(value, "length", { get: inspect });
+		Object.defineProperty(target, field, { value });
+	}
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	const attempt = await f.run();
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+	});
+	expect(measure).not.toHaveBeenCalled();
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it.each([
+	"messagesToSummarize",
+	"turnPrefixMessages",
+	"settings",
+	"tokensBefore",
+	"firstKeptEntryId",
+	"fileOps",
+	"isSplitTurn",
+] as const)("rejects preparation.%s accessors", async (field) => {
+	const f = fixture();
+	const value = f.preparation[field];
+	const inspect = vi.fn(() => value);
+	Object.defineProperty(f.preparation, field, { get: inspect });
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	const attempt = await f.run();
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+	});
+	expect(measure).not.toHaveBeenCalled();
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("does not spread unconsumed preparation fields into requests", async () => {
+	const f = fixture();
+	const inspect = vi.fn(() => "not consumed");
+	Object.defineProperty(f.preparation, "unused", {
+		get: inspect,
+		enumerable: true,
+	});
+	const attempt = await f.run();
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt.result).toBeDefined();
+});
+
+it.each(["preparation", "projected"] as const)(
+	"rejects options.%s accessors before reading data",
+	async (key) => {
+		const f = fixture();
+		const value = f.options[key];
+		const inspect = vi.fn(() => value);
+		Object.defineProperty(f.options, key, { get: inspect });
+		const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+		const attempt = await f.run();
+		expect(inspect).not.toHaveBeenCalled();
+		expect(attempt).toMatchObject({
+			cancel: true,
+			result: undefined,
+			fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+		});
+		expect(measure).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["enabled", "reserveTokens", "keepRecentTokens"] as const)(
+	"rejects preparation.settings.%s accessors",
+	async (key) => {
+		const f = fixture();
+		const value = f.preparation.settings[key];
+		const inspect = vi.fn(() => value);
+		Object.defineProperty(f.preparation.settings, key, { get: inspect });
+		const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+		const attempt = await f.run();
+		expect(inspect).not.toHaveBeenCalled();
+		expect(attempt).toMatchObject({
+			cancel: true,
+			result: undefined,
+			fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+		});
+		expect(measure).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
+	},
+);
+
+it("rejects array-like source objects before reading their length", async () => {
+	const f = fixture();
+	const inspect = vi.fn(() => 1);
+	f.preparation.messagesToSummarize = Object.defineProperty({}, "length", {
+		get: inspect,
+	}) as AgentMessage[];
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	const attempt = await f.run();
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+	});
+	expect(measure).not.toHaveBeenCalled();
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+const unsuccessfulFlags = [
+	"cancel",
+	"requestOverflow",
+	"providerConfirmed",
+	"evidenceTrimmedTurns",
+] as const;
+it.each(
+	unsuccessfulFlags.flatMap((flag) =>
+		["partial", "final"].map((stage) => [stage, flag] as const),
+	),
+)("rejects %s mixed attempt (%s)", async (stage, flag) => {
+	const f = fixture();
+	const invalid: Partial<Attempt> = {};
+	if (flag === "evidenceTrimmedTurns") invalid.evidenceTrimmedTurns = 1;
+	else invalid[flag] = true;
+	f.execute.mockImplementation(async (prepared) => ({
+		...f.complete(prepared),
+		...((stage === "final") === (prepared.fileOps === f.preparation.fileOps)
+			? invalid
+			: {}),
+	}));
+	const attempt = await f.run();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_FAILED_REASON,
+	});
+});
+
+it("keeps captured metadata stable across requests", async () => {
+	const f = fixture();
+	const fileOps = f.preparation.fileOps;
+	f.execute.mockImplementation(async (prepared) => {
+		f.preparation.firstKeptEntryId = "changed";
+		f.preparation.tokensBefore = 1;
+		f.preparation.settings.reserveTokens = 0;
+		return f.complete(prepared);
+	});
+	const attempt = await f.run();
+	expect(attempt.result).toMatchObject({
+		firstKeptEntryId: "kept",
+		tokensBefore: 28_000,
+	});
+	const finalPreparation = f.execute.mock.calls.at(-1)?.[0];
+	expect(finalPreparation?.settings.reserveTokens).toBe(4096);
+	expect(finalPreparation?.fileOps).toBe(fileOps);
 });

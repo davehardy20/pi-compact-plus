@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import {
 	createRecoveryCopyBudget,
 	snapshotRecoveryMessages,
+	spendRecoveryText,
 } from "../src/compaction-recovery-evidence.js";
 import { extractCurrentFocus } from "../src/session-evidence.js";
 import {
@@ -145,4 +146,43 @@ it("copies prototype-like JSON keys into null-prototype objects without pollutio
 	const copy = snapshot([tool(args)]);
 	expect(JSON.stringify(copy)).toBe(JSON.stringify([tool(args)]));
 	expect(Object.hasOwn(Object.prototype, "polluted")).toBe(false);
+});
+
+it.each(["array", "message", "arguments"])(
+	"rejects proxy-backed %s without invoking reflection traps",
+	(kind) => {
+		const inspect = vi.fn();
+		const proxy = new Proxy(kind === "array" ? [] : {}, {
+			get: inspect,
+			getPrototypeOf: () => {
+				inspect();
+				return null;
+			},
+			getOwnPropertyDescriptor: () => {
+				inspect();
+				return undefined;
+			},
+			ownKeys: () => {
+				inspect();
+				return [];
+			},
+		});
+		const input =
+			kind === "array" ? proxy : kind === "message" ? [proxy] : [tool(proxy)];
+		expect(() => snapshot(input as unknown[])).toThrow(
+			RECOVERY_UNSUPPORTED_REASON,
+		);
+		expect(inspect).not.toHaveBeenCalled();
+	},
+);
+
+it("keeps text accounting finite for malformed values without reading length", () => {
+	const inspect = vi.fn(() => 1);
+	const value = Object.defineProperty({}, "length", { get: inspect });
+	const budget = createRecoveryCopyBudget();
+	expect(() => spendRecoveryText(value as unknown as string, budget)).toThrow(
+		RECOVERY_UNSUPPORTED_REASON,
+	);
+	expect(budget.chars).toBe(8_000_000);
+	expect(inspect).not.toHaveBeenCalled();
 });

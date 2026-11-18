@@ -1,4 +1,6 @@
+import { isProxy } from "node:util/types";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { compact } from "@earendil-works/pi-coding-agent";
 import {
 	RECOVERY_LIMIT_REASON,
 	RECOVERY_UNSUPPORTED_REASON,
@@ -17,6 +19,7 @@ export function spendRecoveryText(
 	value: string,
 	budget: RecoveryCopyBudget,
 ): void {
+	if (typeof value !== "string") unsupported();
 	budget.chars -= value.length;
 	if (budget.chars < 0) throw new Error(RECOVERY_LIMIT_REASON);
 }
@@ -31,12 +34,15 @@ function node(budget: RecoveryCopyBudget, depth = 0): void {
 
 /** Read only own data. Never invoke an accessor or inherit a requested field. */
 function own(value: object, key: string): unknown {
+	if (isProxy(value)) unsupported();
 	const descriptor = Object.getOwnPropertyDescriptor(value, key);
 	if (descriptor) {
 		if (!("value" in descriptor)) unsupported();
 		return descriptor.value;
 	}
+	let depth = 0;
 	for (let owner = Object.getPrototypeOf(value); owner; ) {
+		if (++depth > 8 || isProxy(owner)) unsupported();
 		if (Object.getOwnPropertyDescriptor(owner, key)) unsupported();
 		owner = Object.getPrototypeOf(owner);
 	}
@@ -44,7 +50,9 @@ function own(value: object, key: string): unknown {
 }
 
 function noJsonHook(value: object): void {
+	let depth = 0;
 	for (let owner: object | null = value; owner; ) {
+		if (++depth > 8 || isProxy(owner)) unsupported();
 		const descriptor = Object.getOwnPropertyDescriptor(owner, "toJSON");
 		if (descriptor) {
 			if (!("value" in descriptor) || typeof descriptor.value === "function")
@@ -56,7 +64,12 @@ function noJsonHook(value: object): void {
 }
 
 function record(value: unknown): Record<string, unknown> {
-	if (value === null || typeof value !== "object" || Array.isArray(value))
+	if (
+		value === null ||
+		typeof value !== "object" ||
+		isProxy(value) ||
+		Array.isArray(value)
+	)
 		unsupported();
 	const prototype = Object.getPrototypeOf(value);
 	if (prototype !== Object.prototype && prototype !== null) unsupported();
@@ -64,10 +77,12 @@ function record(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-function arrayLength(value: unknown[], budget: RecoveryCopyBudget): number {
+function arrayLength(value: unknown, budget: RecoveryCopyBudget): number {
+	if (isProxy(value) || !Array.isArray(value)) unsupported();
 	const prototype = Object.getPrototypeOf(value);
 	if (prototype !== Array.prototype && prototype !== null) unsupported();
 	noJsonHook(value);
+	if (Object.getOwnPropertyDescriptor(value, Symbol.iterator)) unsupported();
 	const length = own(value, "length");
 	if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0)
 		unsupported();
@@ -102,7 +117,8 @@ function copyJson(
 		if (!Number.isFinite(value)) unsupported();
 		return value;
 	}
-	if (typeof value !== "object" || ancestors.has(value)) unsupported();
+	if (typeof value !== "object" || isProxy(value) || ancestors.has(value))
+		unsupported();
 	ancestors.add(value);
 	try {
 		if (Array.isArray(value)) {
@@ -203,8 +219,8 @@ export function snapshotRecoveryMessages(
 	budget: RecoveryCopyBudget,
 	readerOnly = false,
 ): AgentMessage[] {
-	if (messages.length > 10_000) throw new Error(RECOVERY_LIMIT_REASON);
 	const length = arrayLength(messages, budget);
+	if (length > 10_000) throw new Error(RECOVERY_LIMIT_REASON);
 	const snapshots: AgentMessage[] = [];
 	for (let index = 0; index < length; index++) {
 		node(budget);
@@ -246,4 +262,67 @@ export function snapshotRecoveryMessages(
 		append(snapshots, safe as unknown as AgentMessage);
 	}
 	return snapshots;
+}
+
+type Preparation = Parameters<typeof compact>[0];
+
+/**
+ * Capture evidence and SDK preparation data once. Model, signal and execution
+ * callbacks are trusted control inputs, owned separately by the caller.
+ */
+export function snapshotRecoveryInputs(options: {
+	preparation: Preparation;
+	projected: AgentMessage[];
+	customInstructions?: string;
+}) {
+	const budget = createRecoveryCopyBudget();
+	const input = record(options);
+	const raw = record(own(input, "preparation"));
+	const preparation: Record<string, unknown> = Object.create(null);
+	field(raw, preparation, "firstKeptEntryId", "string", budget, true);
+	field(raw, preparation, "tokensBefore", "integer", budget, true);
+	field(raw, preparation, "isSplitTurn", "boolean", budget, true);
+	field(raw, preparation, "previousSummary", "string", budget);
+	if (preparation.firstKeptEntryId === "") unsupported();
+
+	const rawSettings = record(own(raw, "settings"));
+	const settings: Record<string, unknown> = Object.create(null);
+	field(rawSettings, settings, "enabled", "boolean", budget, true);
+	field(rawSettings, settings, "reserveTokens", "integer", budget, true);
+	field(rawSettings, settings, "keepRecentTokens", "integer", budget, true);
+	for (const value of [
+		preparation.tokensBefore,
+		settings.reserveTokens,
+		settings.keepRecentTokens,
+	]) {
+		if (typeof value !== "number" || value < 0) unsupported();
+	}
+	preparation.settings = settings;
+	// SDK-owned Sets are not evidence text. Preserve the exact fileOps identity.
+	preparation.fileOps = record(own(raw, "fileOps"));
+	const supplemental: Record<string, unknown> = Object.create(null);
+	field(input, supplemental, "customInstructions", "string", budget);
+
+	const history = own(raw, "messagesToSummarize");
+	const prefix = own(raw, "turnPrefixMessages");
+	if (arrayLength(history, budget) + arrayLength(prefix, budget) > 10_000)
+		throw new Error(RECOVERY_LIMIT_REASON);
+	const messages = snapshotRecoveryMessages(history as AgentMessage[], budget);
+	const turnPrefix = preparation.isSplitTurn
+		? snapshotRecoveryMessages(prefix as AgentMessage[], budget)
+		: [];
+	preparation.messagesToSummarize = messages;
+	preparation.turnPrefixMessages = turnPrefix;
+	const projected = snapshotRecoveryMessages(
+		own(input, "projected") as AgentMessage[],
+		budget,
+		true,
+	);
+	return {
+		preparation: preparation as unknown as Preparation,
+		source: messages.concat(turnPrefix),
+		projected,
+		customInstructions: supplemental.customInstructions as string | undefined,
+		budget,
+	};
 }
