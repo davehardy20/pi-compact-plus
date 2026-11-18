@@ -186,3 +186,21 @@ it("keeps text accounting finite for malformed values without reading length", (
 	expect(budget.chars).toBe(8_000_000);
 	expect(inspect).not.toHaveBeenCalled();
 });
+
+it("charges hidden property inspections on every shared-object visit", () => {
+	const shared = {};
+	for (let index = 0; index < 100; index++) {
+		Object.defineProperty(shared, `hidden${index}`, { value: "not emitted" });
+	}
+	const args = Object.fromEntries(
+		Array.from({ length: 100 }, (_, index) => [`repeat${index}`, shared]),
+	);
+	const input = [tool(args)];
+	expect(JSON.stringify(snapshot(input))).toBe(JSON.stringify(input));
+	expect(() =>
+		snapshotRecoveryMessages(input as AgentMessage[], {
+			chars: 100_000,
+			nodes: 300,
+		}),
+	).toThrow(RECOVERY_LIMIT_REASON);
+});

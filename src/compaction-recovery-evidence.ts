@@ -140,6 +140,8 @@ function copyJson(
 		const keys = Object.getOwnPropertyNames(source);
 		if (keys.length > budget.nodes) throw new Error(RECOVERY_LIMIT_REASON);
 		for (const key of keys) {
+			// Account for descriptor inspection even when JSON omits the field.
+			node(budget);
 			const descriptor = Object.getOwnPropertyDescriptor(source, key);
 			if (!descriptor || !("value" in descriptor)) unsupported();
 			// Hidden accessors are unsafe even though JSON would omit their fields.
