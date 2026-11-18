@@ -242,6 +242,118 @@ it("supports four partials plus one reducer", async () => {
 	expect(f.execute).toHaveBeenCalledTimes(5);
 });
 
+it("fits uneven chronological groups into four measured requests", async () => {
+	const f = fixture();
+	const weights = [8, 16, 4, 8, 16];
+	f.setSource(
+		weights.map((weight, index) =>
+			user(`GROUP_${index}: ${"x".repeat(weight * 4000)}`),
+		),
+	);
+	// Capture the exact SDK instruction overhead without duplicating prompt text.
+	// This probe stops before any execute call, regardless of the partitioner.
+	const realMeasure = budget.measureSummaryRequestTokens;
+	const measure = vi
+		.spyOn(budget, "measureSummaryRequestTokens")
+		.mockResolvedValueOnce(undefined);
+	await f.run();
+	expect(f.execute).not.toHaveBeenCalled();
+	const baseline = await realMeasure({
+		...measure.mock.calls[0][0],
+		messages: [],
+	});
+	if (!baseline) throw new Error("Unmeasurable fixture baseline");
+	f.options.model.contextWindow = Math.ceil(
+		(baseline.totalTokens + 21_000) / 0.95,
+	);
+	measure.mockClear();
+
+	expect(await f.run()).toMatchObject({
+		fallbackReason: RECOVERY_SUCCESS_REASON,
+		recoveryRequests: 5,
+	});
+	expect(
+		f
+			.maps()
+			.map((part) =>
+				weights.flatMap((_, index) =>
+					part.includes(`GROUP_${index}:`) ? [index] : [],
+				),
+			),
+	).toEqual([[0], [1, 2], [3], [4]]);
+	expect(f.execute).toHaveBeenCalledTimes(5);
+});
+
+it("preflights only the planned partial count on a smaller model", async () => {
+	const f = fixture();
+	f.options.model.contextWindow = 17_000;
+	f.setSource(Array.from({ length: 2 }, () => user("x".repeat(45_000))));
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	expect(await f.run()).toMatchObject({
+		fallbackReason: RECOVERY_SUCCESS_REASON,
+		recoveryRequests: 3,
+	});
+	const reducerIndex = measure.mock.calls.findIndex(([request]) =>
+		request.customInstructions?.includes("RECOVERY REDUCTION"),
+	);
+	const envelope = measure.mock.calls[reducerIndex][0].messages;
+	expect(envelope).toHaveLength(2);
+	for (const message of envelope) {
+		expect(extractTextContent(message)).toContain("x".repeat(16_000));
+	}
+	expect(measure.mock.invocationCallOrder[reducerIndex]).toBeLessThan(
+		f.execute.mock.invocationCallOrder[0],
+	);
+	expect(f.execute).toHaveBeenCalledTimes(3);
+});
+
+it("bounds measured-prefix planning for ten thousand groups", async () => {
+	const f = fixture();
+	f.setSource(
+		Array.from({ length: 10_000 }, (_, index) =>
+			user(`ROW_${index}: ${"x".repeat(40)}`),
+		),
+	);
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	expect(await f.run()).toMatchObject({
+		cancel: true,
+		fallbackReason: RECOVERY_LIMIT_REASON,
+	});
+	expect(measure).toHaveBeenCalled();
+	expect(measure.mock.calls[0][0].messages).toHaveLength(10_000);
+	expect(measure.mock.calls.length).toBeLessThanOrEqual(48);
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("preserves the empty-source single-map behavior", async () => {
+	const f = fixture();
+	f.setSource([]);
+	expect((await f.run()).recoveryRequests).toBe(2);
+	expect(f.execute).toHaveBeenCalledTimes(2);
+});
+
+it.each(["abort", "stale"])(
+	"stops measured-prefix planning after %s",
+	async (kind) => {
+		const f = fixture();
+		const controller = new AbortController();
+		f.options.signal = controller.signal;
+		const realMeasure = budget.measureSummaryRequestTokens;
+		const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+		measure.mockImplementation(async (request) => {
+			const result = await realMeasure(request);
+			if (measure.mock.calls.length === 2) {
+				if (kind === "abort") controller.abort();
+				else f.options.isCurrent = () => false;
+			}
+			return result;
+		});
+		expect(await f.run()).toMatchObject({ cancel: true, result: undefined });
+		expect(measure).toHaveBeenCalledTimes(2);
+		expect(f.execute).not.toHaveBeenCalled();
+	},
+);
+
 it.each(["invalid", "oversized", "provider failure"])(
 	"stops after a failed partial: %s",
 	async (kind) => {

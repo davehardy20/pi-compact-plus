@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
-import { type compact, estimateTokens } from "@earendil-works/pi-coding-agent";
+import type { compact } from "@earendil-works/pi-coding-agent";
 import type { CompactionAttemptResult } from "./compact.js";
 import { collectOmittedCompactionUserTurns } from "./compaction-intent.js";
 import {
@@ -195,27 +195,44 @@ export async function recoverCompaction(options: {
 			});
 			return current() ? result : undefined;
 		};
-		const parts = [groups];
-		for (let index = 0; index < parts.length; ) {
-			const part = parts[index];
-			const measured = await measure(part.flat(), partialInstructions(index));
-			if (!measured) return fail();
-			if (measured.totalTokens <= limit) {
-				index++;
-				continue;
+		// Each wrapper is nonempty user text: Pi's captured chars/4 estimate
+		// grows monotonically with appended groups. Labels 1..4 have equal
+		// overhead, so longest-fitting prefixes minimize chronological parts.
+		// At most 3 searches × 14 probes + 4 whole checks + 2 reducer checks
+		// for 10,000 groups: <=48 measurements, all planning before execute.
+		const parts: AgentMessage[][][] = [];
+		let start = 0;
+		do {
+			const index = parts.length;
+			const instructions = partialInstructions(index);
+			const remaining = groups.slice(start);
+			const whole = await measure(remaining.flat(), instructions);
+			if (!whole) return fail();
+			if (whole.totalTokens <= limit) {
+				parts.push(remaining);
+				break;
 			}
-			if (parts.length >= MAX_PARTIALS || part.length < 2) return fail();
-			const weights = part.map((group) =>
-				group.reduce((sum, message) => sum + estimateTokens(message), 0),
-			);
-			const half = weights.reduce((sum, value) => sum + value, 0) / 2;
-			let split = 1;
-			let weight = weights[0];
-			while (split < part.length - 1 && weight < half)
-				weight += weights[split++];
-			parts.splice(index, 1, part.slice(0, split), part.slice(split));
-		}
-		const envelope = Array.from({ length: MAX_PARTIALS }, (_, index) =>
+			if (index === MAX_PARTIALS - 1 || remaining.length < 2) return fail();
+			let low = 1;
+			let high = remaining.length - 1;
+			let fit = 0;
+			while (low <= high) {
+				const end = Math.floor((low + high) / 2);
+				const candidate = await measure(
+					remaining.slice(0, end).flat(),
+					instructions,
+				);
+				if (!candidate) return fail();
+				if (candidate.totalTokens <= limit) {
+					fit = end;
+					low = end + 1;
+				} else high = end - 1;
+			}
+			if (fit === 0) return fail();
+			parts.push(remaining.slice(0, fit));
+			start += fit;
+		} while (start < groups.length);
+		const envelope = Array.from({ length: parts.length }, (_, index) =>
 			data(
 				`Historical partial ${index + 1}:\n${"x".repeat(MAX_PARTIAL_CHARS)}`,
 			),
