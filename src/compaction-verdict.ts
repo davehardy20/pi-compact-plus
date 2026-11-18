@@ -21,6 +21,7 @@
 
 import { NATIVE_FALLBACK_REASON } from "./compatibility.js";
 import {
+	NATIVE_FALLBACK_UNMEASURED_REASON,
 	RECOVERY_FAILED_REASON,
 	RECOVERY_LIMIT_REASON,
 	RECOVERY_SUCCESS_REASON,
@@ -101,6 +102,7 @@ const REASON_KINDS: ReadonlyMap<string, CompactionVerdictKind> = new Map([
 	["compact error: provider request failed", "deferred"],
 	[SUMMARIZATION_CONTEXT_OVERFLOW_REASON, "declined"],
 	[SUMMARIZATION_OUTPUT_CAP_REASON, "cancelled"],
+	[NATIVE_FALLBACK_UNMEASURED_REASON, "cancelled"],
 	[RECOVERY_SUCCESS_REASON, "accepted"],
 	[RECOVERY_LIMIT_REASON, "cancelled"],
 	[RECOVERY_FAILED_REASON, "cancelled"],

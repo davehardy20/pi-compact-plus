@@ -23,6 +23,9 @@ export const SUMMARIZATION_CONTEXT_OVERFLOW_REASON =
 export const SUMMARIZATION_OUTPUT_CAP_REASON =
 	"summarization output budget was exhausted";
 
+export const NATIVE_FALLBACK_UNMEASURED_REASON =
+	"native fallback request could not be measured";
+
 export const RECOVERY_SUCCESS_REASON =
 	"oversized summary recovered through bounded multi-pass compaction";
 export const RECOVERY_LIMIT_REASON =

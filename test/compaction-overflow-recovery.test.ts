@@ -43,6 +43,7 @@ import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
+	NATIVE_FALLBACK_UNMEASURED_REASON,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
@@ -366,7 +367,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		);
 	});
 
-	it("defers to native compaction when Pi's own payload fits under the session bound", async () => {
+	it("defers to native compaction when both separately measured requests fit", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
@@ -376,23 +377,20 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		state.isCompacting = true;
 		state.lastTriggerAuto = true;
 
-		// The live failure shape: Compact+'s own measurement of its superset request denied
-		// the compaction before any provider was consulted, while provider usage reports the
-		// session well under the window. Pi sends a smaller payload, so declining here leaves
-		// a session that never compacts.
+		// The merged custom request is too large, but the SDK sends these separately.
 		const result = await coordinator.onSessionBeforeCompact(
-			event(ctx, [
-				user(`Task: repair login.\n${"old context ".repeat(120_000)}`),
-			]),
+			event(ctx, [user(`Task: repair login.\n${"h".repeat(430_000)}`)], {
+				prefix: [user("p".repeat(430_000))],
+				splitTurn: true,
+			}),
 			ctx,
 		);
 
 		expect(result).toBeUndefined();
+		expect(compactMock).not.toHaveBeenCalled();
 		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		// Provider usage sits comfortably under the window, so the estimate that denied
-		// the request is recorded as a discrepancy rather than passed on as the reason.
 		expect(coordinator.getLastVerdict()?.reason).toBe(
-			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 
 		// A deferred compaction hands off to Pi, so it must not leave a stuck attempt
@@ -405,13 +403,10 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		expect(state.lastTriggerAuto).toBe(true);
 	});
 
-	it("defers a guided attempt instead of declining when usage reports headroom", async () => {
+	it("does not defer a guided overflow based on usage headroom", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
-		// Seeds acceptance shape: provider usage sits well under the window while the
-		// characters/4 estimate of the guided attempt claims it cannot fit. Compact+'s own
-		// issued prompt is the payload under examination, not third-party guidance, so
-		// bounded usage headroom outranks the estimate and the session still compacts.
+		// The native request itself is oversized despite the session usage estimate.
 		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
 		state.selectedMode = "standard";
 		state.lastIssuedCompactionInstructions = "summarize the current task";
@@ -424,24 +419,11 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 
 		const result = await coordinator.onSessionBeforeCompact(guided, ctx);
 
-		expect(result).toBeUndefined();
-		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(result).toEqual({ cancel: true });
+		expect(state.pendingCompaction).toBeNull();
 		expect(coordinator.getLastVerdict()?.reason).toBe(
-			SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
+			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
-
-		await coordinator.onSessionCompact(
-			{
-				fromExtension: false,
-				compactionEntry: {
-					type: "compaction",
-					summary: VALID_STRUCTURED_SUMMARY,
-					details: {},
-				},
-			} as never,
-			ctx,
-		);
-		expect(state.lastCompactTokens).toBeGreaterThan(0);
 	});
 
 	it("suppresses a native-guard decline when usage headroom contradicts the estimate", async () => {
@@ -912,13 +894,13 @@ ${"old context ".repeat(90_000)}`),
 			ctx,
 		);
 
-		expect(result).toBeUndefined();
+		expect(result).toEqual({ cancel: true });
 		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
 
-	it("defers the final fall-back when usage headroom contradicts the estimate", async () => {
+	it("does not let usage headroom authorize native fallback after a custom failure", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
@@ -926,9 +908,8 @@ ${"old context ".repeat(90_000)}`),
 		state.lastIssuedCompactionInstructions = "summarize the current task";
 		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
 
-		// The attempt failed for a reason that is not an overflow, and the guidance Pi would
-		// append is Compact+'s own prompt. Headroom contradicts the estimate of Pi's payload,
-		// so the session must still compact rather than be left unable to.
+		// The native request is measured separately. Usage cannot authorize an
+		// oversized request even when the guidance is Compact+'s own prompt.
 		const deferred = event(
 			ctx,
 			[user(`Task: repair login.\n${"old context ".repeat(90_000)}`)],
@@ -937,9 +918,9 @@ ${"old context ".repeat(90_000)}`),
 
 		const result = await coordinator.onSessionBeforeCompact(deferred, ctx);
 
-		expect(result).toBeUndefined();
-		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(coordinator.getLastVerdict()?.reason).not.toBe(
+		expect(result).toEqual({ cancel: true });
+		expect(state.pendingCompaction).toBeNull();
+		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
 	});
@@ -1794,7 +1775,130 @@ ${"old context ".repeat(90_000)}`),
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
 	});
 
-	it("hands compaction back to Pi when the guard is disabled", async () => {
+	it.each(["fits", "overflows", "unmeasurable"] as const)(
+		"requires a native capture that fits after a custom failure with the guard off (%s)",
+		async (outcome) => {
+			const capture = {
+				transcriptTokens: 100,
+				reservedOutputTokens: 8192,
+				totalTokens: 8292,
+			};
+			const measure = vi
+				.spyOn(summaryBudget, "measureSummaryRequestTokens")
+				.mockResolvedValueOnce(capture)
+				.mockResolvedValueOnce(capture)
+				.mockResolvedValueOnce(
+					outcome === "unmeasurable"
+						? undefined
+						: { ...capture, totalTokens: outcome === "fits" ? 8292 : 208_192 },
+				);
+			try {
+				const state = new CompactionState();
+				const ctx = createCtx({ contextWindow: 200_000 });
+				const persistTelemetrySnapshot = vi.fn(async () => {});
+				const coordinator = createCoordinator(state, {
+					guardNativeCompaction: false,
+					usageTokens: 20_000,
+					persistTelemetrySnapshot,
+				});
+				state.selectedMode = "standard";
+				compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+				const result = await coordinator.onSessionBeforeCompact(
+					event(ctx, [user("Task: check the native fallback.")]),
+					ctx,
+				);
+				expect(compactMock).toHaveBeenCalledOnce();
+				expect(measure).toHaveBeenCalledTimes(3);
+				if (outcome === "fits") {
+					expect(result).toBeUndefined();
+					expect(state.pendingCompaction?.executionPath).toBe(
+						"native-fallback",
+					);
+					expect(persistTelemetrySnapshot).toHaveBeenCalledOnce();
+				} else {
+					expect(result).toEqual({ cancel: true });
+					expect(state.pendingCompaction).toBeNull();
+					expect(persistTelemetrySnapshot).not.toHaveBeenCalled();
+					expect(coordinator.getLastVerdict()).toMatchObject({
+						kind: "cancelled",
+						reason:
+							outcome === "unmeasurable"
+								? NATIVE_FALLBACK_UNMEASURED_REASON
+								: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+					});
+				}
+				expect(fetchSpy).not.toHaveBeenCalled();
+			} finally {
+				measure.mockRestore();
+			}
+		},
+	);
+
+	it.each(["replacement", "capacity"] as const)(
+		"discards a native fallback capture after model %s",
+		async (change) => {
+			const state = new CompactionState();
+			const ctx = createCtx({ contextWindow: 200_000 });
+			const persistTelemetrySnapshot = vi.fn(async () => {});
+			const coordinator = createCoordinator(state, {
+				persistTelemetrySnapshot,
+			});
+			state.selectedMode = "standard";
+			const capture = {
+				transcriptTokens: 100,
+				reservedOutputTokens: 8192,
+				totalTokens: 8292,
+			};
+			const measure = vi
+				.spyOn(summaryBudget, "measureSummaryRequestTokens")
+				.mockResolvedValueOnce(capture)
+				.mockResolvedValueOnce(capture)
+				.mockImplementationOnce(async () => {
+					const model = ctx.model;
+					if (!model) throw new Error("fixture model missing");
+					if (change === "replacement") {
+						Object.assign(ctx, { model: { ...model } });
+					} else {
+						model.contextWindow++;
+					}
+					return capture;
+				});
+			compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+			try {
+				expect(
+					await coordinator.onSessionBeforeCompact(
+						event(ctx, [user("task")]),
+						ctx,
+					),
+				).toEqual({ cancel: true });
+				expect(measure).toHaveBeenCalledTimes(3);
+				expect(persistTelemetrySnapshot).not.toHaveBeenCalled();
+				expect(state.pendingCompaction).toBeNull();
+			} finally {
+				measure.mockRestore();
+			}
+		},
+	);
+
+	it("does not hand off to Pi after an abort during telemetry persistence", async () => {
+		const state = new CompactionState();
+		const ctx = createCtx({ contextWindow: 200_000 });
+		const controller = new AbortController();
+		const persistTelemetrySnapshot = vi.fn(async () => controller.abort());
+		const coordinator = createCoordinator(state, { persistTelemetrySnapshot });
+		state.selectedMode = "standard";
+		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+		const input = event(ctx, [user("Task: check the native fallback.")]);
+		Object.assign(input, { signal: controller.signal });
+		expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
+			cancel: true,
+		});
+		expect(persistTelemetrySnapshot).toHaveBeenCalledOnce();
+		expect(state.pendingCompaction).toBeNull();
+		expect(coordinator.getLastVerdict()?.kind).toBe("cancelled");
+	});
+
+	it("hands compaction back to Pi for a fitting request even when the guard is disabled", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const coordinator = createCoordinator(state, {
