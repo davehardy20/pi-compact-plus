@@ -43,6 +43,7 @@ import { registerCompactPlusEventHandlers } from "../src/events.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
+	NATIVE_FALLBACK_UNMEASURED_REASON,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_OUTPUT_CAP_REASON,
@@ -1818,6 +1819,13 @@ ${"old context ".repeat(90_000)}`),
 					expect(result).toEqual({ cancel: true });
 					expect(state.pendingCompaction).toBeNull();
 					expect(persistTelemetrySnapshot).not.toHaveBeenCalled();
+					expect(coordinator.getLastVerdict()).toMatchObject({
+						kind: "cancelled",
+						reason:
+							outcome === "unmeasurable"
+								? NATIVE_FALLBACK_UNMEASURED_REASON
+								: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+					});
 				}
 				expect(fetchSpy).not.toHaveBeenCalled();
 			} finally {

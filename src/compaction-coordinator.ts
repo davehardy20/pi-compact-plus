@@ -34,6 +34,7 @@ import { currentProjectedMessages } from "./session-projection.js";
 import type { CompactPlusThresholdSettings } from "./settings.js";
 import type { CompactionState } from "./state.js";
 import {
+	NATIVE_FALLBACK_UNMEASURED_REASON,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_INTENT_EVIDENCE_REASON,
@@ -60,9 +61,6 @@ const SUMMARIZATION_OUTPUT_CAP_WARNING =
 
 const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
-
-const NATIVE_FALLBACK_UNMEASURED_REASON =
-	"native fallback request could not be measured";
 
 const EVIDENCE_TRIMMED_WARNING =
 	"Compact+ trimmed additional intent evidence so the summary request could fit.";

@@ -49,6 +49,7 @@ describe("reason to kind mapping", () => {
 			["compact error: provider request failed", "deferred"],
 			[SUMMARIZATION_CONTEXT_OVERFLOW_REASON, "declined"],
 			[SUMMARIZATION_OUTPUT_CAP_REASON, "cancelled"],
+			["native fallback request could not be measured", "cancelled"],
 			[RECOVERY_SUCCESS_REASON, "accepted"],
 			[RECOVERY_LIMIT_REASON, "cancelled"],
 			[RECOVERY_FAILED_REASON, "cancelled"],
