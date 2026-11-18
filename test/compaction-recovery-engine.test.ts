@@ -413,3 +413,109 @@ it.each(["toolName", "toolCallId"] as const)(
 		expect(f.execute).not.toHaveBeenCalled();
 	},
 );
+
+it.each(["sparse paths", "path getter", "index getter"])(
+	"checks projected-only arguments: %s",
+	async (kind) => {
+		const f = fixture();
+		const inspect = vi.fn(() => "retained.ts");
+		const args: ToolArguments = {};
+		if (kind === "sparse paths") args.paths = new Array(100_001);
+		else if (kind === "path getter")
+			Object.defineProperty(args, "path", { get: inspect });
+		else args.paths = Object.defineProperty([], "0", { get: inspect });
+		f.options.projected.push(call("retained-only", args));
+		const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+		const attempt = await f.run();
+		expect(inspect).not.toHaveBeenCalled();
+		expect(attempt).toMatchObject({
+			cancel: true,
+			result: undefined,
+			fallbackReason:
+				kind === "sparse paths"
+					? RECOVERY_LIMIT_REASON
+					: RECOVERY_UNSUPPORTED_REASON,
+		});
+		expect(measure).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
+	},
+);
+
+const metadataCases = [
+	["branchSummary", "fromId"],
+	["compactionSummary", "tokensBefore"],
+	["bashExecution", "cancelled"],
+	["bashExecution", "truncated"],
+	["bashExecution", "exitCode"],
+	["bashExecution", "fullOutputPath"],
+	["toolResult", "isError"],
+];
+it.each(
+	metadataCases.flatMap(([role, field]) => [
+		[role, field, "hook"],
+		[role, field, "getter"],
+	]),
+)("checks copied metadata %s.%s (%s)", async (role, field, kind) => {
+	const f = fixture();
+	const inspect = vi.fn(() => "synthetic");
+	const message: Record<string, unknown> = {
+		role,
+		summary: "Historical memory.",
+		fromId: null,
+		tokensBefore: 100,
+		command: "echo synthetic",
+		output: "synthetic",
+		cancelled: false,
+		truncated: false,
+		exitCode: 0,
+		timestamp: 1,
+		toolCallId: "orphan",
+		toolName: "read",
+		isError: false,
+		content: [{ type: "text", text: "Synthetic tool evidence." }],
+	};
+	Object.defineProperty(
+		message,
+		field,
+		kind === "getter"
+			? { get: inspect }
+			: { value: Object.defineProperty({}, "toJSON", { value: inspect }) },
+	);
+	f.preparation.messagesToSummarize.push(message as unknown as AgentMessage);
+	const measure = vi.spyOn(budget, "measureSummaryRequestTokens");
+	const attempt = await f.run();
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+	});
+	expect(measure).not.toHaveBeenCalled();
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("does not serialize an inherited sparse-array getter", async () => {
+	const f = fixture();
+	const inspect = vi.fn(() => "synthetic");
+	const inherited = Object.getOwnPropertyDescriptor(Array.prototype, "9999");
+	const paths = new Array(10_000);
+	f.preparation.messagesToSummarize.push(call("inherited-slot", { paths }));
+	let attempt: Awaited<ReturnType<typeof recoverCompaction>>;
+	try {
+		Object.defineProperty(Array.prototype, "9999", {
+			get: inspect,
+			configurable: true,
+		});
+		attempt = await f.run();
+	} finally {
+		if (inherited) Object.defineProperty(Array.prototype, "9999", inherited);
+		else Reflect.deleteProperty(Array.prototype, "9999");
+	}
+	expect(inspect).not.toHaveBeenCalled();
+	expect(attempt).toMatchObject({
+		cancel: true,
+		result: undefined,
+		fallbackReason: RECOVERY_UNSUPPORTED_REASON,
+	});
+	expect(f.execute).not.toHaveBeenCalled();
+});

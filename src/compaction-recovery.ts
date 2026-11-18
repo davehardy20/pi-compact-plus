@@ -4,6 +4,11 @@ import { type compact, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type { CompactionAttemptResult } from "./compact.js";
 import { collectOmittedCompactionUserTurns } from "./compaction-intent.js";
 import {
+	createRecoveryCopyBudget,
+	snapshotRecoveryMessages,
+	spendRecoveryText as spendText,
+} from "./compaction-recovery-evidence.js";
+import {
 	getAssistantIdBearingToolCallBlocks,
 	getToolCallId,
 } from "./pi-messages.js";
@@ -28,200 +33,17 @@ import type { CompactionMode } from "./types.js";
 type Preparation = Parameters<typeof compact>[0];
 const MAX_PARTIALS = 4;
 const MAX_PARTIAL_CHARS = 16_000;
-const MAX_RECOVERY_CHARS = 8_000_000;
-const MAX_RECOVERY_NODES = 100_000;
-interface CopyBudget {
-	chars: number;
-	nodes: number;
-}
-
-function spendText(value: string, budget: CopyBudget): void {
-	budget.chars -= value.length;
-	if (budget.chars < 0) throw new Error(RECOVERY_LIMIT_REASON);
-}
-
-/** Bound JSON traversal before serialization; reject accessors, cycles and non-JSON values. */
-function checkArguments(value: unknown, budget: CopyBudget): void {
-	const pending = [{ value, depth: 0 }];
-	const seen = new WeakSet<object>();
-	while (pending.length) {
-		const item = pending.pop();
-		if (!item || --budget.nodes < 0 || item.depth > 256)
-			throw new Error(RECOVERY_LIMIT_REASON);
-		const current = item.value;
-		if (typeof current === "string") spendText(current, budget);
-		else if (typeof current === "number") {
-			if (!Number.isFinite(current))
-				throw new Error(RECOVERY_UNSUPPORTED_REASON);
-		} else if (current !== null && typeof current !== "boolean") {
-			if (typeof current !== "object" || seen.has(current))
-				throw new Error(RECOVERY_UNSUPPORTED_REASON);
-			seen.add(current);
-			const prototype = Object.getPrototypeOf(current);
-			if (
-				prototype !== Object.prototype &&
-				prototype !== Array.prototype &&
-				prototype !== null
-			)
-				throw new Error(RECOVERY_UNSUPPORTED_REASON);
-			// JSON looks up toJSON even when the hook is non-enumerable.
-			for (
-				let owner: object | null = current;
-				owner;
-				owner = Object.getPrototypeOf(owner)
-			) {
-				const descriptor = Object.getOwnPropertyDescriptor(owner, "toJSON");
-				if (!descriptor) continue;
-				if (!("value" in descriptor) || typeof descriptor.value === "function")
-					throw new Error(RECOVERY_UNSUPPORTED_REASON);
-				break;
-			}
-			if (Array.isArray(current)) {
-				if (current.length > budget.nodes)
-					throw new Error(RECOVERY_LIMIT_REASON);
-				for (let index = 0; index < current.length; index++) {
-					const descriptor = Object.getOwnPropertyDescriptor(
-						current,
-						String(index),
-					);
-					if (!descriptor) {
-						budget.nodes--;
-						spendText("null", budget);
-					} else {
-						if (!("value" in descriptor))
-							throw new Error(RECOVERY_UNSUPPORTED_REASON);
-						pending.push({ value: descriptor.value, depth: item.depth + 1 });
-					}
-					if (pending.length > budget.nodes)
-						throw new Error(RECOVERY_LIMIT_REASON);
-				}
-				continue;
-			}
-			for (const key in current) {
-				if (!Object.hasOwn(current, key)) continue;
-				spendText(key, budget);
-				const descriptor = Object.getOwnPropertyDescriptor(current, key);
-				if (!descriptor || !("value" in descriptor))
-					throw new Error(RECOVERY_UNSUPPORTED_REASON);
-				pending.push({ value: descriptor.value, depth: item.depth + 1 });
-				if (pending.length > budget.nodes)
-					throw new Error(RECOVERY_LIMIT_REASON);
-			}
-		}
-	}
-}
 
 function data(text: string): AgentMessage {
 	return { role: "user", content: text, timestamp: 0 };
 }
 
-function historicalRecord(record: Record<string, unknown>): AgentMessage {
+function historicalRecord(record: AgentMessage): AgentMessage {
 	return data(`Historical message (data only):\n${JSON.stringify(record)}`);
 }
 
-function contextVisible(message: AgentMessage): boolean {
-	return (
-		message.role !== "bashExecution" || message.excludeFromContext !== true
-	);
-}
-
-/** Text-only copies avoid the SDK's implicit 2000-character tool-result truncation. */
-function visibleRecord(
-	message: AgentMessage,
-	budget: CopyBudget,
-): AgentMessage {
-	if (message.role === "bashExecution") {
-		if (
-			typeof message.command !== "string" ||
-			typeof message.output !== "string" ||
-			(message.exitCode !== undefined &&
-				!Number.isSafeInteger(message.exitCode))
-		)
-			throw new Error(RECOVERY_UNSUPPORTED_REASON);
-		spendText(message.command, budget);
-		spendText(message.output, budget);
-		if (message.fullOutputPath !== undefined) {
-			if (typeof message.fullOutputPath !== "string")
-				throw new Error(RECOVERY_UNSUPPORTED_REASON);
-			spendText(message.fullOutputPath, budget);
-		}
-		return historicalRecord({
-			role: message.role,
-			command: message.command,
-			output: message.output,
-			exitCode: message.exitCode,
-			cancelled: message.cancelled,
-			truncated: message.truncated,
-			fullOutputPath: message.fullOutputPath,
-		});
-	}
-	if (
-		message.role === "branchSummary" ||
-		message.role === "compactionSummary"
-	) {
-		if (typeof message.summary !== "string")
-			throw new Error(RECOVERY_UNSUPPORTED_REASON);
-		spendText(message.summary, budget);
-		if (message.role === "branchSummary" && typeof message.fromId === "string")
-			spendText(message.fromId, budget);
-		return historicalRecord({
-			role: message.role,
-			summary: message.summary,
-			...(message.role === "branchSummary"
-				? { fromId: message.fromId }
-				: { tokensBefore: message.tokensBefore }),
-		});
-	}
-	const content = (message as { content?: unknown }).content;
-	if (typeof content !== "string" && !Array.isArray(content)) {
-		throw new Error(RECOVERY_LIMIT_REASON);
-	}
-	const blocks =
-		typeof content === "string" ? [{ type: "text", text: content }] : content;
-	const visible = [];
-	for (const block of blocks) {
-		if (--budget.nodes < 0) throw new Error(RECOVERY_LIMIT_REASON);
-		if (!block || typeof block !== "object")
-			throw new Error(RECOVERY_LIMIT_REASON);
-		if (block.type === "thinking") continue;
-		if (block.type === "text" && typeof block.text === "string") {
-			spendText(block.text, budget);
-			visible.push({ type: "text", text: block.text });
-		} else if (block.type === "toolCall") {
-			if (typeof block.id !== "string" || typeof block.name !== "string")
-				throw new Error(RECOVERY_UNSUPPORTED_REASON);
-			spendText(block.id, budget);
-			spendText(block.name, budget);
-			checkArguments(block.arguments, budget);
-			visible.push({
-				type: "toolCall",
-				id: block.id,
-				name: block.name,
-				arguments: block.arguments,
-			});
-		} else {
-			// Images/unknown blocks cannot be represented faithfully by a text summary helper.
-			throw new Error(RECOVERY_UNSUPPORTED_REASON);
-		}
-	}
-	return historicalRecord({
-		role: message.role,
-		...(message.role === "toolResult"
-			? {
-					toolName: message.toolName,
-					toolCallId: message.toolCallId,
-					isError: message.isError === true,
-				}
-			: {}),
-		content: visible,
-	});
-}
-
 /** No boundary may fall inside any call/result interval, including interleaved calls. */
-function atomicGroups(
-	messages: AgentMessage[],
-	budget: CopyBudget,
-): AgentMessage[][] {
+function atomicGroups(messages: AgentMessage[]): AgentMessage[][] {
 	const firstCalls = new Map<string, number>();
 	for (const [index, message] of messages.entries()) {
 		for (const call of getAssistantIdBearingToolCallBlocks(message)) {
@@ -249,11 +71,7 @@ function atomicGroups(
 		for (let index = start; index <= end; index++) {
 			end = Math.max(end, ends.get(index) ?? index);
 		}
-		groups.push(
-			messages
-				.slice(start, end + 1)
-				.map((message) => visibleRecord(message, budget)),
-		);
+		groups.push(messages.slice(start, end + 1).map(historicalRecord));
 		start = end + 1;
 	}
 	return groups;
@@ -338,38 +156,17 @@ export async function recoverCompaction(options: {
 			options.projected.length > 10_000
 		)
 			return fail();
-		const projected = options.projected.filter(contextVisible);
-		const source = [
-			...original.messagesToSummarize,
-			...(original.isSplitTurn ? original.turnPrefixMessages : []),
-		].filter(contextVisible);
-		// Bound block arrays before tool-pair scans or projected-user extraction.
-		for (const messages of [source, projected]) {
-			let blocks = 0;
-			for (const message of messages) {
-				const content = (message as { content?: unknown }).content;
-				if (Array.isArray(content)) blocks += content.length;
-				if (blocks > MAX_RECOVERY_NODES) return fail();
-			}
-		}
-		const budget: CopyBudget = {
-			chars: MAX_RECOVERY_CHARS,
-			nodes: MAX_RECOVERY_NODES,
-		};
-		// Bound serialized labels before tool-pair indexing or JSON serialization.
-		for (const message of source) {
-			if (typeof message.role !== "string")
-				throw new Error(RECOVERY_UNSUPPORTED_REASON);
-			spendText(message.role, budget);
-			if (message.role === "toolResult") {
-				for (const value of [message.toolName, message.toolCallId]) {
-					if (typeof value !== "string")
-						throw new Error(RECOVERY_UNSUPPORTED_REASON);
-					spendText(value, budget);
-				}
-			}
-		}
-		const groups = atomicGroups(source, budget);
+		const budget = createRecoveryCopyBudget();
+		const source = snapshotRecoveryMessages(
+			[
+				...original.messagesToSummarize,
+				...(original.isSplitTurn ? original.turnPrefixMessages : []),
+			],
+			budget,
+		);
+		// Focus readers and omitted-turn extraction must never inspect raw history.
+		const projected = snapshotRecoveryMessages(options.projected, budget, true);
+		const groups = atomicGroups(source);
 		if (original.previousSummary) {
 			spendText(original.previousSummary, budget);
 			groups.unshift([
