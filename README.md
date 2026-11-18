@@ -500,7 +500,7 @@ trees land in `reports/` and `.stryker-tmp/`, both gitignored.
 
 ### Runtime regression matrix (F1–F11)
 
-The lockfile and `npm ci` supply **Pi 1.0.1** coding-agent, agent-core, and AI
+The lockfile and `npm ci` supply **Pi 1.5.2** coding-agent, agent-core, and AI
 packages for the main suite. CI provisions isolated **Pi 0.87.1** and **Pi 1.0.1**
 provider-boundary trees and requires both. Tests assert all three package
 versions and fail on a configured but incomplete or mismatched tree. This is a
@@ -509,13 +509,20 @@ upgraded.
 
 The earlier transitive-advisory slice updated locked `esbuild`, `nanoid`, and
 `postcss`, and the 0.84.x intermediate slices resolved Pi 0.83.0's bundled
-`brace-expansion` and `undici` advisories; the high-severity npm audit now
-blocks CI.
+`brace-expansion` and `undici` advisories. The current dependency update pins
+Pi 1.5.2 (`undici` 8.12.3) and Vite 7.3.8. Vitest and coverage remain pinned
+together at 4.1.11.
+CI continues to reject high-severity audit findings; remaining moderate findings
+are not treated as a clean audit.
 
 Custom summaries preserve complete fitting projected intent, including
 unrecognized redirects. Budgeting captures the SDK's actual normalized,
 hard-pruned request locally before credentials or provider work, including
-native system text, wrappers, memory, guidance, and effective output allowance.
+native system text, wrappers, memory, guidance, and bounded output allowance.
+Pi 1.5.2 omits a helper-level output cap, so the estimate uses its positive
+model ceiling; older helpers expose explicit reserve-derived caps. Provider
+reductions/transforms occur later. Split-prefix checks capture the actual native
+builder rather than approximating its prompt or output policy.
 The checked preparation and instructions are reused verbatim. Oversized requests
 or session/model/leaf/epoch/queued-input changes decline safely; existing
 checkpoint and trigger-hint byte guards are unchanged.

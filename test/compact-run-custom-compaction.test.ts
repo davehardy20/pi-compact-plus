@@ -185,10 +185,15 @@ describe("runCustomCompaction characterization", () => {
 			expect(attempt.result).toBeDefined();
 			expect(attempt.fallbackReason).toBeNull();
 			expect(compactMock).toHaveBeenCalledTimes(1);
-			expect(captureProbe).toHaveBeenCalledTimes(1);
-			const captured = captureProbe.mock.calls[0];
+			// The SDK allowance is captured before the guided request is measured.
+			expect(captureProbe).toHaveBeenCalledTimes(2);
+			const [baseline, captured] = captureProbe.mock.calls;
+			expect(baseline[6]).toBeUndefined();
+			expect(captured[6]).toEqual(expect.any(String));
 			const sent = compactMock.mock.calls[0];
-			expect(sent[0].messagesToSummarize).toBe(captured[0]);
+			for (const measurement of [baseline, captured]) {
+				expect(measurement[0]).toBe(sent[0].messagesToSummarize);
+			}
 			expect(sent[0].messagesToSummarize).toEqual([
 				source,
 				{ ...assistant, content: [visible, call] },
@@ -244,8 +249,8 @@ describe("runCustomCompaction characterization", () => {
 			compatibility(),
 		);
 		expect(attempt.fallbackReason).toBeNull();
-		expect(captureProbe).toHaveBeenCalledTimes(1);
-		const capture = captureProbe.mock.calls[0];
+		expect(captureProbe).toHaveBeenCalledTimes(2);
+		const capture = captureProbe.mock.calls[1];
 		const sent = compactMock.mock.calls[0];
 		expect(sent[0].messagesToSummarize).toBe(capture[0]);
 		expect(sent[0].messagesToSummarize).toEqual([source, prefix]);

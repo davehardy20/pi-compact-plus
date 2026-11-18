@@ -154,7 +154,9 @@ jobs:
 
       - name: Dependency audit if lockfile present
         if: steps.detect.outputs.has_audit == 'true'
-        run: npm audit --audit-level=high
+        # Exact dev-only Picomatch exception expires 2026-11-25T00:00:00Z.
+        # All other high/critical findings and audit errors remain blocking.
+        run: node scripts/check-dependency-audit.mjs
 
       - name: Dependency audit not applicable
         if: steps.detect.outputs.has_audit != 'true'

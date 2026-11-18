@@ -61,16 +61,16 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.8",
-		"@earendil-works/pi-agent-core": "1.0.1",
-		"@earendil-works/pi-ai": "1.0.1",
-		"@earendil-works/pi-coding-agent": "1.0.1",
+		"@earendil-works/pi-agent-core": "1.5.2",
+		"@earendil-works/pi-ai": "1.5.2",
+		"@earendil-works/pi-coding-agent": "1.5.2",
 		"@stryker-mutator/api": "10.0.0",
 		"@stryker-mutator/core": "10.0.0",
 		"@stryker-mutator/vitest-runner": "10.0.0",
 		"@types/node": "^24.7.2",
 		"@vitest/coverage-v8": "4.1.11",
 		"typescript": "^5.9.3",
-		"vite": "7.3.6",
+		"vite": "7.3.8",
 		"vitest": "4.1.11"
 	},
 	"pi": {
