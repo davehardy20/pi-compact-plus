@@ -214,8 +214,15 @@ it.each([
 	"model capacity",
 	"epoch",
 	"pruning flush",
+	"completed pruning flush",
 ])("defers %s during budgeting", async (kind) => {
 	const f = fixture();
+	if (kind === "completed pruning flush") {
+		f.state.toolOutputPruning.addPendingBatch(
+			{ batchId: "pending", turnIndex: 0, timestamp: 1, recordIds: [] },
+			[],
+		);
+	}
 	mutateDuringBudget.mockImplementationOnce(() => {
 		switch (kind) {
 			case "event queue":
@@ -253,6 +260,14 @@ it.each([
 			case "pruning flush":
 				f.state.toolOutputPruning.isFlushing = true;
 				break;
+			case "completed pruning flush":
+				if (!f.state.toolOutputPruning.beginFlush()) {
+					throw new Error("Fixture flush did not start");
+				}
+				// A failed flush can settle without appending anything to the branch.
+				f.state.toolOutputPruning.resetPending();
+				f.state.toolOutputPruning.endFlush();
+				break;
 		}
 	});
 	const result = await f.pi.events.get("turn_end")?.[0]?.(f.event, f.ctx);
@@ -262,6 +277,7 @@ it.each([
 	expect(f.ctx.compact).not.toHaveBeenCalled();
 	expect(f.pi.sendUserMessage).not.toHaveBeenCalled();
 	expect(f.state.lastCompaction).toBeNull();
+	expect(f.persist).not.toHaveBeenCalled();
 	expect(f.state.pendingBoundaryMarker).toBe(
 		kind === "epoch" ? "replacement marker" : null,
 	);

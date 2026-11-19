@@ -19,6 +19,7 @@ export class ToolOutputPruningState {
 	pendingRecords: ToolOutputRecord[] = [];
 	finalizedRecords: ToolOutputRecord[] = [];
 	isFlushing = false;
+	private flushGeneration = 0;
 	lastSummaryStatus: "ok" | "error" | null = null;
 	lastSummaryTime: number | null = null;
 	lastPrunedCount = 0;
@@ -104,9 +105,15 @@ export class ToolOutputPruningState {
 		return isEnabled && !isCompacting && !this.isFlushing && this.hasPending();
 	}
 
+	/** Changes at flush start, even if the flush settles before the next check. */
+	get currentFlushGeneration(): number {
+		return this.flushGeneration;
+	}
+
 	/** Begin a flush if one is not already running and pending work exists. */
 	beginFlush(): boolean {
 		if (this.isFlushing || !this.hasPending()) return false;
+		this.flushGeneration++;
 		this.isFlushing = true;
 		return true;
 	}
