@@ -1919,22 +1919,74 @@ ${"old context ".repeat(90_000)}`),
 		},
 	);
 
-	it("does not hand off to Pi after an abort during telemetry persistence", async () => {
+	it.each([
+		["abort", "compaction aborted"],
+		["leaf change", "compaction context changed"],
+	] as const)(
+		"cancels a measured native fallback after %s during telemetry persistence",
+		async (change, reason) => {
+			const state = new CompactionState();
+			const ctx = createCtx({ contextWindow: 200_000 });
+			const controller = new AbortController();
+			const persistTelemetrySnapshot = vi.fn(async () => {
+				expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+				await Promise.resolve();
+				if (change === "abort") controller.abort();
+				else vi.mocked(ctx.sessionManager.getLeafId).mockReturnValue("leaf-2");
+			});
+			const coordinator = createCoordinator(state, {
+				persistTelemetrySnapshot,
+			});
+			state.selectedMode = "standard";
+			compactMock.mockRejectedValueOnce(new Error("provider request failed"));
+			const input = event(ctx, [user("Task: check the native fallback.")]);
+			Object.assign(input, { signal: controller.signal });
+			expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
+				cancel: true,
+			});
+			expect(persistTelemetrySnapshot).toHaveBeenCalledOnce();
+			expect(state.pendingCompaction).toBeNull();
+			expect(coordinator.getLastVerdict()).toMatchObject({
+				kind: "cancelled",
+				reason,
+			});
+			expect(fetchSpy).not.toHaveBeenCalled();
+		},
+	);
+
+	it("leaves the replacement session intact when a measured native fallback becomes stale during telemetry persistence", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
-		const controller = new AbortController();
-		const persistTelemetrySnapshot = vi.fn(async () => controller.abort());
+		const replacementVerdict = {
+			kind: "deferred",
+			reason: "replacement session",
+		} as const;
+		const persistTelemetrySnapshot = vi.fn(async () => {
+			expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+			await Promise.resolve();
+			vi.mocked(ctx.sessionManager.getSessionId).mockReturnValue("session-2");
+			state.reset();
+			state.selectedMode = "hard";
+			state.isCompacting = true;
+			state.pendingBoundaryMarker = "replacement draft";
+			state.lastVerdict = replacementVerdict;
+		});
 		const coordinator = createCoordinator(state, { persistTelemetrySnapshot });
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error("provider request failed"));
-		const input = event(ctx, [user("Task: check the native fallback.")]);
-		Object.assign(input, { signal: controller.signal });
-		expect(await coordinator.onSessionBeforeCompact(input, ctx)).toEqual({
-			cancel: true,
-		});
+		expect(
+			await coordinator.onSessionBeforeCompact(
+				event(ctx, [user("Task: check the native fallback.")]),
+				ctx,
+			),
+		).toEqual({ cancel: true });
 		expect(persistTelemetrySnapshot).toHaveBeenCalledOnce();
 		expect(state.pendingCompaction).toBeNull();
-		expect(coordinator.getLastVerdict()?.kind).toBe("cancelled");
+		expect(state.selectedMode).toBe("hard");
+		expect(state.isCompacting).toBe(true);
+		expect(state.pendingBoundaryMarker).toBe("replacement draft");
+		expect(state.lastVerdict).toBe(replacementVerdict);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("hands compaction back to Pi for a fitting request even when the guard is disabled", async () => {
