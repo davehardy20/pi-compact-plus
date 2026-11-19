@@ -22,6 +22,7 @@ import { NATIVE_FALLBACK_REASON } from "../src/compatibility.js";
 import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
+	RECOVERY_FAILED_REASON,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_INTENT_EVIDENCE_REASON,
@@ -207,6 +208,26 @@ describe("Pi-owned handlers keep their return shape", () => {
 		expect(coordinator.getLastVerdict()).toMatchObject({
 			kind: "cancelled",
 			reason: "custom compaction cancelled",
+		});
+	});
+
+	it("treats a failed recovery as terminal even without the generic cancel flag", async () => {
+		const ctx = createCtx();
+		const { coordinator, state } = createCoordinator({
+			guardNativeCompaction: false,
+		});
+		state.selectedMode = "standard";
+		runCustom.mockResolvedValue({
+			result: undefined,
+			recoveryAttempted: true,
+			fallbackReason: RECOVERY_FAILED_REASON,
+		});
+
+		expect(await beforeCompact(ctx, coordinator)).toEqual({ cancel: true });
+		expect(state.pendingCompaction).toBeNull();
+		expect(coordinator.getLastVerdict()).toMatchObject({
+			kind: "cancelled",
+			reason: RECOVERY_FAILED_REASON,
 		});
 	});
 

@@ -23,10 +23,11 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
-import { runCustomCompaction } from "../src/compact.js";
+import * as compactRunner from "../src/compact.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
+import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
 	RECOVERY_FAILED_REASON,
@@ -37,6 +38,8 @@ import { ToolOutputPruningCoordinator } from "../src/tool-output-pruning/coordin
 import { getEffectiveUsage } from "../src/usage.js";
 import { createMockPi } from "./fixtures/extension.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
+
+const { runCustomCompaction } = compactRunner;
 
 it.each(["standard", "hard"] as const)(
 	"real SDK: %s summaries omit historical thinking and preserve the kept boundary",
@@ -290,14 +293,27 @@ it.each(["opted in", "disabled", "no freshness check", "stale model"] as const)(
 );
 
 it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
-	"real SDK: persists only a valid, current recovery (%s)",
+	"real SDK and coordinator: persist only a valid, current recovery (%s)",
 	async (scenario) => {
 		const root = mkdtempSync(join(tmpdir(), "compact-plus-recovery-"));
 		const fetchSpy = vi
 			.spyOn(globalThis, "fetch")
 			.mockRejectedValue(new Error("Unexpected network request"));
 		let host: AgentSession | undefined;
+		let attempt: Awaited<ReturnType<typeof runCustomCompaction>> | undefined;
+		const runner = vi.spyOn(compactRunner, "runCustomCompaction");
 		try {
+			// Exercise the real runner with the coordinator's freshness callback.
+			// Recovery is enabled only at this test seam, not in the coordinator.
+			runner.mockImplementation(
+				async (cut, mode, ctx, compat, signal, intent) => {
+					attempt = await runCustomCompaction(cut, mode, ctx, compat, signal, {
+						...intent,
+						enableRecovery: true,
+					});
+					return attempt;
+				},
+			);
 			const manager = SessionManager.create(root, root);
 			const earlier = manager.appendMessage(
 				user(`FIRST ${"x".repeat(70_000)}`),
@@ -377,35 +393,37 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 					return stream;
 				},
 			);
-			let attempt: Awaited<ReturnType<typeof runCustomCompaction>> | undefined;
 			let tokensBefore: number | undefined;
 			const compacted: boolean[] = [];
+			const state = new CompactionState();
+			const persist = vi.fn();
 			const extension: ExtensionFactory = (pi) => {
-				// Test-only opt-in: the real SDK owns the cut and append. Inject the
-				// session stream that this SDK does not expose on the compact event.
-				pi.on("session_before_compact", async (event, ctx) => {
-					const leaf = ctx.sessionManager.getLeafId();
-					tokensBefore = event.preparation.tokensBefore;
-					attempt = await runCustomCompaction(
-						event.preparation,
-						"standard",
-						{
-							...ctx,
-							modelRegistry: { getApiKeyAndHeaders: auth },
-						} as unknown as ExtensionContext,
-						resolveCompactionRuntimeCompatibility({ event: { streamFn } }),
-						event.signal,
-						{
-							enableRecovery: true,
-							isCurrent: () => ctx.sessionManager.getLeafId() === leaf,
-						},
-					);
-					return attempt.result
-						? { compaction: attempt.result }
-						: { cancel: true };
+				const coordinator = new CompactionCoordinator({
+					state,
+					pi,
+					thresholdSettings: {
+						...DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
+						guardNativeCompaction: false,
+					},
+					getEffectiveUsage: () => null,
+					persistTelemetrySnapshot: persist,
 				});
-				pi.on("session_compact", (event) => {
+				pi.on("session_before_compact", (event, ctx) => {
+					tokensBefore = event.preparation.tokensBefore;
+					state.selectedMode = "standard";
+					// Inject the offline stream and rotating auth while preserving the
+					// SDK's live context getters and its ownership of checkpoint commits.
+					const offlineEvent = { ...event, streamFn };
+					return coordinator.onSessionBeforeCompact(
+						offlineEvent,
+						Object.create(ctx, {
+							modelRegistry: { value: { getApiKeyAndHeaders: auth } },
+						}),
+					);
+				});
+				pi.on("session_compact", async (event, ctx) => {
 					compacted.push(event.fromExtension);
+					await coordinator.onSessionCompact(event, ctx);
 				});
 			};
 			const loader = new DefaultResourceLoader({
@@ -445,6 +463,8 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 				await expect(host.compact()).rejects.toThrow("Compaction cancelled");
 			}
 			expect(errors).toEqual([]);
+			expect(runner).toHaveBeenCalledOnce();
+			expect(runner.mock.calls[0]?.[5]?.enableRecovery).toBeUndefined();
 			expect(nativeStream).not.toHaveBeenCalled();
 			expect(fetchSpy).not.toHaveBeenCalled();
 			const count = scenario === "abort" || scenario === "stale leaf" ? 1 : 3;
@@ -469,9 +489,17 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 				expect(attempt).toMatchObject({
 					cancel: true,
 					result: undefined,
+					recoveryAttempted: true,
 					fallbackReason: reasons[scenario],
 				});
 				expect(compacted).toEqual([]);
+				expect(persist).not.toHaveBeenCalled();
+				expect(state.pendingCompaction).toBeNull();
+				expect(state.lastCompaction).toBeNull();
+				expect(state.lastVerdict).toMatchObject({
+					kind: "cancelled",
+					reason: reasons[scenario],
+				});
 				expect(compactions).toEqual([]);
 				expect(readFileSync(file, "utf8")).toBe(before);
 				return;
@@ -481,6 +509,7 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 				recoveryRequests: 3,
 			});
 			expect(compacted).toEqual([true]);
+			expect(state.lastVerdict).toMatchObject({ kind: "accepted" });
 			expect(compactions).toHaveLength(1);
 			expect(compactions[0]?.summary).toContain(
 				"Finish the offline recovery test.",
@@ -493,6 +522,7 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 			});
 		} finally {
 			host?.dispose();
+			runner.mockRestore();
 			fetchSpy.mockRestore();
 			rmSync(root, { recursive: true, force: true });
 		}
