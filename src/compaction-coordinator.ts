@@ -1007,6 +1007,8 @@ export class CompactionCoordinator {
 		nativeFallbackAvailable = true,
 		boundary?: { projected: AgentMessage[]; isCurrent: () => boolean },
 	): Promise<SessionBeforeCompactResultLike | undefined> {
+		// A new SDK hook supersedes any recovery draft Pi did not confirm.
+		this.state.pendingRecovery = null;
 		// Only the attempt a manual command started bypasses the notice dedupe, and only
 		// for the epoch that attempt belongs to: a bypass left set by an attempt Pi never
 		// settled expires here rather than leaking into a later session's automatic runs.
@@ -1244,15 +1246,25 @@ export class CompactionCoordinator {
 		}
 
 		if (attempt.result) {
-			this.state.pendingCompaction = {
+			const telemetry = {
 				...telemetryBase,
 				classifiedCounts: attempt.classifiedCounts,
 				fallbackReason: attempt.fallbackReason ?? undefined,
 				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
-			// A turn-boundary draft can be discarded by Pi. Only confirmation of
-			// the matching committed checkpoint may publish a success verdict.
-			if (!boundary) {
+			const recoveryMarker =
+				!boundary && attempt.recoveryAttempted ? randomUUID() : null;
+			if (recoveryMarker) {
+				this.state.pendingRecovery = {
+					marker: recoveryMarker,
+					sessionId,
+					telemetry,
+				};
+			} else {
+				this.state.pendingCompaction = telemetry;
+			}
+			// Pi can discard both boundary and SDK recovery drafts after the hook.
+			if (!boundary && !recoveryMarker) {
 				this.recordVerdictFromReason(attempt.fallbackReason ?? null, {
 					evidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 					usageTokens: telemetryBase.usageTokensAtTrigger,
@@ -1284,6 +1296,7 @@ export class CompactionCoordinator {
 						executionPath: telemetryBase.executionPath,
 						thinkingLevel: telemetryBase.thinkingLevel,
 						compatibilityReason: telemetryBase.compatibilityReason,
+						...(recoveryMarker ? { compactPlusRecovery: recoveryMarker } : {}),
 					},
 				},
 			};
@@ -1381,16 +1394,36 @@ export class CompactionCoordinator {
 		event: SessionCompactEvent,
 		ctx: ExtensionEventContext,
 	): Promise<void> {
-		const pending = this.state.pendingCompaction;
-		if (!pending) {
-			return;
+		let pending = this.state.pendingCompaction;
+		let entry = event.compactionEntry;
+		const recovery = this.state.pendingRecovery;
+		if (recovery) {
+			if (
+				!event.fromExtension ||
+				ctx.sessionManager.getSessionId() !== recovery.sessionId
+			)
+				return;
+			// Pi's event can point to an older entry with identical summary text.
+			// Match the marker on the newest committed checkpoint on the branch.
+			const latest = [...ctx.sessionManager.getBranch()]
+				.reverse()
+				.find((candidate) => candidate.type === "compaction");
+			if (
+				latest?.type !== "compaction" ||
+				(latest.details as { compactPlusRecovery?: unknown } | undefined)
+					?.compactPlusRecovery !== recovery.marker
+			)
+				return;
+			entry = latest;
+			pending = recovery.telemetry;
 		}
+		if (!pending) return;
 
 		const details =
-			typeof event.compactionEntry.details === "object" &&
-			event.compactionEntry.details !== null
-				? (event.compactionEntry.details as Record<string, unknown>)
+			typeof entry.details === "object" && entry.details !== null
+				? (entry.details as Record<string, unknown>)
 				: {};
+		if (!recovery && typeof details.compactPlusRecovery === "string") return;
 		const executionPath: CompactionExecutionPath = event.fromExtension
 			? pending.executionPath
 			: "native-fallback";
@@ -1406,9 +1439,7 @@ export class CompactionCoordinator {
 				typeof details.triggerReason === "string"
 					? details.triggerReason
 					: pending.triggerReason,
-			timestamp: parseTelemetryTimestamp(
-				details.timestamp ?? event.compactionEntry.timestamp,
-			),
+			timestamp: parseTelemetryTimestamp(details.timestamp ?? entry.timestamp),
 			focusTags: coerceStringArray(details.focusTags) ?? pending.focusTags,
 			executionPath,
 			fromExtension: event.fromExtension,
@@ -1436,9 +1467,8 @@ export class CompactionCoordinator {
 		);
 		this.state.lastCompactTime = this.state.lastCompaction.timestamp;
 		this.state.lastInjectedEcho =
-			executionPath === "custom" &&
-			typeof event.compactionEntry.summary === "string"
-				? buildPersistedFocusEcho(event.compactionEntry.summary)
+			executionPath === "custom" && typeof entry.summary === "string"
+				? buildPersistedFocusEcho(entry.summary)
 				: null;
 		this.state.echoInjected = false;
 		this.state.clearPendingCompaction();

@@ -24,6 +24,12 @@ export class CompactionState {
 	pendingCompaction: CompactionTelemetry | null = null;
 	/** Awaiting Pi's transactional commit, not yet a successful compaction. */
 	pendingBoundaryMarker: string | null = null;
+	/** SDK recovery draft: only its matching persisted checkpoint can report success. */
+	pendingRecovery: {
+		marker: string;
+		sessionId: string;
+		telemetry: CompactionTelemetry;
+	} | null = null;
 	/** Typed outcome of the most recent compaction decision made in this session. */
 	lastVerdict: CompactionVerdict | null = null;
 	/** Epoch of the attempt whose decline was already reported to the user. */
@@ -39,6 +45,7 @@ export class CompactionState {
 	/** Reject callbacks from compactions started before a session transition. */
 	invalidateCompactionCallbacks(): void {
 		this.compactionEpoch++;
+		this.pendingRecovery = null;
 		this.lastIssuedCompactionInstructions = null;
 	}
 
@@ -112,6 +119,7 @@ export class CompactionState {
 	clearPendingCompaction(): void {
 		this.pendingCompaction = null;
 		this.pendingBoundaryMarker = null;
+		this.pendingRecovery = null;
 		this.lastIssuedCompactionInstructions = null;
 	}
 
