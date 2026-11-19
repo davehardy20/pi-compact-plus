@@ -1,7 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { recoverCompaction } from "../src/compaction-recovery.js";
+import {
+	captureCompactionRecovery,
+	recoverCompaction,
+} from "../src/compaction-recovery.js";
 import { extractTextContent } from "../src/session-evidence.js";
 import {
 	RECOVERY_FAILED_REASON,
@@ -154,6 +157,44 @@ it("partitions chronological evidence and returns only one complete result with 
 	expect(f.execute.mock.calls.at(-1)?.[0].fileOps).toBe(f.preparation.fileOps);
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 });
+
+it.each([
+	["omitted", undefined, "Preserve the split-turn objective."],
+	["empty", [], "Continue current task."],
+] as const)(
+	"uses the captured cut for focus only when the projection is omitted (%s)",
+	async (_scenario, projected, objective) => {
+		const f = fixture();
+		const splitTurnObjective = "Preserve the split-turn objective.";
+		f.preparation.messagesToSummarize[0] = user(
+			`Objective: Preserve the older objective. ${"x".repeat(60_000)}`,
+		);
+		f.preparation.turnPrefixMessages = [
+			user(`Objective: ${splitTurnObjective}\n${"y".repeat(60_000)}`),
+		];
+		const { projected: _fixtureProjection, ...options } = f.options;
+		const run = captureCompactionRecovery({
+			...options,
+			...(projected !== undefined && { projected: [...projected] }),
+		});
+		f.preparation.turnPrefixMessages[0] = user(
+			"Objective: Do not use this later mutation.",
+		);
+
+		expect((await run()).fallbackReason).toBe(RECOVERY_SUCCESS_REASON);
+		expect(f.execute).toHaveBeenCalledTimes(3);
+		const maps = f.maps();
+		expect(maps[0]).toContain("Preserve the older objective.");
+		expect(maps[1]).toContain(splitTurnObjective);
+		expect(maps.join("\n").split(splitTurnObjective)).toHaveLength(2);
+		expect(maps.join("\n")).not.toContain("Retained user turn");
+		for (const [, instructions] of f.execute.mock.calls) {
+			expect(instructions).toContain(`Objective: ${objective}\n`);
+			expect(instructions).not.toContain("Do not use this later mutation.");
+		}
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
 
 it("preserves previous memory, caller guidance and repeated retained users exactly once", async () => {
 	const f = fixture();
