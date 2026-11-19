@@ -311,12 +311,12 @@ it.each([
 		const runner = vi.spyOn(compactRunner, "runCustomCompaction");
 		try {
 			// Exercise the real runner with the coordinator's freshness callback.
-			// Recovery is enabled only at this test seam, not in the coordinator.
+			// Opt in at this test seam on the initial attempt only.
 			runner.mockImplementation(
 				async (cut, mode, ctx, compat, signal, intent) => {
 					attempt = await runCustomCompaction(cut, mode, ctx, compat, signal, {
 						...intent,
-						enableRecovery: true,
+						...(runner.mock.calls.length === 1 && { enableRecovery: true }),
 					});
 					return attempt;
 				},
@@ -381,6 +381,10 @@ it.each([
 				"Finish the current repair.",
 				"Finish the offline recovery test.",
 			);
+			const retrySummary = VALID_STRUCTURED_SUMMARY.replace(
+				"Finish the current repair.",
+				"Finish the retry without recovery.",
+			);
 			const streamFn = vi.fn(
 				async (_model: unknown, _context: unknown, _options: StreamOptions) => {
 					const request = streamFn.mock.calls.length;
@@ -394,7 +398,12 @@ it.each([
 						scenario === "invalid reducer"
 							? "Malformed final summary"
 							: finalSummary;
-					const text = request === 3 ? reduced : VALID_STRUCTURED_SUMMARY;
+					const text =
+						request === 4
+							? retrySummary
+							: request === 3
+								? reduced
+								: VALID_STRUCTURED_SUMMARY;
 					const stream = createAssistantMessageEventStream();
 					stream.end(assistant([{ type: "text", text }]));
 					return stream;
@@ -427,14 +436,22 @@ it.each([
 					// Inject the offline stream and rotating auth while preserving the
 					// SDK's live context getters and its ownership of checkpoint commits.
 					const offlineEvent = { ...event, streamFn };
+					const retry =
+						scenario === "late abort" && runner.mock.calls.length > 0;
+					const offlineCtx = Object.create(ctx, {
+						modelRegistry: { value: { getApiKeyAndHeaders: auth } },
+						// Let the retry fit in one request, so it cannot overwrite the
+						// discarded recovery marker with a new one.
+						...(retry && {
+							model: { value: { ...model, contextWindow: 65_536 } },
+						}),
+					});
 					const result = await coordinator.onSessionBeforeCompact(
 						offlineEvent,
-						Object.create(ctx, {
-							modelRegistry: { value: { getApiKeyAndHeaders: auth } },
-						}),
+						offlineCtx,
 					);
 					if (result?.compaction) {
-						if (scenario === "late abort") host?.abortCompaction();
+						if (scenario === "late abort" && !retry) host?.abortCompaction();
 						if (scenario === "replaced draft") {
 							// Pi commits a different draft even though the summary text agrees.
 							return { compaction: { ...result.compaction, details: {} } };
@@ -514,6 +531,37 @@ it.each([
 					expect(compacted).toEqual([]);
 					expect(compactions).toEqual([]);
 					expect(readFileSync(file, "utf8")).toBe(before);
+
+					expect(state.pendingRecovery?.marker).toEqual(expect.any(String));
+					await host.compact();
+
+					expect(runner).toHaveBeenCalledTimes(2);
+					expect(runner.mock.calls[1]?.[5]?.enableRecovery).toBeUndefined();
+					expect(streamFn).toHaveBeenCalledTimes(4);
+					expect(nativeStream).not.toHaveBeenCalled();
+					expect(fetchSpy).not.toHaveBeenCalled();
+					expect(errors).toEqual([]);
+					expect(compacted).toEqual([true]);
+					// Ordinary custom success persists the verdict before the commit,
+					// then records telemetry after Pi saves the checkpoint.
+					expect(checkpointCountsAtPersist).toEqual([0, 1]);
+					expect(state.lastCompaction).toMatchObject({
+						fromExtension: true,
+						executionPath: "custom",
+					});
+					expect(state.lastVerdict).toMatchObject({
+						kind: "accepted",
+						reason: null,
+					});
+					expect(state.pendingRecovery).toBeNull();
+					const saved = SessionManager.open(file, root, root)
+						.getEntries()
+						.filter((entry) => entry.type === "compaction");
+					expect(saved).toHaveLength(1);
+					expect(saved[0]?.summary).toContain(
+						"Finish the retry without recovery.",
+					);
+					expect(saved[0]?.details).not.toHaveProperty("compactPlusRecovery");
 				} else {
 					expect(compacted).toEqual([true]);
 					expect(compactions).toHaveLength(1);
