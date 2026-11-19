@@ -62,6 +62,8 @@ const SUMMARIZATION_OUTPUT_CAP_WARNING =
 const NATIVE_SUMMARIZATION_OVERFLOW_WARNING =
 	"Compact+ cancelled native Pi compaction: the summarization request cannot fit the model context window. Save the current objective, then start a fresh session or reduce the retained context.";
 
+const BOUNDARY_SUMMARY_UNAVAILABLE_WARNING =
+	"Compact+ turn-boundary summary unavailable; session unchanged. Native Pi compaction remains available.";
 const EVIDENCE_TRIMMED_WARNING =
 	"Compact+ trimmed additional intent evidence so the summary request could fit.";
 
@@ -941,6 +943,20 @@ export class CompactionCoordinator {
 		}
 	}
 
+	private notifyEvidenceTrimmed(
+		ctx: ExtensionEventContext,
+		turns: number | undefined,
+	): void {
+		if (ctx.hasUI) {
+			ctx.ui.notify(
+				typeof turns === "number"
+					? `${EVIDENCE_TRIMMED_WARNING} Dropped ${turns} retained ${turns === 1 ? "turn" : "turns"}.`
+					: EVIDENCE_TRIMMED_WARNING,
+				"warning",
+			);
+		}
+	}
+
 	/** Draft generation is not success: reconcile only after Pi commits it. */
 	async confirmBoundaryCompaction(
 		ctx: ExtensionEventContext,
@@ -959,6 +975,8 @@ export class CompactionCoordinator {
 			this.state.clearPendingCompaction();
 			return false;
 		}
+		const trimmedTurns =
+			this.state.pendingCompaction?.intentEvidenceTrimmedTurns;
 		this.state.lastCompactTokens = 0;
 		this.state.pendingBoundaryMarker = null;
 		await this.onSessionCompact(
@@ -972,6 +990,8 @@ export class CompactionCoordinator {
 			ctx,
 		);
 		if (this.state.currentCompactionEpoch !== epoch) return false;
+		if (trimmedTurns !== undefined)
+			this.notifyEvidenceTrimmed(ctx, trimmedTurns);
 		if (ctx.hasUI) {
 			ctx.ui.notify(
 				"📦 Compact+ auto-compacted safely between tool turns.",
@@ -1189,19 +1209,11 @@ export class CompactionCoordinator {
 			return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
-		// A trimmed attempt is a success with a smaller payload, not a decline. Say so, and
-		// say how much was dropped, so a live session can tell the two apart.
 		if (
-			attempt.fallbackReason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON &&
-			ctx.hasUI
+			!boundary &&
+			attempt.fallbackReason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON
 		) {
-			const turns = attempt.evidenceTrimmedTurns;
-			ctx.ui.notify(
-				typeof turns === "number"
-					? `${EVIDENCE_TRIMMED_WARNING} Dropped ${turns} retained ${turns === 1 ? "turn" : "turns"}.`
-					: EVIDENCE_TRIMMED_WARNING,
-				"warning",
-			);
+			this.notifyEvidenceTrimmed(ctx, attempt.evidenceTrimmedTurns);
 		}
 		if (attempt.cancel) {
 			const overflow =
@@ -1222,19 +1234,23 @@ export class CompactionCoordinator {
 				fallbackReason: attempt.fallbackReason ?? undefined,
 				intentEvidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
 			};
-			this.recordVerdictFromReason(attempt.fallbackReason ?? null, {
-				// `evidenceTrimmedTurns` is only carried by a `trimmed` verdict, and
-				// finalizeCompactionAttempt records that kind exactly when the attempt dropped
-				// evidence, so passing the count here and there is one coupled decision.
-				evidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
-				usageTokens: telemetryBase.usageTokensAtTrigger,
-			});
-			await this.persistTelemetrySnapshot();
-			if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
-			if (event.signal?.aborted || ctx.signal?.aborted) {
-				return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
+			// A turn-boundary draft can be discarded by Pi. Only confirmation of
+			// the matching committed checkpoint may publish a success verdict.
+			if (!boundary) {
+				this.recordVerdictFromReason(attempt.fallbackReason ?? null, {
+					evidenceTrimmedTurns: attempt.evidenceTrimmedTurns,
+					usageTokens: telemetryBase.usageTokensAtTrigger,
+				});
+				await this.persistTelemetrySnapshot();
+				if (this.state.currentCompactionEpoch !== epoch)
+					return { cancel: true };
+				if (event.signal?.aborted || ctx.signal?.aborted) {
+					return this.cancelAbortedCompaction(
+						telemetryBase.usageTokensAtTrigger,
+					);
+				}
+				if (!isCurrent()) return cancelCustom("compaction context changed");
 			}
-			if (!isCurrent()) return cancelCustom("compaction context changed");
 
 			return {
 				compaction: {
@@ -1309,6 +1325,13 @@ export class CompactionCoordinator {
 		this.recordVerdict("deferred", deferralReason, {
 			usageTokens: telemetryBase.usageTokensAtTrigger,
 		});
+		if (!nativeFallbackAvailable) {
+			// Pi has no native handoff for this turn. Keep the in-memory decision,
+			// but do not stage or persist telemetry for a fallback that cannot run.
+			if (ctx.hasUI)
+				ctx.ui.notify(BOUNDARY_SUMMARY_UNAVAILABLE_WARNING, "warning");
+			return undefined;
+		}
 		this.state.pendingCompaction = {
 			...telemetryBase,
 			executionPath: "native-fallback",
@@ -1316,9 +1339,8 @@ export class CompactionCoordinator {
 			fallbackReason: deferralReason,
 			compatibilityReason: telemetryBase.compatibilityReason ?? deferralReason,
 		};
-		// Pi is about to compact on its own on a `ctx.compact()` path; the turn-boundary
-		// caller treats the same deferral as no compaction this turn. Either way release
-		// Compact+'s attempt state, or a deferred attempt blocks later automatic triggers.
+		// Release Compact+'s attempt state on handoff, so a deferred attempt doesn't
+		// block later automatic triggers.
 		await this.persistTelemetrySnapshot();
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {
@@ -1331,9 +1353,7 @@ export class CompactionCoordinator {
 
 		if (ctx.hasUI) {
 			ctx.ui.notify(
-				nativeFallbackAvailable
-					? "Compact+ custom summarization unavailable; falling back to default compaction."
-					: "Compact+ turn-boundary summary unavailable; session unchanged. Native Pi compaction remains available.",
+				"Compact+ custom summarization unavailable; falling back to default compaction.",
 				"warning",
 			);
 		}

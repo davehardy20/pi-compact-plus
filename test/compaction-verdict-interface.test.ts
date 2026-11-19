@@ -360,9 +360,16 @@ describe("verdict travels with the compaction it describes", () => {
 });
 
 describe("Pi-owned boundary handler keeps its return shape", () => {
-	it("offers the same boundary entry and exposes the verdict separately", async () => {
+	it("offers the same boundary entry and reports trimming only on commit", async () => {
 		const ctx = createCtx();
 		const { coordinator } = createCoordinator({ thresholdMode: "percent" });
+		const reason = "intent evidence was trimmed to fit the summary request";
+		runCustom.mockResolvedValue({
+			result: SUMMARY,
+			classifiedCounts: { totalMessages: 2 },
+			fallbackReason: reason,
+			evidenceTrimmedTurns: 3,
+		});
 
 		const result = await coordinator.maybeAutoCompactAtBoundary(
 			boundaryEvent(),
@@ -370,10 +377,32 @@ describe("Pi-owned boundary handler keeps its return shape", () => {
 		);
 
 		expect(Object.keys(result ?? {})).toEqual(["entries"]);
+		expect(coordinator.getLastVerdict()).toBeNull();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+		const draft = result?.entries?.[0];
+		if (draft?.type !== "compaction" || draft.firstKeptEntryId === null) {
+			throw new Error("Missing compaction draft or kept entry");
+		}
+		vi.mocked(ctx.sessionManager.getBranch).mockReturnValue([
+			{
+				...draft,
+				firstKeptEntryId: draft.firstKeptEntryId,
+				id: "checkpoint",
+				parentId: "leaf-1",
+				timestamp: new Date().toISOString(),
+				tokensBefore: 200_000,
+			},
+		]);
+		expect(await coordinator.confirmBoundaryCompaction(ctx)).toBe(true);
 		expect(coordinator.getLastVerdict()).toMatchObject({
-			kind: "accepted",
-			reason: null,
+			kind: "trimmed",
+			reason,
+			evidenceTrimmedTurns: 3,
 		});
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Dropped 3 retained turns."),
+			"warning",
+		);
 	});
 
 	it("returns no boundary result when preparation is unavailable", async () => {
