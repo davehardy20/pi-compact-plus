@@ -50,6 +50,7 @@ export interface ResolvedCompactPlusSettings {
 	settingsPath: string;
 	experimentalToolOutputPruning: boolean;
 	disableAutoCompaction: boolean;
+	enableCompactionRecovery: boolean;
 	/** Guard Pi's native summarization payload before it is sent. */
 	guardNativeCompaction: boolean;
 	toolOutputPruningMode: "off" | "agent-message";
@@ -82,6 +83,7 @@ export const DEFAULT_COMPACT_PLUS_SETTINGS = {
 	cooldownMs: 120_000,
 	experimentalToolOutputPruning: false,
 	disableAutoCompaction: false,
+	enableCompactionRecovery: false,
 	guardNativeCompaction: true,
 	toolOutputPruningMode: "off" as const,
 	toolOutputSummaryStrategy: "llm" as const,
@@ -439,6 +441,10 @@ export function resolveCompactPlusSettings(
 		settingsPath,
 		experimentalToolOutputPruning,
 		disableAutoCompaction,
+		enableCompactionRecovery:
+			env.COMPACT_PLUS_ENABLE_RECOVERY === undefined
+				? DEFAULT_COMPACT_PLUS_SETTINGS.enableCompactionRecovery
+				: env.COMPACT_PLUS_ENABLE_RECOVERY === "1",
 		guardNativeCompaction,
 		toolOutputPruningMode,
 		toolOutputSummaryStrategy,

@@ -178,6 +178,8 @@ export interface CompactionCoordinatorOptions {
 	persistTelemetrySnapshot: () => void | Promise<void>;
 	/** Kill switch: skip all auto-compaction (manual /compact-plus still works). */
 	disableAutoCompaction?: boolean;
+	/** Allow bounded recovery on the SDK compaction hook, not the turn boundary. */
+	enableCompactionRecovery?: boolean;
 }
 
 export class CompactionCoordinator {
@@ -189,6 +191,7 @@ export class CompactionCoordinator {
 	) => EffectiveUsage | null;
 	private readonly persistTelemetrySnapshot: () => void | Promise<void>;
 	private readonly disableAutoCompaction: boolean;
+	private readonly enableCompactionRecovery: boolean;
 	/** Measured verdict for the last cut. Written only by the measurement. */
 	private overflowVerdict: OverflowVerdict | null = null;
 	/** Cut already warned about, so an oversized session is warned once. */
@@ -205,6 +208,7 @@ export class CompactionCoordinator {
 		getEffectiveUsage,
 		persistTelemetrySnapshot,
 		disableAutoCompaction = false,
+		enableCompactionRecovery = false,
 	}: CompactionCoordinatorOptions) {
 		this.state = state;
 		this.pi = pi;
@@ -212,6 +216,7 @@ export class CompactionCoordinator {
 		this.getEffectiveUsage = getEffectiveUsage;
 		this.persistTelemetrySnapshot = persistTelemetrySnapshot;
 		this.disableAutoCompaction = disableAutoCompaction;
+		this.enableCompactionRecovery = enableCompactionRecovery;
 	}
 
 	/** Guard state is session-scoped, so it resets with the session. */
@@ -1213,7 +1218,13 @@ export class CompactionCoordinator {
 			ctx,
 			compatibility,
 			event.signal,
-			{ projected, customInstructions, isCurrent },
+			{
+				projected,
+				customInstructions,
+				isCurrent,
+				...(this.enableCompactionRecovery &&
+					!boundary && { enableRecovery: true }),
+			},
 		);
 		if (this.state.currentCompactionEpoch !== epoch) return { cancel: true };
 		if (event.signal?.aborted || ctx.signal?.aborted) {
