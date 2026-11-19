@@ -292,7 +292,14 @@ it.each(["opted in", "disabled", "no freshness check", "stale model"] as const)(
 	},
 );
 
-it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
+it.each([
+	"success",
+	"invalid reducer",
+	"abort",
+	"stale leaf",
+	"late abort",
+	"replaced draft",
+] as const)(
 	"real SDK and coordinator: persist only a valid, current recovery (%s)",
 	async (scenario) => {
 		const root = mkdtempSync(join(tmpdir(), "compact-plus-recovery-"));
@@ -396,7 +403,13 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 			let tokensBefore: number | undefined;
 			const compacted: boolean[] = [];
 			const state = new CompactionState();
-			const persist = vi.fn();
+			const checkpointCountsAtPersist: number[] = [];
+			const persist = vi.fn(() => {
+				checkpointCountsAtPersist.push(
+					manager.getEntries().filter((entry) => entry.type === "compaction")
+						.length,
+				);
+			});
 			const extension: ExtensionFactory = (pi) => {
 				const coordinator = new CompactionCoordinator({
 					state,
@@ -408,18 +421,26 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 					getEffectiveUsage: () => null,
 					persistTelemetrySnapshot: persist,
 				});
-				pi.on("session_before_compact", (event, ctx) => {
+				pi.on("session_before_compact", async (event, ctx) => {
 					tokensBefore = event.preparation.tokensBefore;
 					state.selectedMode = "standard";
 					// Inject the offline stream and rotating auth while preserving the
 					// SDK's live context getters and its ownership of checkpoint commits.
 					const offlineEvent = { ...event, streamFn };
-					return coordinator.onSessionBeforeCompact(
+					const result = await coordinator.onSessionBeforeCompact(
 						offlineEvent,
 						Object.create(ctx, {
 							modelRegistry: { value: { getApiKeyAndHeaders: auth } },
 						}),
 					);
+					if (result?.compaction) {
+						if (scenario === "late abort") host?.abortCompaction();
+						if (scenario === "replaced draft") {
+							// Pi commits a different draft even though the summary text agrees.
+							return { compaction: { ...result.compaction, details: {} } };
+						}
+					}
+					return result;
 				});
 				pi.on("session_compact", async (event, ctx) => {
 					compacted.push(event.fromExtension);
@@ -457,7 +478,7 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 			const file = manager.getSessionFile();
 			if (!file) throw new Error("Expected a file-backed session");
 			const before = readFileSync(file, "utf8");
-			if (scenario === "success") {
+			if (scenario === "success" || scenario === "replaced draft") {
 				await host.compact();
 			} else {
 				await expect(host.compact()).rejects.toThrow("Compaction cancelled");
@@ -480,6 +501,25 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 			const compactions = restored
 				.getEntries()
 				.filter((e) => e.type === "compaction");
+			if (scenario === "late abort" || scenario === "replaced draft") {
+				expect(attempt).toMatchObject({
+					fallbackReason: RECOVERY_SUCCESS_REASON,
+					recoveryRequests: 3,
+				});
+				expect(state.lastVerdict).toBeNull();
+				expect(state.pendingCompaction).toBeNull();
+				expect(state.lastCompaction).toBeNull();
+				expect(persist).not.toHaveBeenCalled();
+				if (scenario === "late abort") {
+					expect(compacted).toEqual([]);
+					expect(compactions).toEqual([]);
+					expect(readFileSync(file, "utf8")).toBe(before);
+				} else {
+					expect(compacted).toEqual([true]);
+					expect(compactions).toHaveLength(1);
+				}
+				return;
+			}
 			if (scenario !== "success") {
 				const reasons = {
 					"invalid reducer": RECOVERY_FAILED_REASON,
@@ -510,6 +550,8 @@ it.each(["success", "invalid reducer", "abort", "stale leaf"] as const)(
 			});
 			expect(compacted).toEqual([true]);
 			expect(state.lastVerdict).toMatchObject({ kind: "accepted" });
+			expect(state.pendingRecovery).toBeNull();
+			expect(checkpointCountsAtPersist).toEqual([1]);
 			expect(compactions).toHaveLength(1);
 			expect(compactions[0]?.summary).toContain(
 				"Finish the offline recovery test.",
