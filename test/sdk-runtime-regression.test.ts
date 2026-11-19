@@ -28,7 +28,10 @@ import * as compactRunner from "../src/compact.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
-import { DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS } from "../src/settings.js";
+import {
+	DEFAULT_COMPACT_PLUS_THRESHOLD_SETTINGS,
+	resolveCompactPlusSettings,
+} from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import {
 	RECOVERY_FAILED_REASON,
@@ -299,6 +302,9 @@ it.each([
 	"invalid reducer",
 	"abort",
 	"stale leaf",
+	"stale capacity",
+	"opt-in unset",
+	"unrecognized opt-in",
 	"late abort",
 	"replaced draft",
 ] as const)(
@@ -312,16 +318,17 @@ it.each([
 		let attempt: Awaited<ReturnType<typeof runCustomCompaction>> | undefined;
 		const runner = vi.spyOn(compactRunner, "runCustomCompaction");
 		try {
-			// Exercise the real runner with the coordinator's freshness callback.
-			// Opt in at this test seam on the initial attempt only.
-			runner.mockImplementation(
-				async (cut, mode, ctx, compat, signal, intent) => {
-					attempt = await runCustomCompaction(cut, mode, ctx, compat, signal, {
-						...intent,
-						...(runner.mock.calls.length === 1 && { enableRecovery: true }),
-					});
-					return attempt;
-				},
+			runner.mockImplementation(async (...args) => {
+				attempt = await runCustomCompaction(...args);
+				return attempt;
+			});
+			const recoveryEnabled =
+				scenario !== "opt-in unset" && scenario !== "unrecognized opt-in";
+			const compactPlusSettings = resolveCompactPlusSettings(
+				scenario === "opt-in unset"
+					? {}
+					: { COMPACT_PLUS_ENABLE_RECOVERY: recoveryEnabled ? "1" : "true" },
+				{},
 			);
 			const manager = SessionManager.create(root, root);
 			const earlier = manager.appendMessage(
@@ -383,6 +390,7 @@ it.each([
 				"Finish the current repair.",
 				"Finish the retry without recovery.",
 			);
+			let currentModel: Model<string> | undefined;
 			const streamFn = vi.fn(
 				(_model: unknown, _context: unknown, _options?: StreamOptions) => {
 					const request = streamFn.mock.calls.length;
@@ -392,6 +400,8 @@ it.each([
 					if (request === 1 && scenario === "abort") host?.abortCompaction();
 					if (request === 1 && scenario === "stale leaf")
 						manager.branch(earlier);
+					if (request === 1 && scenario === "stale capacity" && currentModel)
+						currentModel.contextWindow -= 1;
 					const reduced =
 						scenario === "invalid reducer"
 							? "Malformed final summary"
@@ -448,8 +458,11 @@ it.each([
 					},
 					getEffectiveUsage: () => null,
 					persistTelemetrySnapshot: persist,
+					enableCompactionRecovery:
+						compactPlusSettings.enableCompactionRecovery,
 				});
 				pi.on("session_before_compact", async (event, ctx) => {
+					currentModel = ctx.model;
 					tokensBefore = event.preparation.tokensBefore;
 					state.selectedMode = "standard";
 					// Pi 1.5.2 manual compaction uses the SDK registry route. Also
@@ -523,8 +536,16 @@ it.each([
 			}
 			expect(errors).toEqual([]);
 			expect(runner).toHaveBeenCalledOnce();
-			expect(runner.mock.calls[0]?.[5]?.enableRecovery).toBeUndefined();
-			const count = scenario === "abort" || scenario === "stale leaf" ? 1 : 3;
+			expect(runner.mock.calls[0]?.[5]?.enableRecovery).toBe(
+				recoveryEnabled ? true : undefined,
+			);
+			const count = !recoveryEnabled
+				? 0
+				: scenario === "abort" ||
+						scenario === "stale leaf" ||
+						scenario === "stale capacity"
+					? 1
+					: 3;
 			expect(runner.mock.calls[0]?.[3].streamRoute).toBe(
 				useRegistry ? "registry" : "session",
 			);
@@ -542,6 +563,18 @@ it.each([
 			const compactions = restored
 				.getEntries()
 				.filter((e) => e.type === "compaction");
+			if (!recoveryEnabled) {
+				expect(attempt).toMatchObject({
+					requestOverflow: true,
+					fallbackReason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+				});
+				expect(attempt?.recoveryAttempted).toBeUndefined();
+				expect(state.pendingRecovery).toBeNull();
+				expect(compacted).toEqual([]);
+				expect(compactions).toEqual([]);
+				expect(readFileSync(file, "utf8")).toBe(before);
+				return;
+			}
 			if (scenario === "late abort" || scenario === "replaced draft") {
 				expect(attempt).toMatchObject({
 					fallbackReason: RECOVERY_SUCCESS_REASON,
@@ -560,7 +593,8 @@ it.each([
 					await host.compact();
 
 					expect(runner).toHaveBeenCalledTimes(2);
-					expect(runner.mock.calls[1]?.[5]?.enableRecovery).toBeUndefined();
+					expect(runner.mock.calls[1]?.[5]?.enableRecovery).toBe(true);
+					expect(attempt?.recoveryAttempted).toBeUndefined();
 					expect(streamFn).toHaveBeenCalledTimes(4);
 					expect(registryStream).not.toHaveBeenCalled();
 					expect(fetchSpy).not.toHaveBeenCalled();
@@ -593,16 +627,17 @@ it.each([
 				return;
 			}
 			if (scenario !== "success" && scenario !== "registry success") {
-				const reasons = {
-					"invalid reducer": RECOVERY_FAILED_REASON,
-					abort: "compaction aborted",
-					"stale leaf": "compaction context changed",
-				};
+				const reason =
+					scenario === "invalid reducer"
+						? RECOVERY_FAILED_REASON
+						: scenario === "abort"
+							? "compaction aborted"
+							: "compaction context changed";
 				expect(attempt).toMatchObject({
 					cancel: true,
 					result: undefined,
 					recoveryAttempted: true,
-					fallbackReason: reasons[scenario],
+					fallbackReason: reason,
 				});
 				expect(compacted).toEqual([]);
 				expect(persist).not.toHaveBeenCalled();
@@ -610,7 +645,7 @@ it.each([
 				expect(state.lastCompaction).toBeNull();
 				expect(state.lastVerdict).toMatchObject({
 					kind: "cancelled",
-					reason: reasons[scenario],
+					reason,
 				});
 				expect(compactions).toEqual([]);
 				expect(readFileSync(file, "utf8")).toBe(before);

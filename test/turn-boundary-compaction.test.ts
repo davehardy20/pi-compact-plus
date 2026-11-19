@@ -29,7 +29,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	};
 });
 
-import { runCustomCompaction } from "../src/compact.js";
+import * as compact from "../src/compact.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import { resolveCompactionRuntimeCompatibility } from "../src/compatibility.js";
 import { registerCompactPlusEventHandlers } from "../src/events.js";
@@ -62,7 +62,7 @@ function assistant(id: string): AssistantMessage {
 	};
 }
 
-function fixture(enablePruning = false) {
+function fixture(enablePruning = false, enableCompactionRecovery = false) {
 	vi.spyOn(SettingsManager, "create").mockReturnValue(
 		SettingsManager.inMemory({
 			compaction: {
@@ -156,6 +156,7 @@ function fixture(enablePruning = false) {
 			source: "native",
 		}),
 		persistTelemetrySnapshot: persist,
+		enableCompactionRecovery,
 	});
 	const pruning = new ToolOutputPruningCoordinator({
 		state: state.toolOutputPruning,
@@ -340,6 +341,15 @@ async function runBoundary(f: ReturnType<typeof fixture>) {
 	return f.pi.events.get("turn_end")?.[0]?.(f.event, f.ctx);
 }
 
+it("keeps recovery off for the turn boundary even with the SDK hook opted in", async () => {
+	const run = vi.spyOn(compact, "runCustomCompaction");
+	const f = fixture(false, true);
+	expect(await runBoundary(f)).toBeDefined();
+	expect(run).toHaveBeenCalledOnce();
+	expect(run.mock.calls[0]?.[5]?.enableRecovery).toBeUndefined();
+	expect(f.stream).toHaveBeenCalledOnce();
+});
+
 it("does not count an uncommitted draft as compaction or start a cooldown", async () => {
 	const f = fixture();
 	expect(await runBoundary(f)).toBeDefined();
@@ -442,7 +452,7 @@ it("uses one structured request for a real Pi split-turn helper", async () => {
 		event: {},
 		modelRegistry: f.ctx.modelRegistry,
 	});
-	const attempt = await runCustomCompaction(
+	const attempt = await compact.runCustomCompaction(
 		preparation,
 		"standard",
 		f.ctx,

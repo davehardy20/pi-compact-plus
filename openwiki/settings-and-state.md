@@ -118,6 +118,7 @@ Runtime-resolved values **must** be obtained from `resolveCompactPlusSettings()`
 | `COMPACT_PLUS_HARD_THRESHOLD_TOKENS` | `hardThresholdTokens` |
 | `COMPACT_PLUS_COOLDOWN_MS` | `cooldownMs` |
 | `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` | `disableAutoCompaction` |
+| `COMPACT_PLUS_ENABLE_RECOVERY` | `enableCompactionRecovery` (off unless exactly `1`; environment only, read when the extension loads) |
 | `COMPACT_PLUS_SETTINGS_PATH` | Settings file path override |
 | `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `experimentalToolOutputPruning` |
 | `COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE` | `toolOutputPruningMode` |

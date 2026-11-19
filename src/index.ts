@@ -80,6 +80,7 @@ export default function compactPlusExtension(pi: ExtensionAPI) {
 		getEffectiveUsage,
 		persistTelemetrySnapshot: telemetryWriter.persist,
 		disableAutoCompaction: thresholdSettings.disableAutoCompaction,
+		enableCompactionRecovery: thresholdSettings.enableCompactionRecovery,
 	});
 
 	pi.registerTool(
