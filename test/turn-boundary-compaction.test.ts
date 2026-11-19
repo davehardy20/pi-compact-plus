@@ -268,7 +268,7 @@ it.each([
 });
 
 it("checks thresholds between tool turns without aborting or replaying the active run", async () => {
-	const { ctx, pi, state, session, stream, event } = fixture();
+	const { ctx, pi, state, session, stream, event, persist } = fixture();
 	const handler = pi.events.get("turn_end")?.[0];
 	type Draft = {
 		type: string;
@@ -282,6 +282,8 @@ it("checks thresholds between tool turns without aborting or replaying the activ
 	expect(ctx.compact).not.toHaveBeenCalled();
 	expect(stream).toHaveBeenCalledOnce();
 	expect(state.lastCompaction).toBeNull();
+	expect(state.lastVerdict).toBeNull();
+	expect(persist).not.toHaveBeenCalled();
 	const draft = boundary?.entries?.[0];
 	if (!draft) throw new Error("missing boundary compaction");
 	expect(draft.details).toMatchObject({ modifiedFiles: ["old.ts"] });
@@ -297,6 +299,12 @@ it("checks thresholds between tool turns without aborting or replaying the activ
 		ctx,
 	);
 	expect(state.lastCompaction?.executionPath).toBe("custom");
+	expect(state.lastVerdict?.kind).toBe("accepted");
+	await pi.events.get("turn_start")?.[0]?.(
+		{ type: "turn_start", turnIndex: 3, timestamp: 5 },
+		ctx,
+	);
+	expect(persist).toHaveBeenCalledOnce();
 	const kept = session.buildSessionProjection().messages;
 	expect(
 		kept.some((m) => m.role === "toolResult" && m.toolCallId === "latest-call"),
@@ -324,8 +332,11 @@ it("does not count an uncommitted draft as compaction or start a cooldown", asyn
 		f.ctx,
 	);
 	expect(f.state.pendingBoundaryMarker).toBeNull();
+	expect(f.state.pendingCompaction).toBeNull();
 	expect(f.state.lastCompactTime).toBe(0);
 	expect(f.state.lastCompaction).toBeNull();
+	expect(f.state.lastVerdict).toBeNull();
+	expect(f.persist).not.toHaveBeenCalled();
 });
 
 it("defers when queued user input is not in the summarized projection", async () => {
@@ -389,6 +400,10 @@ it("leaves the context unchanged when structured summary validation fails", asyn
 	expect(f.state.lastCompactTime).toBe(0);
 	expect(f.session.buildSessionProjection().messages).toEqual(before);
 	expect(f.ctx.compact).not.toHaveBeenCalled();
+	expect(f.stream).toHaveBeenCalledOnce();
+	expect(f.state.lastVerdict?.kind).toBe("deferred");
+	expect(f.state.pendingCompaction).toBeNull();
+	expect(f.persist).not.toHaveBeenCalled();
 });
 
 it("uses one structured request for a real Pi split-turn helper", async () => {
