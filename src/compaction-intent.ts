@@ -30,6 +30,8 @@ interface BudgetedIntent<T extends IntentPreparation> {
 	preparation: UnifiedPreparation<T>;
 	/** Reuse verbatim; absent on every failed or oversized capture. */
 	renderedInstructions?: string;
+	/** Total for the exact rendering passed to the normal custom request. */
+	measuredTotalTokens?: number;
 	/** The cut plus Compact+'s base prompt cannot fit the window. Not a claim that the
 	 * transcript alone is oversized: it is what remains once every added turn is dropped. */
 	transcriptOverflow?: true;
@@ -203,6 +205,7 @@ export async function prepareBudgetedCompactionFocus<
 			focus,
 			preparation: unified,
 			renderedInstructions,
+			measuredTotalTokens: measurement.totalTokens,
 			...(evidenceCapped ? { evidenceTrimmed: evidenceCapped } : {}),
 		};
 	}
@@ -224,7 +227,12 @@ export async function prepareBudgetedCompactionFocus<
 	let low = 1;
 	let high = recentUserTurns.length;
 	let fitted:
-		| { dropped: number; kept: string[]; instructions: string }
+		| {
+				dropped: number;
+				kept: string[];
+				instructions: string;
+				totalTokens: number;
+		  }
 		| undefined;
 	let probeFailed = false;
 	while (low <= high) {
@@ -247,7 +255,12 @@ export async function prepareBudgetedCompactionFocus<
 			break;
 		}
 		if (trimmed.totalTokens <= model.contextWindow) {
-			fitted = { dropped, kept, instructions };
+			fitted = {
+				dropped,
+				kept,
+				instructions,
+				totalTokens: trimmed.totalTokens,
+			};
 			high = dropped - 1;
 		} else {
 			low = dropped + 1;
@@ -258,6 +271,7 @@ export async function prepareBudgetedCompactionFocus<
 			focus: withEvidence(fitted.kept),
 			preparation: unified,
 			renderedInstructions: fitted.instructions,
+			measuredTotalTokens: fitted.totalTokens,
 			evidenceTrimmed: fitted.dropped + evidenceCapped,
 		};
 	}

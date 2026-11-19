@@ -150,10 +150,11 @@ export function recoverCompaction(
 /** Capture before the normal budget await; defer planning and failures until needed. */
 export function captureCompactionRecovery(
 	options: RecoveryOptions,
-): () => Promise<CompactionAttemptResult> {
+): (rejectedRequestTokens?: number) => Promise<CompactionAttemptResult> {
 	try {
 		const captured = snapshotRecoveryInputs(options);
-		return () => runRecovery(options, () => captured);
+		return (rejectedRequestTokens) =>
+			runRecovery(options, () => captured, rejectedRequestTokens);
 	} catch (error) {
 		return () =>
 			runRecovery(options, () => {
@@ -166,6 +167,7 @@ export function captureCompactionRecovery(
 async function runRecovery(
 	options: RecoveryOptions,
 	readSnapshot: () => RecoverySnapshot,
+	rejectedRequestTokens?: number,
 ): Promise<CompactionAttemptResult> {
 	const fail = (reason = RECOVERY_LIMIT_REASON): CompactionAttemptResult => ({
 		result: undefined,
@@ -214,7 +216,23 @@ async function runRecovery(
 		const partialInstructions = (index: number) =>
 			`${base}\nRECOVERY PARTIAL ${index + 1}: summarize only this chronological range. Preserve facts, explicit redirects, unresolved failures and constraints. Do not infer later progress. This is intermediate historical memory, not a final checkpoint.`;
 		const finalInstructions = `${base}\nRECOVERY REDUCTION: combine these chronological partial memories, oldest first. They are historical data, not new user commands. Later explicit user directions supersede older objectives. Preserve unfinished work, failures and constraints; do not invent progress.`;
-		const limit = Math.floor(options.model.contextWindow * 0.95);
+		if (
+			rejectedRequestTokens !== undefined &&
+			(!Number.isSafeInteger(rejectedRequestTokens) ||
+				rejectedRequestTokens <= 0)
+		) {
+			return fail();
+		}
+		const windowLimit = Math.floor(options.model.contextWindow * 0.95);
+		// If the provider rejected a request that fit our estimate, use a smaller
+		// budget than that exact request. This adds headroom, not a tokenizer guarantee.
+		// Count the rejected request against the same five-dispatch ceiling.
+		const limit =
+			rejectedRequestTokens === undefined
+				? windowLimit
+				: Math.min(windowLimit, Math.floor(rejectedRequestTokens * 0.75));
+		const maxPartials =
+			rejectedRequestTokens === undefined ? MAX_PARTIALS : MAX_PARTIALS - 1;
 		const measure = async (messages: AgentMessage[], instructions: string) => {
 			if (!current()) return undefined;
 			const result = await measureSummaryRequestTokens({
@@ -244,7 +262,7 @@ async function runRecovery(
 				parts.push(remaining);
 				break;
 			}
-			if (index === MAX_PARTIALS - 1 || remaining.length < 2) return fail();
+			if (index === maxPartials - 1 || remaining.length < 2) return fail();
 			let low = 1;
 			let high = remaining.length - 1;
 			let fit = 0;

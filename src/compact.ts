@@ -595,6 +595,20 @@ function compactErrorResult(): CompactionAttemptResult {
 	};
 }
 
+function classifyRequestError(error: unknown): CompactionAttemptResult {
+	const reason = summarizationFailureReason(
+		classifySummarizationFailure(error),
+	);
+	return reason
+		? {
+				result: undefined,
+				fallbackReason: reason,
+				requestOverflow: true,
+				providerConfirmed: true,
+			}
+		: compactErrorResult();
+}
+
 export async function runCustomCompaction(
 	preparation: CompactionPreparation,
 	mode: CompactionMode,
@@ -680,8 +694,12 @@ export async function runCustomCompaction(
 			});
 			const beforeProvider = cancelled();
 			if (beforeProvider) return beforeProvider;
-			const result = await compactRunner(...compactArgs);
-			return cancelled() ?? { result, fallbackReason: null };
+			try {
+				const result = await compactRunner(...compactArgs);
+				return cancelled() ?? { result, fallbackReason: null };
+			} catch (error) {
+				return cancelled() ?? classifyRequestError(error);
+			}
 		};
 		const recovery =
 			intent?.enableRecovery === true &&
@@ -778,6 +796,14 @@ export async function runCustomCompaction(
 		);
 		const afterDispatch = cancelled();
 		if (afterDispatch) return afterDispatch;
+		if (
+			recovery &&
+			attempt.providerConfirmed &&
+			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON &&
+			budgeted.measuredTotalTokens !== undefined
+		) {
+			return recovery(budgeted.measuredTotalTokens);
+		}
 		if (attempt.fallbackReason !== null) return attempt;
 		return finalizeCompactionAttempt(
 			attempt.result,
@@ -787,21 +813,11 @@ export async function runCustomCompaction(
 				: null,
 			budgeted.evidenceTrimmed,
 		);
-	} catch (error) {
+	} catch {
 		if (requestSignal?.aborted) {
 			return { result: undefined, fallbackReason: "compaction aborted" };
 		}
-		// Classify before flattening: losing the overflow shape is what lets an
-		// identical oversized payload be re-sent by the native fallback path.
-		const reason = summarizationFailureReason(
-			classifySummarizationFailure(error),
-		);
-		if (!reason) return compactErrorResult();
-		return {
-			result: undefined,
-			fallbackReason: reason,
-			requestOverflow: true,
-			providerConfirmed: true,
-		};
+		// Errors outside the provider dispatch cannot confirm provider overflow.
+		return compactErrorResult();
 	}
 }
