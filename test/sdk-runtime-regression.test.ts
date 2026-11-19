@@ -6,6 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
+	InMemoryCredentialStore,
 	type StreamOptions,
 	type ToolResultMessage,
 	type UserMessage,
@@ -18,7 +19,7 @@ import {
 	DefaultResourceLoader,
 	type ExtensionContext,
 	type ExtensionFactory,
-	type ModelRuntime,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -294,6 +295,7 @@ it.each(["opted in", "disabled", "no freshness check", "stale model"] as const)(
 
 it.each([
 	"success",
+	"registry success",
 	"invalid reducer",
 	"abort",
 	"stale leaf",
@@ -357,25 +359,21 @@ it.each([
 				maxTokens: 4096,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			};
-			const nativeStream = vi.fn(() => {
-				throw new Error("Unexpected native summary");
+			const useRegistry = scenario === "registry success";
+			const credentials = new InMemoryCredentialStore();
+			const setFixtureCredential = async (request: number) => {
+				await credentials.modify(model.provider, async () => ({
+					type: "api_key",
+					key: `fixture-key-${request}`,
+				}));
+			};
+			await setFixtureCredential(1);
+			const runtime = await ModelRuntime.create({
+				credentials,
+				modelsPath: null,
+				allowModelNetwork: false,
+				refreshOnCreate: false,
 			});
-			const runtime = {
-				streamSimple: nativeStream,
-				getAuth: async () => undefined,
-				getCompatibilityRequestConfig: () => ({ authHeader: false }),
-				hasConfiguredAuth: () => true,
-				getModel: () => model,
-				getModels: () => [model],
-				getAvailableSnapshot: () => [model],
-				getRegisteredProviderIds: () => [],
-				getError: () => undefined,
-			} as unknown as ModelRuntime;
-			let issued = 0;
-			const auth = vi.fn(async () => ({
-				ok: true,
-				apiKey: `fixture-key-${++issued}`,
-			}));
 			const checkpointCounts: number[] = [];
 			const finalSummary = VALID_STRUCTURED_SUMMARY.replace(
 				"Finish the current repair.",
@@ -386,7 +384,7 @@ it.each([
 				"Finish the retry without recovery.",
 			);
 			const streamFn = vi.fn(
-				async (_model: unknown, _context: unknown, _options: StreamOptions) => {
+				(_model: unknown, _context: unknown, _options?: StreamOptions) => {
 					const request = streamFn.mock.calls.length;
 					checkpointCounts.push(
 						manager.getEntries().filter((e) => e.type === "compaction").length,
@@ -405,10 +403,31 @@ it.each([
 								? reduced
 								: VALID_STRUCTURED_SUMMARY;
 					const stream = createAssistantMessageEventStream();
-					stream.end(assistant([{ type: "text", text }]));
+					const reply = assistant([{ type: "text", text }]);
+					// Rotate before completing this stream, so the next request
+					// must resolve the new credential.
+					void setFixtureCredential(request + 1).then(
+						() => stream.end(reply),
+						() =>
+							stream.end({
+								...reply,
+								stopReason: "error",
+								errorMessage: "Fixture credential rotation failed",
+							}),
+					);
 					return stream;
 				},
 			);
+			runtime.registerProvider(model.provider, {
+				baseUrl: model.baseUrl,
+				api: model.api,
+				models: [model],
+				authHeader: true,
+				headers: { "X-Fixture-Route": "sdk-session" },
+				streamSimple: streamFn,
+			});
+			expect(runtime.getModel(model.provider, model.id)).toBeDefined();
+			const registryStream = vi.spyOn(runtime, "streamSimple");
 			let tokensBefore: number | undefined;
 			const compacted: boolean[] = [];
 			const state = new CompactionState();
@@ -433,19 +452,17 @@ it.each([
 				pi.on("session_before_compact", async (event, ctx) => {
 					tokensBefore = event.preparation.tokensBefore;
 					state.selectedMode = "standard";
-					// Inject the offline stream and rotating auth while preserving the
-					// SDK's live context getters and its ownership of checkpoint commits.
-					const offlineEvent = { ...event, streamFn };
+					// Pi 1.5.2 manual compaction uses the SDK registry route. Also
+					// exercise the session route by supplying the stream directly.
+					const offlineEvent = useRegistry ? event : { ...event, streamFn };
 					const retry =
 						scenario === "late abort" && runner.mock.calls.length > 0;
-					const offlineCtx = Object.create(ctx, {
-						modelRegistry: { value: { getApiKeyAndHeaders: auth } },
-						// Let the retry fit in one request, so it cannot overwrite the
-						// discarded recovery marker with a new one.
-						...(retry && {
-							model: { value: { ...model, contextWindow: 65_536 } },
-						}),
-					});
+					// Let the retry fit in one request without a recovery marker.
+					const offlineCtx = retry
+						? Object.create(ctx, {
+								model: { value: { ...model, contextWindow: 65_536 } },
+							})
+						: ctx;
 					const result = await coordinator.onSessionBeforeCompact(
 						offlineEvent,
 						offlineCtx,
@@ -495,7 +512,11 @@ it.each([
 			const file = manager.getSessionFile();
 			if (!file) throw new Error("Expected a file-backed session");
 			const before = readFileSync(file, "utf8");
-			if (scenario === "success" || scenario === "replaced draft") {
+			if (
+				scenario === "success" ||
+				useRegistry ||
+				scenario === "replaced draft"
+			) {
 				await host.compact();
 			} else {
 				await expect(host.compact()).rejects.toThrow("Compaction cancelled");
@@ -503,15 +524,18 @@ it.each([
 			expect(errors).toEqual([]);
 			expect(runner).toHaveBeenCalledOnce();
 			expect(runner.mock.calls[0]?.[5]?.enableRecovery).toBeUndefined();
-			expect(nativeStream).not.toHaveBeenCalled();
-			expect(fetchSpy).not.toHaveBeenCalled();
 			const count = scenario === "abort" || scenario === "stale leaf" ? 1 : 3;
+			expect(runner.mock.calls[0]?.[3].streamRoute).toBe(
+				useRegistry ? "registry" : "session",
+			);
+			expect(registryStream).toHaveBeenCalledTimes(useRegistry ? count : 0);
+			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(streamFn).toHaveBeenCalledTimes(count);
-			expect(auth).toHaveBeenCalledTimes(count);
-			expect(
-				streamFn.mock.calls.map(([, , options]) => options.apiKey),
-			).toEqual(
-				Array.from({ length: count }, (_, i) => `fixture-key-${i + 1}`),
+			expect(streamFn.mock.calls.map(([, , options]) => options)).toMatchObject(
+				Array.from({ length: count }, (_, i) => ({
+					apiKey: `fixture-key-${i + 1}`,
+					headers: { "X-Fixture-Route": "sdk-session" },
+				})),
 			);
 			expect(checkpointCounts).toEqual(Array.from({ length: count }, () => 0));
 			const restored = SessionManager.open(file, root, root);
@@ -538,7 +562,7 @@ it.each([
 					expect(runner).toHaveBeenCalledTimes(2);
 					expect(runner.mock.calls[1]?.[5]?.enableRecovery).toBeUndefined();
 					expect(streamFn).toHaveBeenCalledTimes(4);
-					expect(nativeStream).not.toHaveBeenCalled();
+					expect(registryStream).not.toHaveBeenCalled();
 					expect(fetchSpy).not.toHaveBeenCalled();
 					expect(errors).toEqual([]);
 					expect(compacted).toEqual([true]);
@@ -568,7 +592,7 @@ it.each([
 				}
 				return;
 			}
-			if (scenario !== "success") {
+			if (scenario !== "success" && scenario !== "registry success") {
 				const reasons = {
 					"invalid reducer": RECOVERY_FAILED_REASON,
 					abort: "compaction aborted",

@@ -339,14 +339,54 @@ it("preflights only the planned partial count on a smaller model", async () => {
 	);
 	const envelope = measure.mock.calls[reducerIndex][0].messages;
 	expect(envelope).toHaveLength(2);
-	for (const message of envelope) {
-		expect(extractTextContent(message)).toContain("x".repeat(16_000));
+	for (const [index, message] of envelope.entries()) {
+		expect(extractTextContent(message)).toBe(
+			`Historical partial ${index + 1}:\n${"x".repeat(16_000)}`,
+		);
 	}
 	expect(measure.mock.invocationCallOrder[reducerIndex]).toBeLessThan(
 		f.execute.mock.invocationCallOrder[0],
 	);
 	expect(f.execute).toHaveBeenCalledTimes(3);
 });
+
+it.each([
+	["partial", 16_000, 3],
+	["partial", 16_001, 1],
+	["reducer", 16_000, 3],
+	["reducer", 16_001, 3],
+] as const)(
+	"enforces the recovery %s summary cap at %i characters",
+	async (stage, length, requests) => {
+		const f = fixture();
+		const summary = `${VALID_STRUCTURED_SUMMARY}\n${"x".repeat(length - VALID_STRUCTURED_SUMMARY.length - 1)}`;
+		f.execute.mockImplementation(async (prepared, instructions) => {
+			const stageMatches = instructions.includes(
+				stage === "partial" ? "RECOVERY PARTIAL 1:" : "RECOVERY REDUCTION:",
+			);
+			const attempt = f.complete(prepared);
+			if (stageMatches) attempt.result.summary = summary;
+			return attempt;
+		});
+		const attempt = await f.run();
+		expect(f.execute).toHaveBeenCalledTimes(requests);
+		if (length === 16_001) {
+			expect(attempt).toMatchObject({
+				fallbackReason: RECOVERY_FAILED_REASON,
+				cancel: true,
+				result: undefined,
+			});
+		} else {
+			expect(attempt.fallbackReason).toBe(RECOVERY_SUCCESS_REASON);
+			if (stage === "partial") {
+				const reducerInput = f.execute.mock.calls[2][0].messagesToSummarize;
+				expect(extractTextContent(reducerInput[0])).toBe(
+					`Historical partial 1:\n${summary}`,
+				);
+			} else expect(attempt.result?.summary).toBe(summary);
+		}
+	},
+);
 
 it("bounds measured-prefix planning for ten thousand groups", async () => {
 	const f = fixture();
