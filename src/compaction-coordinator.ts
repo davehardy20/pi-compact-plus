@@ -1315,6 +1315,28 @@ export class CompactionCoordinator {
 
 		const deferralReason =
 			attempt.fallbackReason ?? "custom summarization unavailable";
+		// An estimate cannot override a rejection of the same transcript. Pi's
+		// two nonempty split-turn requests are different and still need preflight.
+		if (
+			attempt.providerConfirmed &&
+			deferralReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON &&
+			!(
+				event.preparation.isSplitTurn &&
+				event.preparation.messagesToSummarize.length > 0 &&
+				event.preparation.turnPrefixMessages.length > 0
+			)
+		) {
+			this.reportSummarizationOverflow({
+				event,
+				ctx,
+				reason: deferralReason,
+				warning: SUMMARIZATION_OVERFLOW_WARNING,
+				manualAttempt,
+				measuredKey: null,
+				kind: null,
+			});
+			return cancelCustom(deferralReason);
+		}
 		if (
 			deferralReason === SUMMARIZATION_OUTPUT_CAP_REASON &&
 			this.thresholdSettings.guardNativeCompaction !== false

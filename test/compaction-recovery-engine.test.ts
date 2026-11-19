@@ -283,6 +283,18 @@ it("supports four partials plus one reducer", async () => {
 	expect(f.execute).toHaveBeenCalledTimes(5);
 });
 
+it("refuses a fourth partial after the provider rejected the original request", async () => {
+	const f = fixture();
+	f.setSource(Array.from({ length: 4 }, () => user("x".repeat(60_000))));
+	const recover = captureCompactionRecovery(f.options);
+	expect(await recover(32_000)).toMatchObject({
+		cancel: true,
+		fallbackReason: RECOVERY_LIMIT_REASON,
+		result: undefined,
+	});
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
 it("fits uneven chronological groups into four measured requests", async () => {
 	const f = fixture();
 	const weights = [8, 16, 4, 8, 16];

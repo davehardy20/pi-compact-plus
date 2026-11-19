@@ -42,6 +42,7 @@ import { ToolOutputPruningCoordinator } from "../src/tool-output-pruning/coordin
 import { getEffectiveUsage } from "../src/usage.js";
 import { createMockPi } from "./fixtures/extension.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
+import { STRATA_NO_ROOM_CONTEXT_OVERFLOW } from "./fixtures/summarization-errors.js";
 
 const { runCustomCompaction } = compactRunner;
 
@@ -299,6 +300,8 @@ it.each(["opted in", "disabled", "no freshness check", "stale model"] as const)(
 it.each([
 	"success",
 	"registry success",
+	"provider overflow recovery",
+	"provider overflow without opt-in",
 	"invalid reducer",
 	"abort",
 	"stale leaf",
@@ -322,10 +325,13 @@ it.each([
 				attempt = await runCustomCompaction(...args);
 				return attempt;
 			});
-			const recoveryEnabled =
-				scenario !== "opt-in unset" && scenario !== "unrecognized opt-in";
+			const providerOverflow = scenario.startsWith("provider overflow");
+			const optInUnset =
+				scenario === "opt-in unset" ||
+				scenario === "provider overflow without opt-in";
+			const recoveryEnabled = !optInUnset && scenario !== "unrecognized opt-in";
 			const compactPlusSettings = resolveCompactPlusSettings(
-				scenario === "opt-in unset"
+				optInUnset
 					? {}
 					: { COMPACT_PLUS_ENABLE_RECOVERY: recoveryEnabled ? "1" : "true" },
 				{},
@@ -362,11 +368,11 @@ it.each([
 				baseUrl: "https://example.invalid",
 				reasoning: false,
 				input: ["text"],
-				contextWindow: 32_768,
+				contextWindow: providerOverflow ? 65_536 : 32_768,
 				maxTokens: 4096,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			};
-			const useRegistry = scenario === "registry success";
+			const useRegistry = scenario === "registry success" || providerOverflow;
 			const credentials = new InMemoryCredentialStore();
 			const setFixtureCredential = async (request: number) => {
 				await credentials.modify(model.provider, async () => ({
@@ -406,14 +412,26 @@ it.each([
 						scenario === "invalid reducer"
 							? "Malformed final summary"
 							: finalSummary;
-					const text =
-						request === 4
+					const prompt = JSON.stringify(_context);
+					const transcript = prompt.split("</conversation>", 1)[0] ?? "";
+					const text = prompt.includes("RECOVERY REDUCTION")
+						? reduced
+						: request === 4 && scenario === "late abort"
 							? retrySummary
-							: request === 3
-								? reduced
-								: VALID_STRUCTURED_SUMMARY;
+							: VALID_STRUCTURED_SUMMARY;
 					const stream = createAssistantMessageEventStream();
 					const reply = assistant([{ type: "text", text }]);
+					if (
+						providerOverflow &&
+						/FIRST x{50}/.test(transcript) &&
+						/SECOND y{50}/.test(transcript)
+					) {
+						reply.stopReason = "error";
+						reply.errorMessage = STRATA_NO_ROOM_CONTEXT_OVERFLOW.replace(
+							"Summarization failed: ",
+							"",
+						);
+					}
 					// Rotate before completing this stream, so the next request
 					// must resolve the new credential.
 					void setFixtureCredential(request + 1).then(
@@ -525,27 +543,49 @@ it.each([
 			const file = manager.getSessionFile();
 			if (!file) throw new Error("Expected a file-backed session");
 			const before = readFileSync(file, "utf8");
-			if (
+			const success =
 				scenario === "success" ||
-				useRegistry ||
-				scenario === "replaced draft"
-			) {
-				await host.compact();
+				scenario === "registry success" ||
+				scenario === "provider overflow recovery";
+			const outcome = host.compact();
+			if (providerOverflow) {
+				// Capture the outcome without throwing before checking request counts:
+				// the broken path replays the same oversized cut through Pi.
+				const error: unknown = await outcome.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
+				const requestKinds = streamFn.mock.calls.map(([, context]) => {
+					const prompt = JSON.stringify(context);
+					if (prompt.includes("RECOVERY REDUCTION")) return "reducer";
+					if (prompt.includes("RECOVERY PARTIAL")) return "partial";
+					return "ordinary";
+				});
+				expect(requestKinds).toEqual(
+					success
+						? ["ordinary", "partial", "partial", "reducer"]
+						: ["ordinary"],
+				);
+				if (success) expect(error).toBeUndefined();
+				else expect(error).toMatchObject({ message: "Compaction cancelled" });
+			} else if (success || scenario === "replaced draft") {
+				await outcome;
 			} else {
-				await expect(host.compact()).rejects.toThrow("Compaction cancelled");
+				await expect(outcome).rejects.toThrow("Compaction cancelled");
 			}
 			expect(errors).toEqual([]);
 			expect(runner).toHaveBeenCalledOnce();
 			expect(runner.mock.calls[0]?.[5]?.enableRecovery).toBe(
 				recoveryEnabled ? true : undefined,
 			);
-			const count = !recoveryEnabled
-				? 0
-				: scenario === "abort" ||
-						scenario === "stale leaf" ||
-						scenario === "stale capacity"
-					? 1
-					: 3;
+			const stopsAfterFirst =
+				scenario === "abort" ||
+				scenario === "stale leaf" ||
+				scenario === "stale capacity" ||
+				scenario === "provider overflow without opt-in";
+			let count = 0;
+			if (stopsAfterFirst) count = 1;
+			else if (recoveryEnabled) count = providerOverflow ? 4 : 3;
 			expect(runner.mock.calls[0]?.[3].streamRoute).toBe(
 				useRegistry ? "registry" : "session",
 			);
@@ -567,6 +607,7 @@ it.each([
 				expect(attempt).toMatchObject({
 					requestOverflow: true,
 					fallbackReason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
+					...(providerOverflow && { providerConfirmed: true }),
 				});
 				expect(attempt?.recoveryAttempted).toBeUndefined();
 				expect(state.pendingRecovery).toBeNull();
@@ -626,7 +667,7 @@ it.each([
 				}
 				return;
 			}
-			if (scenario !== "success" && scenario !== "registry success") {
+			if (!success) {
 				const reason =
 					scenario === "invalid reducer"
 						? RECOVERY_FAILED_REASON
@@ -659,6 +700,18 @@ it.each([
 			expect(state.lastVerdict).toMatchObject({ kind: "accepted" });
 			expect(state.pendingRecovery).toBeNull();
 			expect(checkpointCountsAtPersist).toEqual([1]);
+			if (providerOverflow) {
+				const prompts = streamFn.mock.calls.map(
+					([, context]) =>
+						JSON.stringify(context).split("</conversation>", 1)[0],
+				);
+				expect(prompts[0]).toMatch(/FIRST x{50}/);
+				expect(prompts[0]).toMatch(/SECOND y{50}/);
+				expect(prompts[1]).toMatch(/FIRST x{50}/);
+				expect(prompts[1]).not.toMatch(/SECOND y{50}/);
+				expect(prompts[2]).toMatch(/SECOND y{50}/);
+				expect(prompts[2]).not.toMatch(/FIRST x{50}/);
+			}
 			expect(compactions).toHaveLength(1);
 			expect(compactions[0]?.summary).toContain(
 				"Finish the offline recovery test.",

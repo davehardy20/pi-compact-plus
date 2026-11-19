@@ -483,8 +483,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
 		const persist = vi.fn(async () => {});
-		// Usage leaves no bounded headroom, so the estimate is not treated as a
-		// discrepancy and the real overflow reason is recorded instead.
+		// The provider rejection is authoritative even near the window.
 		const coordinator = createCoordinator(state, {
 			usageTokens: 190_000,
 			persistTelemetrySnapshot: persist,
@@ -499,23 +498,14 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			ctx,
 		);
 
-		expect(result).toBeUndefined();
-		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
-		expect(coordinator.getLastVerdict()?.reason).toBe(
-			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-		);
-		// One decision writes one verdict: the pending record, the verdict and the persisted
-		// telemetry all carry the reason the deferral settled on, and nothing rewrites them
-		// afterwards.
-		expect(state.pendingCompaction?.fallbackReason).toBe(
-			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
-		);
+		expect(result).toEqual({ cancel: true });
+		expect(state.pendingCompaction).toBeNull();
 		expect(coordinator.getLastVerdict()).toMatchObject({
-			kind: "deferred",
+			kind: "cancelled",
 			reason: SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 			usageTokens: 190_000,
 		});
-		expect(persist).toHaveBeenCalledTimes(1);
+		expect(persist).not.toHaveBeenCalled();
 	});
 
 	it("reports the overflow it defers on when the runtime has no stream route", async () => {
@@ -854,9 +844,7 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 	it("does not let usage headroom rewrite a provider-confirmed overflow", async () => {
 		const state = new CompactionState();
 		const ctx = createCtx({ contextWindow: 200_000 });
-		// The provider itself rejected the request, so the overflow is proven rather than
-		// estimated. Headroom may still let Pi try its own smaller cut, but it must not
-		// relabel a proven rejection as a suspect estimate.
+		// Conversation headroom cannot authorize replay of the rejected transcript.
 		const coordinator = createCoordinator(state, { usageTokens: 150_000 });
 		state.selectedMode = "standard";
 		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
@@ -868,8 +856,8 @@ describe("CompactionCoordinator summarisation overflow handling", () => {
 			ctx,
 		);
 
-		expect(result).toBeUndefined();
-		expect(state.pendingCompaction?.executionPath).toBe("native-fallback");
+		expect(result).toEqual({ cancel: true });
+		expect(state.pendingCompaction).toBeNull();
 		expect(coordinator.getLastVerdict()?.reason).toBe(
 			SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 		);
@@ -1996,7 +1984,7 @@ ${"old context ".repeat(90_000)}`),
 			guardNativeCompaction: false,
 		});
 		state.selectedMode = "standard";
-		compactMock.mockRejectedValueOnce(new Error(STRATA_CONTEXT_OVERFLOW));
+		compactMock.mockRejectedValueOnce(new Error("Provider unavailable"));
 
 		const result = await coordinator.onSessionBeforeCompact(
 			event(ctx, [user("Task: repair login.")]),
