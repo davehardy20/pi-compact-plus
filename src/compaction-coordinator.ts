@@ -1165,8 +1165,13 @@ export class CompactionCoordinator {
 		const api = model?.api;
 		const contextWindow = model?.contextWindow;
 		const maxTokens = model?.maxTokens;
+		const { enabled, reserveTokens, keepRecentTokens } =
+			event.preparation.settings ?? {};
+		const pruning = this.state.toolOutputPruning;
+		const flushGeneration = pruning.currentFlushGeneration;
 		const isCurrent = (): boolean => {
 			try {
+				const settings = event.preparation.settings;
 				return (
 					this.state.currentCompactionEpoch === epoch &&
 					ctx.sessionManager.getSessionId() === sessionId &&
@@ -1176,8 +1181,12 @@ export class CompactionCoordinator {
 					model?.api === api &&
 					model?.contextWindow === contextWindow &&
 					model?.maxTokens === maxTokens &&
+					settings?.enabled === enabled &&
+					settings?.reserveTokens === reserveTokens &&
+					settings?.keepRecentTokens === keepRecentTokens &&
 					!ctx.hasPendingMessages() &&
-					!this.state.toolOutputPruning.isFlushing &&
+					!pruning.isFlushing &&
+					pruning.currentFlushGeneration === flushGeneration &&
 					(boundary?.isCurrent() ?? true)
 				);
 			} catch {

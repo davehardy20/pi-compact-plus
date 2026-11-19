@@ -147,10 +147,11 @@ function event(
 		prefix?: AgentMessage[];
 		splitTurn?: boolean;
 		instructions?: string;
+		preparation?: ReturnType<typeof preparation>;
 	},
 ) {
 	return {
-		preparation: preparation(messages, options),
+		preparation: options?.preparation ?? preparation(messages, options),
 		branchEntries: [],
 		reason: "threshold",
 		willRetry: false,
@@ -1774,6 +1775,44 @@ ${"old context ".repeat(90_000)}`),
 		});
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
 	});
+
+	it.each(["enabled", "keepRecentTokens", "reserveTokens"] as const)(
+		"discards a completed custom summary after preparation %s changes",
+		async (setting) => {
+			const state = new CompactionState();
+			const ctx = createCtx();
+			const persistTelemetrySnapshot = vi.fn();
+			const coordinator = createCoordinator(state, {
+				persistTelemetrySnapshot,
+			});
+			state.selectedMode = "standard";
+			const messages = [user("Task: repair login.")];
+			const cut = preparation(messages);
+			const request = event(ctx, messages, { preparation: cut });
+			compactMock.mockImplementationOnce(async () => {
+				if (setting === "enabled") cut.settings.enabled = false;
+				else cut.settings[setting]++;
+				return {
+					summary: VALID_STRUCTURED_SUMMARY,
+					firstKeptEntryId: "entry-1",
+					tokensBefore: 123,
+					details: null,
+				};
+			});
+
+			expect(await coordinator.onSessionBeforeCompact(request, ctx)).toEqual({
+				cancel: true,
+			});
+			expect(compactMock).toHaveBeenCalledOnce();
+			expect(state.pendingCompaction).toBeNull();
+			expect(state.lastCompaction).toBeNull();
+			expect(persistTelemetrySnapshot).not.toHaveBeenCalled();
+			expect(coordinator.getLastVerdict()).toMatchObject({
+				kind: "cancelled",
+				reason: "compaction context changed",
+			});
+		},
+	);
 
 	it.each(["fits", "overflows", "unmeasurable"] as const)(
 		"requires a native capture that fits after a custom failure with the guard off (%s)",
