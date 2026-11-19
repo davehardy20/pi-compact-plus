@@ -992,6 +992,23 @@ describe("runCustomCompaction characterization", () => {
 		expect(attempt.fallbackReason).toBeNull();
 	});
 
+	it.each([16_000, 16_001])(
+		"preserves a normal summary only up to 16,000 characters (%i)",
+		async (length) => {
+			const summary = `${VALID_STRUCTURED_SUMMARY}\n${"x".repeat(length - VALID_STRUCTURED_SUMMARY.length - 1)}`;
+			compactMock.mockResolvedValueOnce(successfulResult(summary));
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				context(),
+				compatibility(),
+			);
+			expect(attempt.fallbackReason).toBeNull();
+			if (length === 16_000) expect(attempt.result?.summary).toBe(summary);
+			else expect(attempt.result?.summary.length).toBeLessThanOrEqual(16_000);
+		},
+	);
+
 	it("normalizes an oversized valid result while retaining result metadata", async () => {
 		const summary = [
 			VALID_STRUCTURED_SUMMARY,

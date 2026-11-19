@@ -242,7 +242,10 @@ function normalizeStructuredSummary(
 	}
 
 	if (sections.length === 0) {
-		return truncateAtBoundary(normalized, targetTokens * 4);
+		return truncateAtBoundary(
+			normalized,
+			targetTokens * SUMMARY_CHARS_PER_TOKEN,
+		);
 	}
 
 	const rebuild = (multiplier: number): string =>
@@ -259,7 +262,9 @@ function normalizeStructuredSummary(
 	}
 
 	const minimal = rebuild(0.25);
-	return title ? minimal : truncateAtBoundary(minimal, targetTokens * 4);
+	return title
+		? minimal
+		: truncateAtBoundary(minimal, targetTokens * SUMMARY_CHARS_PER_TOKEN);
 }
 
 function normalizePreviousSummary(
