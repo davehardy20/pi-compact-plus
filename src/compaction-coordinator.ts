@@ -1218,6 +1218,13 @@ export class CompactionCoordinator {
 			return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
 		}
 		if (!isCurrent()) return cancelCustom("compaction context changed");
+		// Failed recovery must never fall through to native replay, even if
+		// the runner did not set the generic cancellation flag.
+		if (attempt.recoveryAttempted && !attempt.result) {
+			return cancelCustom(
+				attempt.fallbackReason ?? "custom compaction cancelled",
+			);
+		}
 		if (
 			!boundary &&
 			attempt.fallbackReason === SUMMARIZATION_EVIDENCE_TRIMMED_REASON
