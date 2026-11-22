@@ -19,6 +19,7 @@ import {
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
 	SUMMARIZATION_INTENT_EVIDENCE_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
 	summarizationFailureReason,
 } from "./summarization-overflow.js";
 import {
@@ -810,11 +811,19 @@ export async function runCustomCompaction(
 		);
 		const afterDispatch = cancelled(true);
 		if (afterDispatch) return afterDispatch;
+		// Both provider-confirmed failures mean the same thing for recovery: this
+		// exact request cannot produce a usable summary, so it must be split. A
+		// context overflow rejected its input. An output-cap failure accepted the
+		// input and then ran out of output tokens, so the rejected size is not the
+		// constraint there; it is only a measured upper bound used to force at
+		// least one split, because re-sending the whole cut would exhaust the same
+		// output budget again.
 		if (
 			recovery &&
 			attempt.providerConfirmed &&
-			attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON &&
-			budgeted.measuredTotalTokens !== undefined
+			budgeted.measuredTotalTokens !== undefined &&
+			(attempt.fallbackReason === SUMMARIZATION_CONTEXT_OVERFLOW_REASON ||
+				attempt.fallbackReason === SUMMARIZATION_OUTPUT_CAP_REASON)
 		) {
 			return recovery(budgeted.measuredTotalTokens);
 		}
