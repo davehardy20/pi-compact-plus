@@ -240,7 +240,7 @@ compaction at `90%` / `260,000` tokens.
 | `COMPACT_PLUS_COOLDOWN_MS` | 120000 | Auto-compaction cooldown in ms |
 | `COMPACT_PLUS_DISABLE_AUTO_COMPACTION` | `false` | Kill switch: skip auto-compaction (manual works) |
 | `COMPACT_PLUS_GUARD_NATIVE_COMPACTION` | `true` | Cancel native compaction when its request cannot fit |
-| `COMPACT_PLUS_ENABLE_RECOVERY` | Off | Set to `1` before loading Compact+ to allow [bounded recovery](openwiki/compaction.md#bounded-recovery-opt-in) for oversized custom summaries on supported SDK routes |
+| `COMPACT_PLUS_ENABLE_RECOVERY` | Off | Set to `1` before loading Compact+ to allow [bounded recovery](openwiki/compaction.md#bounded-recovery-opt-in) when a custom summary cannot fit one request, either the context window or its output budget, on supported SDK routes |
 | `COMPACT_PLUS_SETTINGS_PATH` | `~/.pi/agent/settings.json` | Optional JSON config path |
 | `COMPACT_PLUS_EXPERIMENTAL_TOOL_OUTPUT_PRUNING` | `false` | Enable experimental tool-output pruning |
 | `COMPACT_PLUS_TOOL_OUTPUT_PRUNING_MODE` | `off` | Pruning mode (`off` or `agent-message`) |

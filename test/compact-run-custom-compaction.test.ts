@@ -26,8 +26,11 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 import { runCustomCompaction } from "../src/compact.js";
 import type { CompactionRuntimeCompatibility } from "../src/compatibility.js";
 import {
+	RECOVERY_FAILED_REASON,
+	RECOVERY_SUCCESS_REASON,
 	SUMMARIZATION_CONTEXT_OVERFLOW_REASON,
 	SUMMARIZATION_EVIDENCE_TRIMMED_REASON,
+	SUMMARIZATION_OUTPUT_CAP_REASON,
 } from "../src/summarization-overflow.js";
 import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 import {
@@ -72,6 +75,14 @@ function preparation(options?: {
 		turnPrefixMessages: options?.prefix ?? [],
 		previousSummary: options?.previousSummary,
 		settings: { enabled: true, keepRecentTokens: 100, reserveTokens: 4096 },
+		// Recovery snapshots require the checkpoint metadata Pi supplies.
+		firstKeptEntryId: "entry-1",
+		tokensBefore: 123,
+		fileOps: {
+			read: new Set<string>(),
+			written: new Set<string>(),
+			edited: new Set<string>(),
+		},
 	} as never;
 }
 
@@ -1245,5 +1256,125 @@ describe("runCustomCompaction characterization", () => {
 		expect(attempt.fallbackReason).toBe(
 			"summarization output budget was exhausted",
 		);
+	});
+
+	describe("bounded recovery after an exhausted output budget", () => {
+		/** A stream-aware custom route is a precondition for recovery. */
+		function streamCompatibility(): CompactionRuntimeCompatibility {
+			return compatibility({
+				helperArity: 8,
+				helperSupportsStreamFn: true,
+				streamFn: async () => ({ result: async () => undefined }),
+				streamRoute: "session",
+			});
+		}
+
+		/** ~30k estimated tokens: more than 75% of its own measured request. */
+		function largeTranscript(): AgentMessage[] {
+			return [
+				message("user", `FIRST ${"x".repeat(40_000)}`),
+				message("user", `SECOND ${"y".repeat(40_000)}`),
+				message("user", `THIRD ${"z".repeat(40_000)}`),
+			];
+		}
+
+		function intent(options: {
+			enableRecovery?: true;
+			projected: AgentMessage[];
+		}) {
+			return {
+				projected: options.projected,
+				isCurrent: () => true,
+				...(options.enableRecovery ? { enableRecovery: true as const } : {}),
+			};
+		}
+
+		it("recovers when the provider exhausts the summary output budget", async () => {
+			const messages = largeTranscript();
+			compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+			const attempt = await runCustomCompaction(
+				preparation({ messages }),
+				"standard",
+				context(),
+				streamCompatibility(),
+				undefined,
+				intent({ enableRecovery: true, projected: messages }),
+			);
+
+			expect(attempt.recoveryAttempted).toBe(true);
+			expect(attempt.fallbackReason).toBe(RECOVERY_SUCCESS_REASON);
+			expect(attempt.result).toBeDefined();
+			// The capped request, then two partials plus one reducer.
+			expect(attempt.recoveryRequests).toBe(3);
+			expect(compactMock).toHaveBeenCalledTimes(4);
+		});
+
+		it("splits the transcript instead of re-summarising it whole", async () => {
+			const messages = largeTranscript();
+			compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+			await runCustomCompaction(
+				preparation({ messages }),
+				"standard",
+				context(),
+				streamCompatibility(),
+				undefined,
+				intent({ enableRecovery: true, projected: messages }),
+			);
+
+			// The failed request is calls[0] and the reducer is last, so the
+			// middle requests are the partial maps.
+			const partials = compactMock.mock.calls
+				.slice(1, -1)
+				.map(([sent]) => JSON.stringify(sent.messagesToSummarize));
+			expect(partials).toHaveLength(2);
+			for (const part of partials) {
+				// Re-sending the whole cut would exhaust the same output budget.
+				expect(part).not.toMatch(/FIRST[\s\S]*SECOND[\s\S]*THIRD/);
+			}
+			expect(partials[0]).toContain("FIRST");
+			expect(partials[0]).toContain("SECOND");
+			expect(partials[1]).toContain("THIRD");
+			expect(partials[1]).not.toContain("FIRST");
+		});
+
+		it("holds the opt-in closed without recovery on an output-cap failure", async () => {
+			const messages = largeTranscript();
+			compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+
+			const attempt = await runCustomCompaction(
+				preparation({ messages }),
+				"standard",
+				context(),
+				streamCompatibility(),
+				undefined,
+				intent({ projected: messages }),
+			);
+
+			expect(compactMock).toHaveBeenCalledTimes(1);
+			expect(attempt.recoveryAttempted).toBeUndefined();
+			expect(attempt.fallbackReason).toBe(SUMMARIZATION_OUTPUT_CAP_REASON);
+		});
+
+		it("keeps every partial checkpoint when the output budget caps again", async () => {
+			const messages = largeTranscript();
+			compactMock.mockRejectedValue(new Error(PI_OUTPUT_CAP_FAILURE));
+
+			const attempt = await runCustomCompaction(
+				preparation({ messages }),
+				"standard",
+				context(),
+				streamCompatibility(),
+				undefined,
+				intent({ enableRecovery: true, projected: messages }),
+			);
+
+			expect(attempt.result).toBeUndefined();
+			expect(attempt.recoveryAttempted).toBe(true);
+			expect(attempt.fallbackReason).toBe(RECOVERY_FAILED_REASON);
+			// The first partial caps too, so no further request is spent.
+			expect(compactMock).toHaveBeenCalledTimes(2);
+		});
 	});
 });
