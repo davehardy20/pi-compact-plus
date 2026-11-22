@@ -419,6 +419,12 @@ interface CompactionIntent {
 	customInstructions?: string;
 	/** Rechecked after every await before auth, provider work, or acceptance. */
 	isCurrent?: () => boolean;
+	/**
+	 * Relaxed recheck for after the summary request has returned. Queued input is
+	 * delivered past the retained cut regardless, so it must not discard a draft the
+	 * provider has already summarised. Falls back to isCurrent when absent.
+	 */
+	postSummaryIsCurrent?: () => boolean;
 	/** Internal opt-in; requires lifecycle freshness supplied by the caller. */
 	enableRecovery?: true;
 }
@@ -631,7 +637,7 @@ export async function runCustomCompaction(
 			model.contextWindow,
 			model.maxTokens,
 		];
-		const isCurrent = (): boolean => {
+		const fresh = (afterSummary: boolean): boolean => {
 			try {
 				return (
 					ctx.model === model &&
@@ -642,17 +648,24 @@ export async function runCustomCompaction(
 						model.contextWindow,
 						model.maxTokens,
 					].every((value, index) => value === modelSnapshot[index]) &&
-					(intent?.isCurrent?.() ?? true)
+					(afterSummary
+						? (intent?.postSummaryIsCurrent?.() ??
+							intent?.isCurrent?.() ??
+							true)
+						: (intent?.isCurrent?.() ?? true))
 				);
 			} catch {
 				return false;
 			}
 		};
-		const cancelled = (): CompactionAttemptResult | undefined => {
+		const isCurrent = (): boolean => fresh(false);
+		const cancelled = (
+			afterSummary = false,
+		): CompactionAttemptResult | undefined => {
 			if (requestSignal?.aborted) {
 				return { result: undefined, fallbackReason: "compaction aborted" };
 			}
-			if (!isCurrent()) {
+			if (!fresh(afterSummary)) {
 				return {
 					result: undefined,
 					fallbackReason: "compaction context changed",
@@ -696,9 +709,9 @@ export async function runCustomCompaction(
 			if (beforeProvider) return beforeProvider;
 			try {
 				const result = await compactRunner(...compactArgs);
-				return cancelled() ?? { result, fallbackReason: null };
+				return cancelled(true) ?? { result, fallbackReason: null };
 			} catch (error) {
-				return cancelled() ?? classifyRequestError(error);
+				return cancelled(true) ?? classifyRequestError(error);
 			}
 		};
 		const recovery =
@@ -717,10 +730,11 @@ export async function runCustomCompaction(
 						thinkingLevel,
 						signal: requestSignal,
 						isCurrent,
+						postExecuteIsCurrent: () => fresh(true),
 						execute: async (payload, instructions) => {
 							const attempt = await dispatch(payload, instructions);
 							return (
-								cancelled() ??
+								cancelled(true) ??
 								(attempt.fallbackReason !== null
 									? attempt
 									: finalizeCompactionAttempt(attempt.result))
@@ -794,7 +808,7 @@ export async function runCustomCompaction(
 			prepared.preparation,
 			prepared.customInstructions,
 		);
-		const afterDispatch = cancelled();
+		const afterDispatch = cancelled(true);
 		if (afterDispatch) return afterDispatch;
 		if (
 			recovery &&

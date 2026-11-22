@@ -1224,7 +1224,7 @@ export class CompactionCoordinator {
 			event.preparation.settings ?? {};
 		const pruning = this.state.toolOutputPruning;
 		const flushGeneration = pruning.currentFlushGeneration;
-		const isCurrent = (): boolean => {
+		const stillFresh = (afterSummary: boolean): boolean => {
 			try {
 				const settings = event.preparation.settings;
 				return (
@@ -1239,15 +1239,22 @@ export class CompactionCoordinator {
 					settings?.enabled === enabled &&
 					settings?.reserveTokens === reserveTokens &&
 					settings?.keepRecentTokens === keepRecentTokens &&
-					!ctx.hasPendingMessages() &&
+					(afterSummary || !ctx.hasPendingMessages()) &&
 					!pruning.isFlushing &&
 					pruning.currentFlushGeneration === flushGeneration &&
-					(boundary?.isCurrent() ?? true)
+					(afterSummary || (boundary?.isCurrent() ?? true))
 				);
 			} catch {
 				return false;
 			}
 		};
+		// Strict before the request is dispatched: declining there is free, and the caller
+		// can trigger again once the input is delivered.
+		const isCurrent = (): boolean => stillFresh(false);
+		// Relaxed once the provider call has returned and the summary is paid for: Pi
+		// delivers queued input after the retained cut either way, so only a structural
+		// change (branch lineage, session, model, settings, pruning, epoch) may discard it.
+		const postSummaryIsCurrent = (): boolean => stillFresh(true);
 		const cancelCustom = (reason: string): { cancel: true } => {
 			this.state.selectedMode = null;
 			this.state.isCompacting = false;
@@ -1270,6 +1277,7 @@ export class CompactionCoordinator {
 				projected,
 				customInstructions,
 				isCurrent,
+				postSummaryIsCurrent,
 				...(this.enableCompactionRecovery &&
 					!boundary && { enableRecovery: true }),
 			},
@@ -1278,7 +1286,8 @@ export class CompactionCoordinator {
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
 		}
-		if (!isCurrent()) return cancelCustom("compaction context changed");
+		if (!postSummaryIsCurrent())
+			return cancelCustom("compaction context changed");
 		// Failed recovery must never fall through to native replay, even if
 		// the runner did not set the generic cancellation flag.
 		if (attempt.recoveryAttempted && !attempt.result) {
@@ -1336,7 +1345,8 @@ export class CompactionCoordinator {
 						telemetryBase.usageTokensAtTrigger,
 					);
 				}
-				if (!isCurrent()) return cancelCustom("compaction context changed");
+				if (!postSummaryIsCurrent())
+					return cancelCustom("compaction context changed");
 			}
 
 			return {

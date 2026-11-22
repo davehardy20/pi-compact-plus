@@ -133,6 +133,13 @@ interface RecoveryOptions {
 	customInstructions?: string;
 	signal?: AbortSignal;
 	isCurrent: () => boolean;
+	/**
+	 * Relaxed tier for the checks that follow an `execute` whose request has already
+	 * returned: Pi delivers queued user input past the retained cut either way, so it
+	 * must not discard recovery work the provider has already summarised. Defaults to
+	 * isCurrent, which keeps the strict behavior for callers that do not wire a tier.
+	 */
+	postExecuteIsCurrent?: () => boolean;
 	execute: (
 		preparation: Preparation,
 		instructions: string,
@@ -180,6 +187,9 @@ async function runRecovery(
 				: reason,
 	});
 	const current = () => !options.signal?.aborted && options.isCurrent();
+	const currentAfterExecute = (): boolean =>
+		!options.signal?.aborted &&
+		(options.postExecuteIsCurrent ?? options.isCurrent)();
 	try {
 		if (!current()) return fail("compaction context changed");
 		const {
@@ -310,7 +320,7 @@ async function runRecovery(
 				preparationFor(part.flat(), false),
 				partialInstructions(index),
 			);
-			if (!current()) return fail("compaction context changed");
+			if (!currentAfterExecute()) return fail("compaction context changed");
 			if (
 				!attempt.result ||
 				attempt.cancel ||
@@ -336,7 +346,7 @@ async function runRecovery(
 			preparationFor(summaries, true),
 			finalInstructions,
 		);
-		if (!current()) return fail("compaction context changed");
+		if (!currentAfterExecute()) return fail("compaction context changed");
 		if (
 			!final.result ||
 			final.cancel ||
@@ -361,7 +371,7 @@ async function runRecovery(
 			},
 		};
 	} catch (error) {
-		if (!current()) return fail("compaction context changed");
+		if (!currentAfterExecute()) return fail("compaction context changed");
 		if (
 			error instanceof Error &&
 			(error.message === RECOVERY_LIMIT_REASON ||
