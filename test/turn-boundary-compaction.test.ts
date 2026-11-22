@@ -341,6 +341,38 @@ async function runBoundary(f: ReturnType<typeof fixture>) {
 	return f.pi.events.get("turn_end")?.[0]?.(f.event, f.ctx);
 }
 
+/** The manual/SDK compaction hook, as Pi hands it a threshold trigger. */
+async function runCustomHook(f: ReturnType<typeof fixture>) {
+	const projection = f.session.buildSessionProjection();
+	return f.pi.events.get("session_before_compact")?.[0]?.(
+		{
+			type: "session_before_compact",
+			preparation: {
+				isSplitTurn: true,
+				messagesToSummarize: projection.messages.slice(0, 3),
+				turnPrefixMessages: projection.messages.slice(3),
+				firstKeptEntryId: f.event.messageEntryId,
+				tokensBefore: 160_000,
+				fileOps: {
+					read: new Set<string>(),
+					written: new Set<string>(),
+					edited: new Set<string>(),
+				},
+				settings: {
+					enabled: true,
+					keepRecentTokens: 100,
+					reserveTokens: 4096,
+				},
+			},
+			branchEntries: f.session.getBranch(),
+			reason: "threshold",
+			willRetry: false,
+			signal: new AbortController().signal,
+		},
+		f.ctx,
+	);
+}
+
 it("keeps recovery off for the turn boundary even with the SDK hook opted in", async () => {
 	const run = vi.spyOn(compact, "runCustomCompaction");
 	const f = fixture(false, true);
@@ -587,37 +619,42 @@ it("returns a custom compaction when another extension appends during the summar
 			false,
 		);
 	});
-	const result = await f.pi.events.get("session_before_compact")?.[0]?.(
-		{
-			type: "session_before_compact",
-			preparation: {
-				isSplitTurn: true,
-				messagesToSummarize: f.session
-					.buildSessionProjection()
-					.messages.slice(0, 3),
-				turnPrefixMessages: f.session
-					.buildSessionProjection()
-					.messages.slice(3),
-				firstKeptEntryId: f.event.messageEntryId,
-				tokensBefore: 160_000,
-				fileOps: {
-					read: new Set<string>(),
-					written: new Set<string>(),
-					edited: new Set<string>(),
-				},
-				settings: {
-					enabled: true,
-					keepRecentTokens: 100,
-					reserveTokens: 4096,
-				},
-			},
-			branchEntries: f.session.getBranch(),
-			reason: "threshold",
-			willRetry: false,
-			signal: new AbortController().signal,
-		},
-		f.ctx,
-	);
+	const result = await runCustomHook(f);
+	const summary = (result as { compaction?: { summary?: string } })?.compaction
+		?.summary;
+	expect(summary).toContain("## Current Objective");
+	expect(f.state.lastVerdict?.kind).toBe("accepted");
+});
+
+/**
+ * Queued user input is cheap to decline before the request is paid for and expensive to
+ * throw away afterwards: Pi delivers the queued message after the compaction either way,
+ * and it sits past the retained cut, so the summary stays correct without it.
+ */
+it("keeps a boundary summary that finished after the user queued new input", async () => {
+	const f = fixture();
+	summaryStream(f, () => {
+		f.event.context?.pendingMessages.push({
+			role: "user",
+			content: "Use the new objective instead.",
+			timestamp: 4,
+		});
+		vi.spyOn(f.ctx, "hasPendingMessages").mockReturnValue(true);
+	});
+	const raw = await runBoundary(f);
+	const draft = (raw as { entries?: CompactionEntryDraft[] })?.entries?.[0];
+	expect(draft?.summary).toContain("## Current Objective");
+	expect(f.state.pendingBoundaryMarker).not.toBeNull();
+	expect(f.ctx.compact).not.toHaveBeenCalled();
+});
+
+it("keeps a custom summary that finished after the user queued new input", async () => {
+	const f = fixture();
+	f.state.selectedMode = "standard";
+	summaryStream(f, () => {
+		vi.spyOn(f.ctx, "hasPendingMessages").mockReturnValue(true);
+	});
+	const result = await runCustomHook(f);
 	const summary = (result as { compaction?: { summary?: string } })?.compaction
 		?.summary;
 	expect(summary).toContain("## Current Objective");

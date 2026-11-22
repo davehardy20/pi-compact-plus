@@ -490,6 +490,29 @@ it.each(["abort", "stale"])(
 	},
 );
 
+/**
+ * Queued input arriving during the final reduction lands past the retained cut either
+ * way, so it must not discard partials and a reducer the provider has already paid for.
+ * The strict tier still stops the *next* dispatch, as the case above pins.
+ */
+it("keeps a completed recovery when the user queues input during the final reduction", async () => {
+	const f = fixture();
+	let queued = false;
+	// Wired this way in src/compact.ts: the strict tier sees queued input, the
+	// post-execute tier does not.
+	f.options.isCurrent = () => !queued;
+	f.options.postExecuteIsCurrent = () => true;
+	f.execute.mockImplementation(async (prepared) => {
+		if (f.execute.mock.calls.length === 3) queued = true;
+		return f.complete(prepared);
+	});
+	const attempt = await f.run();
+	expect(attempt.fallbackReason).toBe(RECOVERY_SUCCESS_REASON);
+	expect(attempt.recoveryAttempted).toBe(true);
+	expect(attempt.result).toBeDefined();
+	expect(f.execute).toHaveBeenCalledTimes(3);
+});
+
 it("preflights the worst-case reducer before executing any partial", async () => {
 	const f = fixture();
 	f.options.model.contextWindow = 17_000;
