@@ -409,6 +409,149 @@ it("declines a result when the authoritative branch changes during the summary",
 	expect(f.state.lastCompactTime).toBe(0);
 });
 
+/**
+ * Background extensions append session entries whenever their own work settles: the
+ * post-turn linter posts a `custom_message`, PR review status posts a `custom_message`,
+ * and other extensions persist state as `custom` entries. Those appends land inside the
+ * summarization window on almost every automatic trigger, so an exact leaf comparison
+ * discarded a finished, already-paid-for summary.
+ */
+function summaryStream(f: ReturnType<typeof fixture>, append: () => void) {
+	f.stream.mockImplementation(() => {
+		append();
+		const stream = createAssistantMessageEventStream();
+		stream.end({
+			...assistant("summary"),
+			content: [{ type: "text", text: VALID_STRUCTURED_SUMMARY }],
+			stopReason: "stop",
+		});
+		return stream;
+	});
+}
+
+it.each([
+	[
+		"a background lint result as a custom_message entry",
+		(f: ReturnType<typeof fixture>) =>
+			f.session.appendCustomMessageEntry(
+				"post-turn-linter",
+				"Post-turn lint check completed: findings.",
+				true,
+			),
+	],
+	[
+		"extension state as a custom entry",
+		(f: ReturnType<typeof fixture>) =>
+			f.session.appendCustomEntry("codemode-store", { key: "value" }),
+	],
+	[
+		"a label entry",
+		(f: ReturnType<typeof fixture>) => {
+			const target = f.session.getBranch()[0]?.id;
+			if (!target) throw new Error("fixture branch is empty");
+			f.session.appendLabelChange(target, "reviewed");
+		},
+	],
+])(
+	"keeps the boundary draft when another extension appends %s during the summary",
+	async (_label, append) => {
+		const f = fixture();
+		summaryStream(f, () => append(f));
+		const boundary = await runBoundary(f);
+		expect(boundary).toBeDefined();
+		expect(f.state.pendingBoundaryMarker).not.toBeNull();
+		expect(f.state.lastVerdict).toBeNull();
+	},
+);
+
+it("keeps an entry appended during the summary inside the compacted context", async () => {
+	const f = fixture();
+	summaryStream(f, () => {
+		f.session.appendCustomMessageEntry(
+			"post-turn-linter",
+			"Post-turn lint check completed: findings.",
+			true,
+		);
+	});
+	const raw = await runBoundary(f);
+	const draft = (raw as { entries?: CompactionEntryDraft[] })?.entries?.[0];
+	if (!draft) throw new Error("missing boundary compaction draft");
+	f.session.appendCompaction(
+		draft.summary,
+		draft.firstKeptEntryId,
+		160_000,
+		draft.details,
+		true,
+	);
+	const kept = f.session.buildSessionProjection().messages;
+	const keptText = kept
+		.map((message) =>
+			String(JSON.stringify((message as { content?: unknown }).content)),
+		)
+		.join("\n");
+	expect(keptText).toContain("Post-turn lint check completed");
+});
+
+it("declines a result when a context edit changes summarized content during the summary", async () => {
+	const f = fixture();
+	const target = f.session.getBranch()[0]?.id;
+	if (!target) throw new Error("fixture branch is empty");
+	summaryStream(f, () => {
+		f.session.appendContextEdit(target, {
+			content: "Task: repair checkout instead.",
+		});
+	});
+	expect(await runBoundary(f)).toBeUndefined();
+	expect(f.state.pendingBoundaryMarker).toBeNull();
+});
+
+it("returns a custom compaction when another extension appends during the summary", async () => {
+	const f = fixture();
+	f.state.selectedMode = "standard";
+	summaryStream(f, () => {
+		f.session.appendCustomMessageEntry(
+			"pr-review-status",
+			"PR #398 review is still running.",
+			false,
+		);
+	});
+	const result = await f.pi.events.get("session_before_compact")?.[0]?.(
+		{
+			type: "session_before_compact",
+			preparation: {
+				isSplitTurn: true,
+				messagesToSummarize: f.session
+					.buildSessionProjection()
+					.messages.slice(0, 3),
+				turnPrefixMessages: f.session
+					.buildSessionProjection()
+					.messages.slice(3),
+				firstKeptEntryId: f.event.messageEntryId,
+				tokensBefore: 160_000,
+				fileOps: {
+					read: new Set<string>(),
+					written: new Set<string>(),
+					edited: new Set<string>(),
+				},
+				settings: {
+					enabled: true,
+					keepRecentTokens: 100,
+					reserveTokens: 4096,
+				},
+			},
+			branchEntries: f.session.getBranch(),
+			reason: "threshold",
+			willRetry: false,
+			signal: new AbortController().signal,
+		},
+		f.ctx,
+	);
+	const summary = (result as { compaction?: { summary?: string } })?.compaction
+		?.summary;
+	expect(summary).toContain("## Current Objective");
+	expect(f.state.lastVerdict?.kind).toBe("accepted");
+});
+
 it("leaves the context unchanged when structured summary validation fails", async () => {
 	const f = fixture();
 	const before = f.session.buildSessionProjection().messages;

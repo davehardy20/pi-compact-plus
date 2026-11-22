@@ -103,6 +103,31 @@ const STRUCTURAL_DEPTH_BUDGET = 512;
  * and bounded so the rule is auditable rather than an ad-hoc percentage.
  */
 const SUSPECT_ESTIMATE_HEADROOM_TOKENS = 16_384;
+/**
+ * Session entry types another Pi extension may append after a compaction draft was
+ * captured without contradicting that draft.
+ *
+ * A `custom` entry never reaches model context. A `custom_message`, `label`,
+ * `session_info`, `usage`, model or thinking-level entry is appended at the leaf, so it
+ * falls inside the range the resulting compaction keeps: it survives the compaction and
+ * the summary simply does not mention it. Background extensions append exactly these
+ * while a summary request is in flight — post-turn lint results, PR review status,
+ * mulch primes, extension state — so an exact leaf comparison discarded a finished,
+ * already-paid-for summary on almost every automatic trigger.
+ *
+ * A new conversation message, a second compaction, a branch summary or a context edit
+ * still moves the ground the summary was written against, and any entry type this build
+ * does not know fails closed.
+ */
+const NON_INVALIDATING_APPEND_TYPES: ReadonlySet<string> = new Set([
+	"custom",
+	"custom_message",
+	"label",
+	"session_info",
+	"usage",
+	"model_change",
+	"thinking_level_change",
+]);
 const DIGEST_WINDOW = 256;
 const DIGEST_MULTIPLIER = 31;
 
@@ -285,6 +310,29 @@ export class CompactionCoordinator {
 			reason,
 			evidence,
 		);
+	}
+
+	/**
+	 * True while the branch is still the one a draft was captured against. The captured leaf
+	 * must still sit on the path from the root to the current leaf, and every entry appended
+	 * after it must be a type that cannot contradict the draft. An entry the build does not
+	 * know, a branch switch that drops the captured leaf, a second compaction, a branch
+	 * summary or a context edit all still mean the draft is stale.
+	 */
+	private branchStillExtends(
+		ctx: ExtensionEventContext,
+		capturedLeaf: string | null,
+	): boolean {
+		if (ctx.sessionManager.getLeafId() === capturedLeaf) return true;
+		if (capturedLeaf === null) return false;
+		const branch = ctx.sessionManager.getBranch();
+		const capturedIndex = branch.findIndex(
+			(entry) => entry.id === capturedLeaf,
+		);
+		if (capturedIndex === -1) return false;
+		return branch
+			.slice(capturedIndex + 1)
+			.every((entry) => NON_INVALIDATING_APPEND_TYPES.has(entry.type));
 	}
 
 	/** An aborted attempt carries usage only when the caller had a measurement in scope. */
@@ -908,7 +956,7 @@ export class CompactionCoordinator {
 				ctx.signal?.aborted ||
 				ctx.sessionManager.getSessionId() !== sessionId ||
 				modelKey(ctx.model) !== selectedModel ||
-				ctx.sessionManager.getLeafId() !== leaf
+				!this.branchStillExtends(ctx, leaf)
 			) {
 				this.state.clearPendingCompaction();
 				return undefined;
@@ -1182,7 +1230,7 @@ export class CompactionCoordinator {
 				return (
 					this.state.currentCompactionEpoch === epoch &&
 					ctx.sessionManager.getSessionId() === sessionId &&
-					ctx.sessionManager.getLeafId() === leaf &&
+					this.branchStillExtends(ctx, leaf) &&
 					ctx.model === model &&
 					modelKey(model) === selectedModel &&
 					model?.api === api &&
