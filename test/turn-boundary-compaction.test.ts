@@ -452,6 +452,32 @@ it.each([
 			f.session.appendLabelChange(target, "reviewed");
 		},
 	],
+	[
+		"a session_info entry",
+		(f: ReturnType<typeof fixture>) => f.session.appendSessionInfo("triage"),
+	],
+	[
+		"a usage entry that never reaches context",
+		(f: ReturnType<typeof fixture>) =>
+			f.session.appendUsage("helper", "test", "test", {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			}),
+	],
+	[
+		"a thinking_level_change entry",
+		(f: ReturnType<typeof fixture>) =>
+			f.session.appendThinkingLevelChange("minimal"),
+	],
+	[
+		"a model_change entry",
+		(f: ReturnType<typeof fixture>) =>
+			f.session.appendModelChange("test", "replacement"),
+	],
 ])(
 	"keeps the boundary draft when another extension appends %s during the summary",
 	async (_label, append) => {
@@ -463,6 +489,52 @@ it.each([
 		expect(f.state.lastVerdict).toBeNull();
 	},
 );
+
+/**
+ * An entry type this build has never seen fails closed: the tolerated set is an
+ * allow-list, so a future Pi entry type is treated as contradicting the draft until
+ * Compact+ learns what it does.
+ */
+it("declines a result for an entry type this build does not know", async () => {
+	const f = fixture();
+	const known = f.session.getBranch();
+	const capturedLeaf = known[known.length - 1]?.id;
+	if (!capturedLeaf) throw new Error("fixture branch is empty");
+	const futureEntry = {
+		type: "future_entry_type",
+		id: "future-entry",
+		parentId: capturedLeaf,
+		timestamp: "1970-01-01T00:00:00.000Z",
+	} as unknown as (typeof known)[number];
+	summaryStream(f, () => {
+		vi.spyOn(f.ctx.sessionManager, "getBranch").mockReturnValue([
+			...known,
+			futureEntry,
+		]);
+		vi.spyOn(f.ctx.sessionManager, "getLeafId").mockReturnValue(futureEntry.id);
+	});
+	expect(await runBoundary(f)).toBeUndefined();
+	expect(f.state.lastVerdict?.reason).toBe("compaction context changed");
+	expect(f.state.pendingBoundaryMarker).toBeNull();
+});
+
+/**
+ * A post-turn linter reads the compaction entry's details to learn which files the
+ * summarised turns touched, so the boundary marker has to ride alongside those file
+ * names rather than replace them.
+ */
+it("keeps the summarised file names in the boundary entry next to the boundary marker", async () => {
+	const f = fixture();
+	const boundary = (await runBoundary(f)) as
+		| { entries: CompactionEntryDraft[] }
+		| undefined;
+	const draft = boundary?.entries?.[0];
+	if (!draft) throw new Error("missing boundary draft");
+	const details = draft.details as Record<string, unknown>;
+	expect(details.modifiedFiles).toEqual(["old.ts"]);
+	expect(typeof details.compactPlusBoundary).toBe("string");
+	expect(details.compactPlusBoundary).toBe(f.state.pendingBoundaryMarker);
+});
 
 it("keeps an entry appended during the summary inside the compacted context", async () => {
 	const f = fixture();
