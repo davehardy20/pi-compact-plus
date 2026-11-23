@@ -1861,8 +1861,8 @@ ${"old context ".repeat(90_000)}`),
 		},
 	);
 
-	it.each(["replacement", "capacity"] as const)(
-		"discards a native fallback capture after model %s",
+	it.each(["equivalent replacement", "selection", "capacity"] as const)(
+		"checks a native fallback capture after model %s",
 		async (change) => {
 			const state = new CompactionState();
 			const ctx = createCtx({ contextWindow: 200_000 });
@@ -1883,8 +1883,10 @@ ${"old context ".repeat(90_000)}`),
 				.mockImplementationOnce(async () => {
 					const model = ctx.model;
 					if (!model) throw new Error("fixture model missing");
-					if (change === "replacement") {
-						Object.assign(ctx, { model: { ...model } });
+					if (change === "equivalent replacement") {
+						Object.assign(ctx, { model: structuredClone(model) });
+					} else if (change === "selection") {
+						Object.assign(ctx, { model: { ...model, id: "other-model" } });
 					} else {
 						model.contextWindow++;
 					}
@@ -1892,15 +1894,22 @@ ${"old context ".repeat(90_000)}`),
 				});
 			compactMock.mockRejectedValueOnce(new Error("provider request failed"));
 			try {
-				expect(
-					await coordinator.onSessionBeforeCompact(
-						event(ctx, [user("task")]),
-						ctx,
-					),
-				).toEqual({ cancel: true });
+				const result = await coordinator.onSessionBeforeCompact(
+					event(ctx, [user("task")]),
+					ctx,
+				);
 				expect(measure).toHaveBeenCalledTimes(3);
-				expect(persistTelemetrySnapshot).not.toHaveBeenCalled();
-				expect(state.pendingCompaction).toBeNull();
+				if (change === "equivalent replacement") {
+					expect(result).toBeUndefined();
+					expect(persistTelemetrySnapshot).toHaveBeenCalledOnce();
+					expect(state.pendingCompaction?.executionPath).toBe(
+						"native-fallback",
+					);
+				} else {
+					expect(result).toEqual({ cancel: true });
+					expect(persistTelemetrySnapshot).not.toHaveBeenCalled();
+					expect(state.pendingCompaction).toBeNull();
+				}
 			} finally {
 				measure.mockRestore();
 			}

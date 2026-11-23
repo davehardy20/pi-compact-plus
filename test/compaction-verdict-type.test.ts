@@ -23,6 +23,41 @@ import {
 	SUMMARIZATION_SUSPECT_ESTIMATE_REASON,
 } from "../src/summarization-overflow.js";
 
+describe("freshness verdict evidence", () => {
+	const failure = { check: "model", phase: "before-dispatch" } as const;
+
+	it("carries only cancellation evidence through the constructor and guard", () => {
+		const verdict = compactionVerdict(
+			"cancelled",
+			"compaction context changed",
+			{ freshnessFailure: failure },
+		);
+		expect(verdict.freshnessFailure).toEqual(failure);
+		expect(isCompactionVerdict(verdict)).toBe(true);
+		expect(
+			compactionVerdict("accepted", null, {
+				freshnessFailure: failure,
+			}).freshnessFailure,
+		).toBeUndefined();
+		expect(isCompactionVerdict({ ...verdict, kind: "accepted" })).toBe(false);
+	});
+
+	it.each([
+		null,
+		{ check: "unknown", phase: "before-dispatch" },
+		{ check: "model", phase: "unknown" },
+		{ check: "model" },
+	])("rejects unknown or malformed diagnostics: %j", (freshnessFailure) => {
+		expect(
+			isCompactionVerdict({
+				kind: "cancelled",
+				reason: "compaction context changed",
+				freshnessFailure,
+			}),
+		).toBe(false);
+	});
+});
+
 describe("compaction verdict kinds", () => {
 	it("is the closed set of outcomes Compact+ can produce", () => {
 		expect(COMPACTION_VERDICT_KINDS).toEqual([

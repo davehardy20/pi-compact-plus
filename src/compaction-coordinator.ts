@@ -13,6 +13,11 @@ import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 import { prepareBoundaryCompaction } from "./boundary-preparation.js";
 import { runCustomCompaction } from "./compact.js";
+import {
+	captureModelSnapshot,
+	type FreshnessFailure,
+	modelMatchesSnapshot,
+} from "./compaction-freshness.js";
 import { extractTriggerFocus } from "./compaction-intent.js";
 import {
 	type CompactionVerdict,
@@ -20,6 +25,7 @@ import {
 	type CompactionVerdictKind,
 	compactionVerdict,
 	compactionVerdictKindForReason,
+	snapshotCompactionVerdict,
 } from "./compaction-verdict.js";
 import {
 	type CompactionExecutionPath,
@@ -749,7 +755,7 @@ export class CompactionCoordinator {
 	 */
 	getLastVerdict(): Readonly<CompactionVerdict> | null {
 		const verdict = this.state.lastVerdict;
-		return verdict ? Object.freeze({ ...verdict }) : null;
+		return verdict ? snapshotCompactionVerdict(verdict) : null;
 	}
 
 	async handleManualCommand(
@@ -1215,38 +1221,44 @@ export class CompactionCoordinator {
 
 		const sessionId = ctx.sessionManager.getSessionId();
 		const leaf = ctx.sessionManager.getLeafId();
-		const model = ctx.model;
-		const selectedModel = modelKey(model);
-		const api = model?.api;
-		const contextWindow = model?.contextWindow;
-		const maxTokens = model?.maxTokens;
+		const modelSnapshot = captureModelSnapshot(ctx.model);
 		const { enabled, reserveTokens, keepRecentTokens } =
 			event.preparation.settings ?? {};
 		const pruning = this.state.toolOutputPruning;
 		const flushGeneration = pruning.currentFlushGeneration;
+		let freshnessFailure: FreshnessFailure | undefined;
 		const stillFresh = (afterSummary: boolean): boolean => {
+			let check: FreshnessFailure["check"] | undefined;
 			try {
 				const settings = event.preparation.settings;
-				return (
-					this.state.currentCompactionEpoch === epoch &&
-					ctx.sessionManager.getSessionId() === sessionId &&
-					this.branchStillExtends(ctx, leaf) &&
-					ctx.model === model &&
-					modelKey(model) === selectedModel &&
-					model?.api === api &&
-					model?.contextWindow === contextWindow &&
-					model?.maxTokens === maxTokens &&
-					settings?.enabled === enabled &&
-					settings?.reserveTokens === reserveTokens &&
-					settings?.keepRecentTokens === keepRecentTokens &&
-					(afterSummary || !ctx.hasPendingMessages()) &&
-					!pruning.isFlushing &&
-					pruning.currentFlushGeneration === flushGeneration &&
-					(afterSummary || (boundary?.isCurrent() ?? true))
-				);
+				if (this.state.currentCompactionEpoch !== epoch) check = "epoch";
+				else if (ctx.sessionManager.getSessionId() !== sessionId)
+					check = "session";
+				else if (!this.branchStillExtends(ctx, leaf)) check = "branch";
+				else if (!modelMatchesSnapshot(modelSnapshot, ctx.model))
+					check = "model";
+				else if (
+					settings?.enabled !== enabled ||
+					settings?.reserveTokens !== reserveTokens ||
+					settings?.keepRecentTokens !== keepRecentTokens
+				)
+					check = "settings";
+				else if (!afterSummary && ctx.hasPendingMessages())
+					check = "pending-input";
+				else if (pruning.isFlushing) check = "pruning-flush";
+				else if (pruning.currentFlushGeneration !== flushGeneration)
+					check = "pruning-generation";
+				else if (!afterSummary && !(boundary?.isCurrent() ?? true))
+					check = "boundary";
 			} catch {
-				return false;
+				check = "context-unavailable";
 			}
+			if (check)
+				freshnessFailure ??= {
+					check,
+					phase: afterSummary ? "after-summary" : "before-dispatch",
+				};
+			return !check;
 		};
 		// Strict before the request is dispatched: declining there is free, and the caller
 		// can trigger again once the input is delivered.
@@ -1262,6 +1274,7 @@ export class CompactionCoordinator {
 			this.state.clearPendingCompaction();
 			this.recordVerdict("cancelled", reason, {
 				usageTokens: telemetryBase.usageTokensAtTrigger,
+				freshnessFailure,
 			});
 			return { cancel: true };
 		};
@@ -1286,6 +1299,9 @@ export class CompactionCoordinator {
 		if (event.signal?.aborted || ctx.signal?.aborted) {
 			return this.cancelAbortedCompaction(telemetryBase.usageTokensAtTrigger);
 		}
+		// Keep the first failing phase, including an inner model check that ran
+		// before the coordinator callback could observe it.
+		freshnessFailure ??= attempt.freshnessFailure;
 		if (!postSummaryIsCurrent())
 			return cancelCustom("compaction context changed");
 		// Failed recovery must never fall through to native replay, even if

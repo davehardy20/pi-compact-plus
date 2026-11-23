@@ -39,6 +39,60 @@ function createMockPi(): MockPi {
 }
 
 describe("executeCompaction", () => {
+	it.each(["freshness", "abort", "stale"])(
+		"reports only current cancellation diagnostics (%s)",
+		(kind) => {
+			const state = new CompactionState();
+			state.lastVerdict = {
+				kind: "cancelled",
+				reason: "compaction context changed",
+				freshnessFailure: { check: "settings", phase: "before-dispatch" },
+			};
+			const ctx = createMockCtx();
+			ctx.compact.mockImplementation(
+				({ onError }: { onError: (error: Error) => void }) => {
+					if (kind !== "stale") {
+						state.lastVerdict = {
+							kind: "cancelled",
+							reason:
+								kind === "abort"
+									? "compaction aborted"
+									: "compaction context changed",
+							...(kind === "freshness" && {
+								freshnessFailure: {
+									check: "model" as const,
+									phase: "after-summary" as const,
+								},
+							}),
+						};
+					}
+					onError(new Error("Compaction cancelled"));
+				},
+			);
+			executeCompaction(
+				"standard",
+				{
+					objective: "test",
+					blockers: [],
+					decisions: [],
+					activeFiles: [],
+					dependencyChain: [],
+				},
+				state,
+				ctx as never,
+				createMockPi() as never,
+			);
+			if (kind === "abort") expect(ctx.ui.notify).not.toHaveBeenCalled();
+			else
+				expect(ctx.ui.notify).toHaveBeenCalledWith(
+					kind === "freshness"
+						? "Compact+ compaction failed: compaction context changed (model, after-summary)"
+						: "Compact+ compaction failed: Compaction cancelled",
+					"error",
+				);
+		},
+	);
+
 	it("settles the attempt through onError even when the run failed", () => {
 		const state = new CompactionState();
 		const onSettled = vi.fn();

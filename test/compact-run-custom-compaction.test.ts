@@ -150,6 +150,63 @@ function expectSameMessages(
 }
 
 describe("runCustomCompaction characterization", () => {
+	it.each(["budget", "auth", "summary"])(
+		"accepts an equivalent model replacement during %s",
+		async (phase) => {
+			const ctx = context();
+			const refresh = () => {
+				ctx.model = structuredClone(ctx.model);
+			};
+			if (phase === "budget") {
+				captureProbe.mockImplementationOnce(refresh);
+			} else if (phase === "auth") {
+				vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementationOnce(
+					async () => {
+						refresh();
+						return { ok: true, apiKey: undefined, headers: undefined };
+					},
+				);
+			} else {
+				compactMock.mockImplementationOnce(async () => {
+					refresh();
+					return successfulResult();
+				});
+			}
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				ctx,
+				compatibility(),
+			);
+			expect(attempt.fallbackReason).toBeNull();
+			expect(attempt.result?.summary).toBe(VALID_STRUCTURED_SUMMARY);
+		},
+	);
+
+	it.each(["baseUrl", "headers", "compat", "maxTokens"])(
+		"rejects an in-place %s change with safe named diagnostics",
+		async (field) => {
+			const ctx = context();
+			compactMock.mockImplementationOnce(async () => {
+				Object.assign(ctx.model ?? {}, {
+					[field]:
+						field === "maxTokens" ? 1024 : { changed: "private-fixture-value" },
+				});
+				return successfulResult();
+			});
+			const attempt = await runCustomCompaction(
+				preparation(),
+				"standard",
+				ctx,
+				compatibility(),
+			);
+			expect(attempt).toMatchObject({
+				cancel: true,
+				freshnessFailure: { check: "model", phase: "after-summary" },
+			});
+			expect(JSON.stringify(attempt)).not.toContain("private-fixture-value");
+		},
+	);
 	beforeEach(() => {
 		compactMock.mockReset();
 		compactMock.mockResolvedValue(successfulResult());
@@ -1288,6 +1345,36 @@ describe("runCustomCompaction characterization", () => {
 				...(options.enableRecovery ? { enableRecovery: true as const } : {}),
 			};
 		}
+
+		it.each(["provider", "estimate"])(
+			"retains the first failed phase during %s recovery budgeting",
+			async (source) => {
+				const messages = largeTranscript();
+				const ctx = context();
+				if (!ctx.model) throw new Error("Missing fixture model");
+				ctx.model.contextWindow = source === "estimate" ? 24_000 : 100_000;
+				captureProbe.mockImplementation((...args: unknown[]) => {
+					if (JSON.stringify(args).includes("RECOVERY PARTIAL") && ctx.model) {
+						ctx.model.maxTokens = 1024;
+					}
+				});
+				compactMock.mockRejectedValueOnce(new Error(PI_OUTPUT_CAP_FAILURE));
+				const attempt = await runCustomCompaction(
+					preparation({ messages }),
+					"standard",
+					ctx,
+					streamCompatibility(),
+					undefined,
+					intent({ enableRecovery: true, projected: messages }),
+				);
+				expect(attempt).toMatchObject({
+					recoveryAttempted: true,
+					cancel: true,
+					fallbackReason: "compaction context changed",
+					freshnessFailure: { check: "model", phase: "before-dispatch" },
+				});
+			},
+		);
 
 		it("recovers when the provider exhausts the summary output budget", async () => {
 			const messages = largeTranscript();

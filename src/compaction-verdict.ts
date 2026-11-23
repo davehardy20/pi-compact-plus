@@ -19,6 +19,10 @@
  * verdict types and the closed kind set are re-exported from the extension entry point.
  */
 
+import {
+	type FreshnessFailure,
+	isFreshnessFailure,
+} from "./compaction-freshness.js";
 import { NATIVE_FALLBACK_REASON } from "./compatibility.js";
 import {
 	NATIVE_FALLBACK_UNMEASURED_REASON,
@@ -75,11 +79,14 @@ export interface CompactionVerdict {
 	 * aborted before any usage was computed carries no usage.
 	 */
 	usageTokens?: number;
+	/** First failed guard and its phase; no request data or model values. */
+	freshnessFailure?: FreshnessFailure;
 }
 
 export interface CompactionVerdictEvidence {
 	evidenceTrimmedTurns?: number;
 	usageTokens?: number;
+	freshnessFailure?: FreshnessFailure;
 }
 
 /**
@@ -160,6 +167,9 @@ function withEvidence(
 ): Omit<CompactionVerdict, "kind" | "reason"> {
 	if (!evidence) return {};
 	return {
+		...(kind === "cancelled" && evidence.freshnessFailure
+			? { freshnessFailure: Object.freeze({ ...evidence.freshnessFailure }) }
+			: {}),
 		// A trim count belongs to a trimmed verdict, so the constructor cannot build a verdict
 		// its own guard would reject.
 		...(evidence.evidenceTrimmedTurns === undefined || kind !== "trimmed"
@@ -177,6 +187,18 @@ export function compactionVerdict(
 	evidence?: CompactionVerdictEvidence,
 ): CompactionVerdict {
 	return { kind, reason, ...withEvidence(kind, evidence) };
+}
+
+/** Read-only copy, including the nested diagnostic; cannot write through to state. */
+export function snapshotCompactionVerdict(
+	verdict: CompactionVerdict,
+): Readonly<CompactionVerdict> {
+	return Object.freeze({
+		...verdict,
+		...(verdict.freshnessFailure
+			? { freshnessFailure: Object.freeze({ ...verdict.freshnessFailure }) }
+			: {}),
+	});
 }
 
 export function compactionVerdictFromReason(
@@ -218,6 +240,12 @@ export function isCompactionVerdict(
 		) {
 			return false;
 		}
+	}
+	if (
+		candidate.freshnessFailure !== undefined &&
+		(kind !== "cancelled" || !isFreshnessFailure(candidate.freshnessFailure))
+	) {
+		return false;
 	}
 	const usageTokens = candidate.usageTokens;
 	if (

@@ -418,6 +418,11 @@ export function formatStatusLines(status: CompactPlusStatus): string[] {
 		...formatTelemetryIssueLines(status.telemetryPersistenceIssues),
 		...formatLastCompactionLines(status.lastCompaction),
 		...formatTopLevelFallback(topLevelFallback),
+		...(status.lastVerdict?.freshnessFailure
+			? [
+					`  Cancelled check: ${status.lastVerdict.freshnessFailure.check} (${status.lastVerdict.freshnessFailure.phase})`,
+				]
+			: []),
 		...formatLastFocusEchoLines(status, compactionFallback, verdictFallback),
 	];
 }

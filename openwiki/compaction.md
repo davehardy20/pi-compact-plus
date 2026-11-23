@@ -85,7 +85,7 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 3. **`onComplete`**: Reset `isCompacting`, `selectedMode`, `lastTriggerAuto`; set `lastCompactTime` from the compaction telemetry timestamp (fallback: now); reset `echoInjected`; resolve the regrowth baseline `lastCompactTokens`; persist telemetry; optionally send continuation prompt (`"Continue with the current task."`).
 
    Baseline resolution — first valid positive safe integer wins, else 0: (a) native `ctx.getContextUsage().tokens` (Pi may report unknown usage just after compaction); (b) `result.estimatedTokensAfter` from the compaction result; (c) `0`. A stale/invalid native reading never retains a pre-compaction baseline from a previous run. `0` disables the regrowth guard (`isRegrowthBelowThreshold` requires `lastCompactTokens > 0`); the cooldown guard still applies.
-4. **`onError`**: Same cleanup but `lastCompactTokens = 0`; call `clearPendingCompaction()`; notify error.
+4. **`onError`**: Same cleanup but `lastCompactTokens = 0`; call `clearPendingCompaction()`; notify error. A freshness cancellation produced by this attempt replaces Pi's generic text with Compact+'s reason, failed check and phase. A current user-abort verdict adds no duplicate Compact+ error; stale verdicts cannot suppress a later failure.
 
 **Auto-compaction sends a continuation prompt** (`sendContinuation: true`) so Pi resumes the task automatically after compaction. Manual compaction does not.
 
@@ -102,6 +102,14 @@ If all guards pass, state is set (`selectedMode`, `isCompacting=true`, `lastComp
 7. **Otherwise**: Call `runCustomCompaction(preparation, mode, ctx, compatibility, event.signal, { focus, customInstructions })`; a post-run abort check cancels before applying any result.
    - **Success**: Return `{ compaction: { ...result, details: { mode, triggerReason, ... } } }`.
    - **Failure**: Output-cap exhaustion cancels by default; disabling the optional native guard makes it eligible for fallback, not exempt from measurement. Before handing any eligible failure back to Pi, capture each native request independently and require every capture to fit. Missing captures and oversized requests cancel before recording a deferral. This check bypasses the optional native guard and its cache and never uses conversation usage as proof of fit. Recheck abort and freshness before and after awaiting telemetry persistence.
+
+### Freshness checks (`src/compaction-freshness.ts`)
+
+Both the custom runner and coordinator compare an attempt-local, deep model snapshot, not object identity. Pi can replace the selected model object when an unrelated provider registers; an equivalent definition remains valid. Display name and accounting prices are ignored. All other fields, including endpoints, headers, compatibility options, sampling parameters and future SDK fields, must match. Nested in-place changes are rejected. An unreadable or uncloneable model fails closed. Snapshots may contain authorization headers: they remain in memory only and must never be persisted or logged.
+
+Session, epoch, branch lineage, settings and pruning checks remain independent. Before dispatch, pending input and boundary validity also gate the request. After a summary returns, queued input alone must not discard it. A cancellation verdict can carry `freshnessFailure: { check, phase }`; these are bounded labels (`before-dispatch` or `after-summary`), never model values. `/compact-plus status` shows the first failed check and phase. This evidence is session-local, not restored from global telemetry.
+
+Regression coverage: `test/compaction-freshness.test.ts`, `test/compact-run-custom-compaction.test.ts`, `test/compaction-coordinator.test.ts`, and `test/model-refresh-runtime.test.ts`. The last suite registers a real unrelated provider during summarization using the project SDK and installed Pi 1.3.0 when discoverable, with no network or user-state access.
 
 ## Summarization request measurement (`src/summarization-request-budget.ts`)
 
