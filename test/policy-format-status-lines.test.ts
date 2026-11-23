@@ -24,6 +24,19 @@ const baseStatus = (
 });
 
 describe("formatStatusLines characterization", () => {
+	it("renders the failing freshness check and phase", () => {
+		const lines = formatStatusLines(
+			baseStatus({
+				lastVerdict: {
+					kind: "cancelled",
+					reason: "compaction context changed",
+					freshnessFailure: { check: "model", phase: "after-summary" },
+				},
+			}),
+		);
+		expect(lines).toContain("  Cancelled check: model (after-summary)");
+	});
+
 	afterEach(() => {
 		vi.useRealTimers();
 	});

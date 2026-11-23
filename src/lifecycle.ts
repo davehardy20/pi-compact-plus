@@ -112,6 +112,8 @@ export function executeCompaction(
 	// reports an overflow during this attempt.
 	state.lastOverflowReportedEpoch = null;
 	const hadUI = safeReadHasUI(ctx);
+	// Only a verdict produced by this attempt can replace Pi's generic error.
+	const verdictAtStart = state.lastVerdict;
 
 	const instructions = buildSummaryInstructions(mode, focus);
 	state.lastIssuedCompactionInstructions = instructions;
@@ -152,7 +154,18 @@ export function executeCompaction(
 			// an overflow reported during it, so a stale reason cannot swallow a new
 			// failure, and a steady-state repeat of the same decline still suppresses.
 			if (state.lastOverflowReportedEpoch === compactionEpoch) return;
-			safeNotifyCompactionFailure(ctx, hadUI, error.message);
+			const verdict = state.lastVerdict;
+			const currentCancellation =
+				verdict !== verdictAtStart && verdict?.kind === "cancelled";
+			if (currentCancellation && verdict.reason === "compaction aborted")
+				return;
+			const failure = currentCancellation
+				? verdict.freshnessFailure
+				: undefined;
+			const message = failure
+				? `${verdict?.reason} (${failure.check}, ${failure.phase})`
+				: error.message;
+			safeNotifyCompactionFailure(ctx, hadUI, message);
 		},
 	};
 

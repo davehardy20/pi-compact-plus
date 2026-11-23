@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as compactRunner from "../src/compact.js";
 import { CompactionCoordinator } from "../src/compaction-coordinator.js";
 import {
 	type CompactPlusThresholdSettings,
@@ -6,6 +7,7 @@ import {
 } from "../src/settings.js";
 import { CompactionState } from "../src/state.js";
 import type { EffectiveUsage } from "../src/types.js";
+import { VALID_STRUCTURED_SUMMARY } from "./fixtures/structured-summary.js";
 
 const { mutateDuringBudget } = vi.hoisted(() => ({
 	mutateDuringBudget: vi.fn(),
@@ -110,6 +112,94 @@ function setProjectedUser(ctx: ExtensionEventContext, text: string): void {
 }
 
 describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
+	it("accepts an equivalent model refresh during budgeting", async () => {
+		const { coordinator, state } = createCoordinator();
+		state.selectedMode = "standard";
+		const ctx = createMockCtx();
+		const auth = vi.fn(async () => ({ ok: false }));
+		Object.defineProperty(ctx, "modelRegistry", {
+			value: { getApiKeyAndHeaders: auth, streamSimple: vi.fn() },
+		});
+		mutateDuringBudget.mockImplementationOnce(() => {
+			ctx.model = structuredClone(ctx.model);
+		});
+		await coordinator.onSessionBeforeCompact(
+			{
+				preparation: {
+					isSplitTurn: false,
+					messagesToSummarize: [],
+					turnPrefixMessages: [],
+					settings: {
+						enabled: true,
+						keepRecentTokens: 100,
+						reserveTokens: 4096,
+					},
+				},
+				branchEntries: [],
+			} as never,
+			ctx,
+		);
+		// The empty stream fixture falls back natively: two custom budget
+		// captures, then one native measurement. A false model cancel stops at two.
+		expect(mutateDuringBudget).toHaveBeenCalledTimes(3);
+		expect(coordinator.getLastVerdict()?.reason).not.toBe(
+			"compaction context changed",
+		);
+		expect(coordinator.getLastVerdict()?.freshnessFailure).toBeUndefined();
+	});
+
+	it.each([false, true])(
+		"compares model values after a paid summary (route changed=%s)",
+		async (routeChanged) => {
+			const { coordinator, state } = createCoordinator();
+			state.selectedMode = "standard";
+			const ctx = createMockCtx();
+			Object.defineProperty(ctx, "modelRegistry", {
+				value: { streamSimple: vi.fn() },
+			});
+			vi.spyOn(compactRunner, "runCustomCompaction").mockImplementationOnce(
+				async () => {
+					ctx.model = structuredClone(ctx.model);
+					if (routeChanged && ctx.model)
+						ctx.model.baseUrl = "https://changed.invalid";
+					return {
+						result: {
+							summary: VALID_STRUCTURED_SUMMARY,
+							firstKeptEntryId: "kept",
+							tokensBefore: 1000,
+						},
+						fallbackReason: null,
+					};
+				},
+			);
+			const result = await coordinator.onSessionBeforeCompact(
+				{
+					preparation: {
+						isSplitTurn: false,
+						messagesToSummarize: [],
+						turnPrefixMessages: [],
+						settings: {
+							enabled: true,
+							keepRecentTokens: 100,
+							reserveTokens: 4096,
+						},
+					},
+					branchEntries: [],
+				} as never,
+				ctx,
+			);
+			if (routeChanged) {
+				expect(result).toEqual({ cancel: true });
+				expect(coordinator.getLastVerdict()).toMatchObject({
+					freshnessFailure: { check: "model", phase: "after-summary" },
+				});
+			} else {
+				expect(result?.compaction?.summary).toContain(
+					"Finish the current repair.",
+				);
+			}
+		},
+	);
 	it("clears boundary drafts and issued prompt ownership together", () => {
 		const { state } = createCoordinator();
 		state.pendingBoundaryMarker = "uncommitted boundary";
@@ -465,6 +555,19 @@ describe("CompactionCoordinator.maybeAutoCompact runtime guards", () => {
 		expect(stream).not.toHaveBeenCalled();
 		expect(state.lastCompaction).toBeNull();
 		expect(state.selectedMode).toBe(kind === "epoch" ? "hard" : null);
+		if (kind !== "epoch") {
+			const check = {
+				queue: "pending-input",
+				session: "session",
+				leaf: "branch",
+				model: "model",
+				"model capacity": "model",
+				"pruning flush": "pruning-flush",
+			}[kind];
+			expect(coordinator.getLastVerdict()).toMatchObject({
+				freshnessFailure: { check, phase: "before-dispatch" },
+			});
+		}
 	});
 
 	it("waits for idle before manual compaction can interrupt an active run", async () => {

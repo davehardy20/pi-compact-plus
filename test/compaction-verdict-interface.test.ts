@@ -558,6 +558,23 @@ describe("status output reads the verdict", () => {
 });
 
 describe("getLastVerdict returns a snapshot a consumer cannot write through", () => {
+	it("copies and freezes nested freshness evidence", () => {
+		const { coordinator, state } = createCoordinator();
+		state.lastVerdict = {
+			kind: "cancelled",
+			reason: "compaction context changed",
+			freshnessFailure: { check: "model", phase: "before-dispatch" },
+		};
+		const failure = coordinator.getLastVerdict()?.freshnessFailure;
+		if (!failure) throw new Error("Missing fixture evidence");
+		expect(failure).not.toBe(state.lastVerdict.freshnessFailure);
+		expect(Object.isFrozen(failure)).toBe(true);
+		expect(() => {
+			(failure as { check: string }).check = "settings";
+		}).toThrow(TypeError);
+		expect(state.lastVerdict.freshnessFailure?.check).toBe("model");
+	});
+
 	it("rejects mutation of the returned verdict instead of changing session state", async () => {
 		const ctx = createCtx();
 		const { coordinator, state } = createCoordinator();

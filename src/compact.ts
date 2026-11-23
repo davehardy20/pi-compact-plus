@@ -6,6 +6,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
 import { classifyMessages } from "./classify.js";
+import {
+	captureModelSnapshot,
+	type FreshnessFailure,
+	modelMatchesSnapshot,
+} from "./compaction-freshness.js";
 import { prepareBudgetedCompactionFocus } from "./compaction-intent.js";
 import { captureCompactionRecovery } from "./compaction-recovery.js";
 import type { CompactionRuntimeCompatibility } from "./compatibility.js";
@@ -40,6 +45,7 @@ export interface CompactionAttemptResult {
 	fallbackReason: string | null;
 	/** Decline stale or oversized custom work; never fall back using this cut. */
 	cancel?: true;
+	freshnessFailure?: FreshnessFailure;
 	/**
 	 * The summarization request itself could not fit the model context window.
 	 * Retrying the same cut through any other path would fail identically.
@@ -631,33 +637,25 @@ export async function runCustomCompaction(
 			return { result: undefined, fallbackReason: "model unavailable" };
 		}
 
-		const modelSnapshot = [
-			model.id,
-			model.provider,
-			model.api,
-			model.contextWindow,
-			model.maxTokens,
-		];
+		const modelSnapshot = captureModelSnapshot(model);
+		let freshnessFailure: FreshnessFailure | undefined;
 		const fresh = (afterSummary: boolean): boolean => {
+			let check: FreshnessFailure["check"] | undefined;
 			try {
-				return (
-					ctx.model === model &&
-					[
-						model.id,
-						model.provider,
-						model.api,
-						model.contextWindow,
-						model.maxTokens,
-					].every((value, index) => value === modelSnapshot[index]) &&
-					(afterSummary
-						? (intent?.postSummaryIsCurrent?.() ??
-							intent?.isCurrent?.() ??
-							true)
-						: (intent?.isCurrent?.() ?? true))
-				);
+				const checkContext = afterSummary
+					? (intent?.postSummaryIsCurrent ?? intent?.isCurrent)
+					: intent?.isCurrent;
+				if (!modelMatchesSnapshot(modelSnapshot, ctx.model)) check = "model";
+				else if (checkContext && !checkContext()) check = "context";
 			} catch {
-				return false;
+				check = "context-unavailable";
 			}
+			if (check)
+				freshnessFailure ??= {
+					check,
+					phase: afterSummary ? "after-summary" : "before-dispatch",
+				};
+			return !check;
 		};
 		const isCurrent = (): boolean => fresh(false);
 		const cancelled = (
@@ -671,6 +669,7 @@ export async function runCustomCompaction(
 					result: undefined,
 					fallbackReason: "compaction context changed",
 					cancel: true,
+					freshnessFailure,
 				};
 			}
 			return undefined;
@@ -715,7 +714,7 @@ export async function runCustomCompaction(
 				return cancelled(true) ?? classifyRequestError(error);
 			}
 		};
-		const recovery =
+		const capturedRecovery =
 			intent?.enableRecovery === true &&
 			intent.isCurrent &&
 			compatibility.executionPath === "custom" &&
@@ -743,6 +742,12 @@ export async function runCustomCompaction(
 						},
 					})
 				: undefined;
+		const recovery = capturedRecovery
+			? async (rejectedTokens?: number): Promise<CompactionAttemptResult> => {
+					const attempt = await capturedRecovery(rejectedTokens);
+					return freshnessFailure ? { ...attempt, freshnessFailure } : attempt;
+				}
+			: undefined;
 		const actualPreparation = prepareCompactionIntent(preparation, mode);
 		const focusSource = getCompactionFocusSource(preparation);
 		const budgeted = await prepareBudgetedCompactionFocus(

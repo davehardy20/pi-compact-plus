@@ -24,6 +24,7 @@ import {
 	type CompactionVerdict,
 	type CompactionVerdictEvidence,
 	type CompactionVerdictKind,
+	snapshotCompactionVerdict,
 } from "./compaction-verdict.js";
 import { registerCompactPlusEventHandlers } from "./events.js";
 import { createPackageMetadataResolver } from "./package-metadata.js";
@@ -120,7 +121,7 @@ export const __test__ = {
 	// Same frozen-copy guarantee as `coordinator.getLastVerdict()`: a test reading the extension
 	// surface cannot write through into session state.
 	getLastVerdict: () =>
-		state.lastVerdict ? Object.freeze({ ...state.lastVerdict }) : null,
+		state.lastVerdict ? snapshotCompactionVerdict(state.lastVerdict) : null,
 	getLastInjectedEcho: () => state.lastInjectedEcho,
 	getTelemetryPersistenceIssues: () => state.telemetryPersistenceIssues,
 	getToolOutputPruningState: () => state.toolOutputPruning,
